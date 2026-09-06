@@ -8,8 +8,13 @@ pub struct AvrCommand(String);
 impl AvrCommand {
     pub fn new(command: impl Into<String>) -> Result<Self, AvrProtocolError> {
         let command = command.into();
-        if command.chars().any(|character| matches!(character, '\r' | '\n')) {
-            return Err(AvrProtocolError::InvalidCommand("command contains a line break"));
+        if command
+            .chars()
+            .any(|character| matches!(character, '\r' | '\n'))
+        {
+            return Err(AvrProtocolError::InvalidCommand(
+                "command contains a line break",
+            ));
         }
         if command.is_empty() {
             return Err(AvrProtocolError::InvalidCommand("command is empty"));
@@ -61,14 +66,18 @@ pub struct VolumeCode(String);
 impl VolumeCode {
     pub fn from_db_tenths(db_tenths: i16) -> Result<Self, AvrProtocolError> {
         if db_tenths % 5 != 0 {
-            return Err(AvrProtocolError::InvalidVolume("volume must use 0.5 dB steps"));
+            return Err(AvrProtocolError::InvalidVolume(
+                "volume must use 0.5 dB steps",
+            ));
         }
         // Reference Denon encoding: 80 == 0 dB. Whole dB values use two
         // characters; half-dB values append 5 to the two-character base.
         let whole_db = db_tenths.div_euclid(10);
         let base = 80i16 + whole_db;
         if !(0..=98).contains(&base) {
-            return Err(AvrProtocolError::InvalidVolume("volume is outside AVR code range"));
+            return Err(AvrProtocolError::InvalidVolume(
+                "volume is outside AVR code range",
+            ));
         }
         let encoded = if db_tenths % 10 == 0 {
             format!("{base:02}")
@@ -80,7 +89,9 @@ impl VolumeCode {
 
     pub fn whole_db(code: u8) -> Result<Self, AvrProtocolError> {
         if code > 98 {
-            return Err(AvrProtocolError::InvalidVolume("AVR volume code must be 00..98"));
+            return Err(AvrProtocolError::InvalidVolume(
+                "AVR volume code must be 00..98",
+            ));
         }
         Ok(Self(format!("{code:02}")))
     }
@@ -105,8 +116,7 @@ pub enum AvrProtocolError {
 impl fmt::Display for AvrProtocolError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::InvalidCommand(message)
-            | Self::InvalidVolume(message) => f.write_str(message),
+            Self::InvalidCommand(message) | Self::InvalidVolume(message) => f.write_str(message),
             Self::InvalidUtf8 => f.write_str("AVR line is not valid UTF-8"),
             Self::EmptyLine => f.write_str("AVR line is empty"),
         }

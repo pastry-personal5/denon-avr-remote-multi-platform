@@ -101,11 +101,13 @@ There are three distinct concerns:
 
 | Concern | Mechanism | Meaning |
 | --- | --- | --- |
-| AVR/HEOS discovery | SSDP M-SEARCH, target `urn:schemas-denon-com:device:ACT-Denon:1`, documented UDP 1800 | Finds a reachable Denon/HEOS device and address; it does not prove every endpoint is enabled. |
+| AVR/HEOS discovery | SSDP M-SEARCH to `239.255.255.250:1900`, target `urn:schemas-denon-com:device:ACT-Denon:1`; Denon's exposed-services table separately lists UDP 1800 | Finds a reachable Denon/HEOS device and address; it does not prove every endpoint is enabled. |
 | AVR control | Manual IP plus TCP 23, when receiver network control permits it | Denon ASCII zone/control protocol. |
 | HEOS control | Manual IP or SSDP plus TCP 1255; TCP 1256 where exposed | HEOS CLI and its player/source model. |
 
-**Official.** Denon's exposed-services reference lists SSDP on UDP 1800, HEOS CLI on TCP 1255, secure HEOS CLI on TCP 1256, and the HEOS Web API/AVR Remote app interface on TCP 8080 [3]. The X3800H manual documents network operation and web control, including the “Network Control” setting [4]. Discovery and port exposure can vary with model, region, firmware, network-control settings, and standby policy.
+**Official.** Denon's exposed-services reference lists SSDP on UDP 1800, HEOS CLI on TCP 1255, secure HEOS CLI on TCP 1256, and the HEOS Web API/AVR Remote app interface on TCP 8080 [3]. The HEOS specification names UPnP SSDP and the Denon search target but does not override SSDP's standard multicast endpoint [2]. The X3800H manual documents network operation and web control, including the “Network Control” setting [4]. Discovery and port exposure can vary with model, region, firmware, network-control settings, and standby policy.
+
+**Implementation evidence.** Interoperable HEOS discovery implementations send M-SEARCH to the standard SSDP endpoint `239.255.255.250:1900`, commonly with `MX: 3`, multicast TTL 3, retries, and about a five-second response window [6]. The project therefore treats UDP 1900 as primary and probes UDP 1800 only for compatibility with Denon's exposed-services listing.
 
 Manual IP is the first project capability because it is deterministic and useful where multicast is filtered. SSDP discovery is a separate optional capability with interface selection, timeout, duplicate suppression, and clear presentation of discovered model/address data.
 
@@ -131,14 +133,14 @@ This section is background research only; HTTP/XML/AppCommand is not a planned p
 
 Record each result as `pass`, `fail`, or `not exposed`, with firmware and network-control settings.
 
-- [ ] TCP 23: connect, send `SI?`, `MV?`, `PW?`/`ZM?`, and verify CR-terminated responses.
+- [x] TCP 23: `pass` on AVR-X3800H for `PW?`, `SI?`, `MV?`, `MU?`, and `MS?` on 2026-09-06. Observed values included power on, TV input, volume code `00` (-80.0 dB), mute off, and MCH STEREO. Firmware and Network Control setting still need to be recorded.
 - [ ] TCP 23: verify input, mute, volume, surround mode, signal mode, channel-volume, and power events caused by network commands and front-panel/remote actions.
 - [ ] TCP 23: test `PWON` timing, standby behavior, socket closure, reconnect, and unsupported commands.
 - [ ] Populate the capability matrix with actual X3800H input names, modes, zones, channel fields, and volume encoding.
 - [ ] HEOS TCP 1255: connect, enumerate players/sources, query now-playing and volume, and verify CRLF JSON framing.
 - [ ] HEOS events: register for change events and verify player, playback, volume, mute, group, and source notifications.
 - [ ] HEOS TCP 1256: test only if live probing shows it is exposed; do not assume it is available.
-- [ ] SSDP: verify the documented search target on UDP 1800 and manual-IP fallback.
+- [x] SSDP: `pass` on AVR-X3800H on 2026-09-06 using the Denon target on UDP 1900. Initial discovery failed because Windows selected a WSL virtual adapter; binding the search to each private IPv4 interface found the receiver and its AIOS description. The manual-IP path also passed.
 - [ ] HTTP/XML: record availability only as background compatibility evidence; do not make it a project transport requirement.
 
 ## References
@@ -148,3 +150,4 @@ Record each result as `pass`, `fail`, or `not exposed`, with firmware and networ
 3. [Denon exposed network interfaces and services](https://manuals.denon.com/EUsecurity/EU/EN/index.php)
 4. [Denon AVR-X3800H network and web-control manual](https://manuals.denon.com/AVRX3800H/NA/EN/GFNFSYqfevlqjv.php)
 5. [ol-iver/denonavr community implementation](https://github.com/ol-iver/denonavr/blob/main/denonavr/denonavr.py)
+6. [Pytheos HEOS discovery implementation documentation](https://endlesscoil.github.io/pytheos/pytheos_networking.html)

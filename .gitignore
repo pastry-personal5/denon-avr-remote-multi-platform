@@ -5,6 +5,7 @@
 .env
 .env.*
 !.env.example
+/config/denon-avr-remote.yaml
 
 # Editor and IDE files
 .idea/
@@ -15,4 +16,3 @@
 # Operating system files
 .DS_Store
 Thumbs.db
-
