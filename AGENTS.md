@@ -18,7 +18,9 @@
 - `ARCHITECTURE.md`: current design, invariants, and architecture TODOs.
 
 All project-plan documents belong under `docs/` and its scope-specific
-subdirectories. Keep the root README focused on orientation and usage.
+subdirectories. Retired or superseded documentation may be preserved under
+`docs/archive/`; archive files are not active phase documentation. Keep the
+root README focused on orientation and usage.
 
 ## Development
 

@@ -19,3 +19,10 @@ and this project adheres to Semantic Versioning.
 ### Added
 
 - Initial documentation structure and baseline.
+
+## Documentation hierarchy exception
+
+Retired or superseded documentation may be moved into `docs/archive/`.
+Active version documentation remains directly under `docs/v1/` or `docs/v2/`
+using the phase-in-filename convention; archive content must not introduce
+phase subdirectories.
