@@ -1,12 +1,6 @@
-use denon_avr_remote::config::{self, Config, ReceiverIdentity};
-use denon_avr_remote::discovery::{self, DiscoveredReceiver, DEFAULT_DISCOVERY_TIMEOUT};
-use denon_avr_remote::status::{query_main_zone, render, TcpAvrTransport};
+use denon_avr_remote::application::ApplicationService;
+use denon_avr_remote::discovery::{DiscoveredReceiver, DEFAULT_DISCOVERY_TIMEOUT};
 use denon_avr_remote::{AvrCommand, HeosCommand, VolumeCode};
-use std::io::{self, Write};
-use std::time::Duration;
-
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
-const READ_TIMEOUT: Duration = Duration::from_secs(1);
 
 fn usage() {
     println!(
@@ -34,46 +28,8 @@ fn print_discovered(receivers: &[DiscoveredReceiver]) {
     }
 }
 
-fn choose_receiver(
-    receivers: &[DiscoveredReceiver],
-    requested: Option<usize>,
-) -> Result<&DiscoveredReceiver, String> {
-    if receivers.is_empty() {
-        return Err("no receivers discovered".to_owned());
-    }
-    let index = match requested {
-        Some(index) => index,
-        None if receivers.len() == 1 => 0,
-        None => {
-            print_discovered(receivers);
-            print!("Select receiver [1-{}]: ", receivers.len());
-            io::stdout().flush().map_err(|e| e.to_string())?;
-            let mut input = String::new();
-            io::stdin()
-                .read_line(&mut input)
-                .map_err(|e| e.to_string())?;
-            input
-                .trim()
-                .parse::<usize>()
-                .map_err(|_| "receiver selection must be a number".to_owned())?
-                .saturating_sub(1)
-        }
-    };
-    receivers
-        .get(index)
-        .ok_or_else(|| "receiver selection is out of range".to_owned())
-}
-
-fn receiver_from_discovery(receiver: &DiscoveredReceiver) -> ReceiverIdentity {
-    ReceiverIdentity {
-        host: receiver.address.ip().to_string(),
-        model: receiver.model.clone(),
-        friendly_name: None,
-    }
-}
-
 fn discover_command() -> Result<(), String> {
-    let receivers = discovery::discover(DEFAULT_DISCOVERY_TIMEOUT).map_err(|e| e.to_string())?;
+    let receivers = ApplicationService::default().discover(DEFAULT_DISCOVERY_TIMEOUT)?;
     print_discovered(&receivers);
     if receivers.is_empty() {
         return Err("SSDP discovery returned no receiver responses".to_owned());
@@ -82,43 +38,9 @@ fn discover_command() -> Result<(), String> {
 }
 
 fn status_command(requested: Option<usize>, manual_host: Option<String>) -> Result<(), String> {
-    if let Some(host) = manual_host {
-        return query_identity(ReceiverIdentity {
-            host,
-            model: None,
-            friendly_name: None,
-        });
-    }
-    let path = config::default_path();
-    let saved = match config::load(&path) {
-        Ok(saved) => saved,
-        Err(error) => {
-            eprintln!("Saved configuration unavailable ({error}); trying discovery.");
-            None
-        }
-    };
-    if let Some(config) = saved.filter(|_| requested.is_none()) {
-        match query_identity(config.receiver) {
-            Ok(()) => return Ok(()),
-            Err(error) => {
-                eprintln!("Saved receiver unavailable ({error}); trying discovery.");
-            }
-        }
-    }
-    query_identity(discover_identity(requested)?)
-}
-
-fn query_identity(identity: ReceiverIdentity) -> Result<(), String> {
-    let mut transport = TcpAvrTransport::connect(&identity.host, CONNECT_TIMEOUT, READ_TIMEOUT)
-        .map_err(|error| error.to_string())?;
-    let status = query_main_zone(&mut transport);
-    config::save(
-        &config::default_path(),
-        &Config {
-            receiver: identity.clone(),
-        },
-    )
-    .map_err(|error| error.to_string())?;
+    let service = ApplicationService::default();
+    let (identity, status) =
+        service.query_status(requested, manual_host, DEFAULT_DISCOVERY_TIMEOUT)?;
     println!(
         "Receiver: {}",
         identity
@@ -127,14 +49,8 @@ fn query_identity(identity: ReceiverIdentity) -> Result<(), String> {
             .or(identity.model.as_deref())
             .unwrap_or(&identity.host)
     );
-    println!("{}", render(&status));
+    println!("{}", service.render_status(&status));
     Ok(())
-}
-
-fn discover_identity(requested: Option<usize>) -> Result<ReceiverIdentity, String> {
-    let receivers = discovery::discover(DEFAULT_DISCOVERY_TIMEOUT).map_err(|e| e.to_string())?;
-    let receiver = choose_receiver(&receivers, requested)?;
-    Ok(receiver_from_discovery(receiver))
 }
 
 fn main() {

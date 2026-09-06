@@ -1,29 +1,36 @@
 # Denon AVR Remote
 
-Rust library for controlling Denon and Marantz AV receivers over their local IP protocols.
+Rust library and CLI for communicating with Denon and Marantz AV receivers
+over the local IP protocols.
+The validated target is the Denon AVR-X3800H.
 
-The initial target is the Denon AVR-X3800H. The project keeps the low-latency AVR ASCII protocol (TCP 23) separate from the HEOS CLI (TCP 1255). Receiver-specific capabilities remain explicitly unverified until tested against live hardware.
+Current capabilities:
 
-## Current implementation
-
-- AVR command construction with CR framing
+- AVR ASCII commands and CR framing over TCP 23
 - HEOS command construction with CRLF framing
-- Basic line classification primitives
-- Reference volume-code handling
-- AVR-X3800H capability placeholder
-- SSDP receiver discovery on UDP 1900, plus a validated AIOS-description scan
-  fallback for receivers that do not answer M-SEARCH
-- Saved receiver identity in `config/denon-avr-remote.yaml`
-- One-shot main-zone status over TCP 23 with partial-field output
-- Unit tests for protocol invariants
+- SSDP discovery with AIOS-description fallback
+- saved receiver identity and one-shot main-zone status
+- persistent asynchronous AVR sessions with events and bounded reconnects
+- capability declarations that distinguish evidence from assumptions
 
-The next layer is the persistent async TCP session: serialized writes, bounded
-reads, unsolicited event routing, reconnects, and structured transport errors.
-
-## Development
+Quick start:
 
 ```text
-cargo test
+cargo run -- help
+cargo run -- discover
+cargo run -- status --host <receiver-ip>
+make check
+make clippy
 ```
 
-See [`docs/research/denon-avr-ip-protocol.md`](docs/research/denon-avr-ip-protocol.md) for protocol evidence and the AVR-X3800H validation checklist.
+Documentation:
+
+- [Architecture](ARCHITECTURE.md)
+- [Contributor guide](AGENTS.md)
+- [Documentation index](docs/README.md)
+- [v1.0.0 scope and plans](docs/v1/README.md)
+- [Protocol research](docs/research/denon-avr-ip-protocol.md)
+- [v2.0.0 follow-up areas](docs/v2/README.md)
+
+Receiver-specific behavior is claimed only when supported by protocol evidence
+or live validation.

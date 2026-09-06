@@ -1,6 +1,10 @@
 //! Main-zone AVR status snapshots and synchronous TCP transport.
 
 use crate::avr::{parse_line, AvrCommand, AvrLine};
+use crate::response::{
+    parse_input, parse_mute, parse_power, parse_surround, parse_volume, response_matches,
+};
+use crate::session::{AvrSession, AvrSessionError};
 use std::fmt;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
@@ -58,10 +62,15 @@ pub trait AvrTransport {
     fn query(&mut self, command: &str) -> Result<String, String>;
 }
 
+/// Legacy direct TCP transport. Prefer [`crate::ApplicationService`].
+#[deprecated(
+    note = "use ApplicationService for receiver operations; this transport remains for compatibility"
+)]
 pub struct TcpAvrTransport {
     stream: TcpStream,
 }
 
+#[allow(deprecated)]
 impl TcpAvrTransport {
     pub fn connect(
         host: &str,
@@ -93,6 +102,7 @@ impl TcpAvrTransport {
     }
 }
 
+#[allow(deprecated)]
 impl AvrTransport for TcpAvrTransport {
     fn query(&mut self, command: &str) -> Result<String, String> {
         let command = AvrCommand::new(command).map_err(|error| error.to_string())?;
@@ -117,7 +127,7 @@ impl AvrTransport for TcpAvrTransport {
                 }
             }
             match parse_line(&line) {
-                Ok(AvrLine::Raw(value)) if value.starts_with(family) => return Ok(value),
+                Ok(AvrLine::Raw(value)) if response_matches(family, &value) => return Ok(value),
                 Ok(AvrLine::Raw(_)) => continue,
                 Ok(_) => return Err("unexpected AVR line".to_owned()),
                 Err(error) => return Err(error.to_string()),
@@ -126,12 +136,41 @@ impl AvrTransport for TcpAvrTransport {
     }
 }
 
+/// Legacy synchronous query API. Prefer [`crate::ApplicationService`].
+#[deprecated(
+    note = "use ApplicationService::query_main_zone; direct transports are a compatibility API"
+)]
 pub fn query_main_zone<T: AvrTransport>(transport: &mut T) -> MainZoneStatus {
     let power = query_field(transport, "PW?", parse_power);
     let input = query_field(transport, "SI?", parse_input);
     let volume = query_field(transport, "MV?", parse_volume);
     let mute = query_field(transport, "MU?", parse_mute);
     let surround_mode = query_field(transport, "MS?", parse_surround_mode);
+    MainZoneStatus {
+        power,
+        input,
+        volume,
+        mute,
+        surround_mode,
+    }
+}
+
+/// Query the same bounded main-zone snapshot through a persistent async session.
+pub async fn query_main_zone_async(session: &AvrSession) -> MainZoneStatus {
+    let generation = session.connection_generation();
+    let status = query_main_zone_async_once(session).await;
+    if session.connection_generation() != generation {
+        return query_main_zone_async_once(session).await;
+    }
+    status
+}
+
+async fn query_main_zone_async_once(session: &AvrSession) -> MainZoneStatus {
+    let power = query_field_async(session, "PW?", parse_power).await;
+    let input = query_field_async(session, "SI?", parse_input).await;
+    let volume = query_field_async(session, "MV?", parse_volume).await;
+    let mute = query_field_async(session, "MU?", parse_mute).await;
+    let surround_mode = query_field_async(session, "MS?", parse_surround_mode).await;
     MainZoneStatus {
         power,
         input,
@@ -155,66 +194,23 @@ fn query_field<T: AvrTransport>(
     }
 }
 
-fn parse_power(response: &str) -> Result<String, String> {
-    match response {
-        "PWON" | "ZMON" => Ok("on".to_owned()),
-        "PWSTANDBY" | "ZMSTANDBY" => Ok("standby".to_owned()),
-        value if value.starts_with("PW") || value.starts_with("ZM") => {
-            Err(format!("unsupported power response {value}"))
-        }
-        value => Err(format!("unexpected power response {value}")),
+async fn query_field_async(
+    session: &AvrSession,
+    command: &str,
+    parser: fn(&str) -> Result<String, String>,
+) -> StatusField {
+    let result = match session.request_query(command).await {
+        Ok(response) => parser(&response).map_err(AvrSessionError::UnexpectedResponse),
+        Err(error) => Err(error),
+    };
+    match result {
+        Ok(value) => StatusField::value(value),
+        Err(error) => StatusField::unavailable(error.to_string()),
     }
-}
-
-fn parse_input(response: &str) -> Result<String, String> {
-    response
-        .strip_prefix("SI")
-        .filter(|value| !value.is_empty())
-        .map(str::to_owned)
-        .ok_or_else(|| format!("unexpected input response {response}"))
 }
 
 fn parse_surround_mode(response: &str) -> Result<String, String> {
-    response
-        .strip_prefix("MS")
-        .filter(|value| !value.is_empty())
-        .map(str::to_owned)
-        .ok_or_else(|| format!("unexpected surround response {response}"))
-}
-
-fn parse_volume(response: &str) -> Result<String, String> {
-    let code = response
-        .strip_prefix("MV")
-        .ok_or_else(|| format!("unexpected volume response {response}"))?;
-    if code.is_empty() {
-        return Err("volume response is empty".to_owned());
-    }
-    let half_step = code.ends_with('5');
-    let base_text = if half_step {
-        &code[..code.len() - 1]
-    } else {
-        code
-    };
-    let base = base_text
-        .parse::<i16>()
-        .map_err(|_| format!("invalid volume code {code}"))?;
-    if !(0..=98).contains(&base)
-        || (half_step && code.len() != 3)
-        || (!half_step && code.len() != 2)
-    {
-        return Err(format!("invalid volume code {code}"));
-    }
-    let db_tenths = (base - 80) * 10 + if half_step { 5 } else { 0 };
-    let db = db_tenths as f32 / 10.0;
-    Ok(format!("code {code} ({db:.1} dB)"))
-}
-
-fn parse_mute(response: &str) -> Result<String, String> {
-    match response {
-        "MUON" => Ok("on".to_owned()),
-        "MUOFF" => Ok("off".to_owned()),
-        value => Err(format!("unexpected mute response {value}")),
-    }
+    parse_surround(response)
 }
 
 pub fn render(status: &MainZoneStatus) -> String {
@@ -251,6 +247,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn queries_fields_in_order_and_preserves_partial_failures() {
         let mut fake = Fake {
             responses: vec![
@@ -291,6 +288,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn tcp_transport_frames_queries_and_ignores_unrelated_events() {
         use std::io::{BufRead, BufReader, Write};
         use std::net::TcpListener;
@@ -305,7 +303,7 @@ mod tests {
             reader.read_until(b'\r', &mut line).unwrap();
             assert_eq!(line, b"MV?\r");
             let mut stream = stream;
-            stream.write_all(b"SIHDMI1\rMV805\r").unwrap();
+            stream.write_all(b"SIHDMI1\rMVMAX 615\rMV805\r").unwrap();
         });
 
         let mut transport =
@@ -313,5 +311,94 @@ mod tests {
                 .unwrap();
         assert_eq!(transport.query("MV?").unwrap(), "MV805");
         server.join().unwrap();
+    }
+
+    #[test]
+    fn does_not_correlate_mv_notifications_as_volume_status() {
+        assert!(response_matches("MV", "MV805"));
+        assert!(!response_matches("MV", "MVMAX 615"));
+    }
+
+    #[tokio::test]
+    async fn async_status_query_uses_persistent_session() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut reader = BufReader::new(stream);
+            for (expected, response) in [
+                (b"PW?\r".as_slice(), b"PWON\r".as_slice()),
+                (b"SI?\r".as_slice(), b"SICD\r".as_slice()),
+                (b"MV?\r".as_slice(), b"MV80\r".as_slice()),
+                (b"MU?\r".as_slice(), b"MUOFF\r".as_slice()),
+                (b"MS?\r".as_slice(), b"MSSTEREO\r".as_slice()),
+            ] {
+                let mut command = Vec::new();
+                reader.read_until(b'\r', &mut command).await.unwrap();
+                assert_eq!(command, expected);
+                reader.get_mut().write_all(response).await.unwrap();
+            }
+        });
+        let session = crate::session::AvrSession::connect_addr(
+            address,
+            crate::session::AvrSessionConfig::default(),
+        )
+        .await
+        .unwrap();
+        let status = query_main_zone_async(&session).await;
+        assert_eq!(status.power.value.as_deref(), Some("on"));
+        assert_eq!(status.input.value.as_deref(), Some("CD"));
+        assert_eq!(status.volume.value.as_deref(), Some("code 80 (0.0 dB)"));
+        assert_eq!(status.mute.value.as_deref(), Some("off"));
+        assert_eq!(status.surround_mode.value.as_deref(), Some("STEREO"));
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn async_status_query_refreshes_a_query_after_reconnect() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut reader = BufReader::new(stream);
+            let mut command = Vec::new();
+            reader.read_until(b'\r', &mut command).await.unwrap();
+            assert_eq!(command, b"PW?\r");
+            drop(reader);
+
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut reader = BufReader::new(stream);
+            for _ in 0..2 {
+                for (expected, response) in [
+                    (b"PW?\r".as_slice(), b"PWON\r".as_slice()),
+                    (b"SI?\r".as_slice(), b"SICD\r".as_slice()),
+                    (b"MV?\r".as_slice(), b"MV80\r".as_slice()),
+                    (b"MU?\r".as_slice(), b"MUOFF\r".as_slice()),
+                    (b"MS?\r".as_slice(), b"MSSTEREO\r".as_slice()),
+                ] {
+                    let mut command = Vec::new();
+                    reader.read_until(b'\r', &mut command).await.unwrap();
+                    assert_eq!(command, expected);
+                    reader.get_mut().write_all(response).await.unwrap();
+                }
+            }
+        });
+        let config = crate::session::AvrSessionConfig {
+            reconnect_delay: Duration::ZERO,
+            ..crate::session::AvrSessionConfig::default()
+        };
+        let session = crate::session::AvrSession::connect_addr(address, config)
+            .await
+            .unwrap();
+        let status = query_main_zone_async(&session).await;
+        assert_eq!(status.power.value.as_deref(), Some("on"));
+        assert_eq!(status.input.value.as_deref(), Some("CD"));
+        server.await.unwrap();
     }
 }
