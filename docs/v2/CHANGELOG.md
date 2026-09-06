@@ -10,7 +10,12 @@ and this project adheres to Semantic Versioning.
 
 ### Added
 
+- Added a future GUI user guide defining the proposed scope and boundaries.
+
 ### Changed
+
+- Updated Version 2 documentation to distinguish planned GUI work from current
+  implementation.
 
 ### Fixed
 

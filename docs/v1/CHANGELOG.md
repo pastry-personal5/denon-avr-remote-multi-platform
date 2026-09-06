@@ -10,7 +10,11 @@ and this project adheres to Semantic Versioning.
 
 ### Added
 
+- Added the Version 1 CLI user guide.
+
 ### Changed
+
+- Updated Version 1 documentation links and current CLI scope.
 
 ### Fixed
 

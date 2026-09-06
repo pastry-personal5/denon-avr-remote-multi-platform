@@ -121,9 +121,10 @@ invariants above and add tests before becoming a user-facing capability.
 
 Project plans and milestone records live under `docs/`:
 
-- `docs/v1/`: v1.0.0 scope, phase plans, and validation reports.
-- `docs/v2/`: v2.0.0 follow-up product areas.
-- `docs/research/`: external protocol evidence and live-validation notes.
+- `docs/v1/`: Version 1 phase plans, architecture notes, and the CLI user guide.
+- `docs/v2/`: Version 2 phase plans, architecture notes, and future GUI guidance.
+- `docs/archive/`: retired or superseded documentation; it is not active scope.
 
-Root-level documents are limited to repository orientation, contribution rules,
-and architecture.
+Active phase files use `phase-<number>-<topic>.md`; phase directories are not
+used. Root-level documents are limited to repository orientation, contribution
+rules, and architecture.

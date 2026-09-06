@@ -1,17 +1,7 @@
 # Denon AVR Remote
 
-Rust library and CLI for communicating with Denon and Marantz AV receivers
-over the local IP protocols.
+Rust library and CLI for read-only Denon and Marantz AVR status over local IP.
 The validated target is the Denon AVR-X3800H.
-
-Current capabilities:
-
-- AVR ASCII commands and CR framing over TCP 23
-- HEOS command construction with CRLF framing
-- SSDP discovery with AIOS-description fallback
-- saved receiver identity and one-shot main-zone status
-- persistent asynchronous AVR sessions with events and bounded reconnects
-- capability declarations that distinguish evidence from assumptions
 
 Quick start:
 
@@ -25,12 +15,9 @@ make clippy
 
 Documentation:
 
+- [Development guide](docs/development.md)
+- [Contributing guide](docs/contributing.md)
 - [Architecture](ARCHITECTURE.md)
-- [Contributor guide](AGENTS.md)
-- [Documentation index](docs/README.md)
-- [v1.0.0 scope and plans](docs/v1/README.md)
-- [Protocol research](docs/research/denon-avr-ip-protocol.md)
-- [v2.0.0 follow-up areas](docs/v2/README.md)
-
-Receiver-specific behavior is claimed only when supported by protocol evidence
-or live validation.
+- [CLI user guide](docs/v1/cli-user-guide.md)
+- [Version 1 documentation](docs/v1/phase-1-overview.md)
+- [Future GUI guide](docs/v2/gui-user-guide.md)

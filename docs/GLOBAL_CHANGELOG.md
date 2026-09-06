@@ -10,7 +10,14 @@ and this project adheres to Semantic Versioning.
 
 ### Added
 
+- Added the development guide.
+- Added the standalone contribution guide.
+- Added the Version 1 CLI user guide and Version 2 future GUI user guide.
+
 ### Changed
+
+- Updated active documentation links and architecture guidance to match the
+  canonical version and archive hierarchy.
 
 ### Fixed
 

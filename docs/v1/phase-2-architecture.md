@@ -12,7 +12,7 @@ application must issue a fresh status query instead of trusting missed events.
 The synchronous `AvrTransport` and `TcpAvrTransport` path remains operational
 for compatibility.
 
-## Phase 3 boundary carried by Version 1
+## Current architecture carried by Version 1
 
 The completed refactoring adds `application.rs` for receiver policy,
 `transport.rs` for the runtime-neutral async contract, `response.rs` for
