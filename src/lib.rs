@@ -1,30 +1,21 @@
-//! Building blocks for Denon/Marantz AVR and HEOS IP control.
+//! Denon/Marantz AVR and HEOS IP control library.
 //!
-//! The AVR and HEOS protocols intentionally have separate modules and framing
-//! types. Receiver-specific command availability belongs in [`capabilities`]
-//! and must be confirmed against live hardware.
+//! The public API is organized into domain, application, protocol, and
+//! infrastructure layers.
 
 pub mod application;
-pub mod avr;
-pub mod capabilities;
-pub mod config;
-pub mod discovery;
-pub mod heos;
-pub mod response;
-pub mod session;
-pub mod state;
-pub mod status;
-pub mod transport;
+pub mod domain;
+pub mod infrastructure;
+pub mod protocol;
 
-pub use application::ApplicationService;
-pub use avr::{AvrCommand, AvrEvent, AvrLine, AvrResponse, VolumeCode};
-pub use capabilities::{Model, ModelCapabilities};
-pub use heos::{HeosCommand, HeosLine};
-pub use session::{AvrSession, AvrSessionConfig, AvrSessionError, AvrSessionEvent};
-pub use state::{Freshness, MainZoneEvent, MainZoneState, StateAuthority};
-#[allow(deprecated)]
-pub use status::{
-    query_main_zone, query_main_zone_async, render as render_status, AvrTransport, MainZoneStatus,
-    StatusField, TcpAvrTransport,
+pub use application::{query_main_zone_status, query_main_zone_status_async};
+
+pub use application::ports::{
+    AsyncConfigRepository, AsyncReceiverDiscovery, AsyncStatusGateway, BoxFuture, ConfigRepository,
+    OperationError, OperationErrorKind, ReceiverDiscovery, SessionEvent, StatusGateway,
 };
-pub use transport::{AsyncAvrTransport, TransportConnectionState, TransportError, TransportEvent};
+pub use domain::{
+    ConfiguredReceivers, ConnectionState, DiscoveredReceiver, FieldError, FieldErrorKind,
+    FieldStatus, Input, MainZoneField, MainZoneSnapshot, MainZoneValue, MuteState, PowerState,
+    ReceiverEndpoint, SurroundMode, Volume,
+};

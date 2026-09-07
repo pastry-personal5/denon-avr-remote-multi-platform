@@ -5,7 +5,7 @@ phase. Clean architecture means policy is independent of delivery frameworks
 and I/O mechanisms, not merely that files are stored in different directories.
 
 ```text
-presentation / compatibility façades
+presentation / canonical APIs
                  |
 infrastructure adapters -> application ports and use cases
                  |                    |
@@ -23,7 +23,7 @@ text.
 
 ```text
 src/
-  lib.rs                         public API and compatibility exports
+  lib.rs                         library module declarations
   domain/
     mod.rs
     receiver.rs                  identity and normalized model
@@ -46,15 +46,12 @@ src/
     config_yaml.rs               serde DTO and filesystem repository
     discovery_ssdp.rs            SSDP and bounded description probing
     avr_session.rs               persistent Tokio actor and reconnect behavior
-    tcp_avr.rs                   synchronous v1 compatibility adapter
+    tcp_avr.rs                   bounded synchronous TCP adapter
   bin/
     denon-avr-remote/
       main.rs                    composition and process exit
       commands.rs                CLI argument dispatch
       render.rs                  human-readable presentation
-  avr.rs, capabilities.rs, config.rs, discovery.rs, heos.rs,
-  response.rs, session.rs, state.rs, status.rs, transport.rs
-                                 thin v1 public compatibility façades
 ```
 
 Do not create directories solely to hold one trivial type, and do not split
@@ -78,12 +75,7 @@ different reasons to change or dependency rules.
 | socket code in `status.rs` | `infrastructure/tcp_avr.rs` |
 | rendering and dispatch in `main.rs` | the CLI binary directory |
 
-The listed root module names remain as thin public façades for v1 source
-compatibility. They re-export or delegate only and contain no business rules,
-parser implementations, socket loops, or duplicated state. The
-`application` module exposes the canonical use cases and re-exports the
-compatibility `ApplicationService`; canonical application submodules never
-depend on that façade.
+The layered modules contain the implementation and are the only supported public library surface.
 
 ## Domain Model
 
@@ -99,9 +91,7 @@ and YAML field names belong to an infrastructure DTO that converts to and from
 the domain identity. Capability declarations remain evidence-bound and do not
 gain new claims during the move.
 
-The existing string-based `StatusField` and `MainZoneStatus` shapes remain at
-the v1 compatibility boundary. Conversions from the canonical typed snapshot
-must preserve the established rendered values and errors.
+The canonical typed snapshot is the public status representation.
 
 ## Application Ports and Use Cases
 
@@ -121,8 +111,8 @@ authoritative snapshot if its connection generation changes during the query.
 
 Ports return structured application errors containing operation category and
 context. Infrastructure-specific error types are mapped at adapter boundaries.
-Presentation and old string-returning APIs perform the final human-readable
-conversion.
+Presentation converts structured application errors into final
+human-readable messages.
 
 ## Infrastructure and Composition
 
@@ -133,26 +123,23 @@ and XML probing stay entirely inside the discovery adapter.
 
 The Tokio session retains one reader, serialized writes, bounded CR framing,
 unsolicited-event routing, finite reconnect, and connection generation. The
-synchronous TCP adapter remains available only to support the established v1
-surface. Both adapters reuse the same protocol parsing and correlation code.
+synchronous TCP adapter is a separate bounded infrastructure adapter. Both
+adapters reuse the same protocol parsing and correlation code.
 
 The CLI binary is the composition root for concrete defaults. Argument parsing
 produces presentation commands, application use cases return typed results, and
 the renderer owns labels, usage text, and exit-facing error strings. No process
 exit, printing, or argument parsing is allowed in library layers.
 
-## Compatibility Policy
+## Public API Policy
 
-- Preserve existing crate-root exports and public module import paths through
-  the root façade modules listed in the target layout.
-- Preserve public v1 data shapes, deprecated annotations, CLI commands, output,
-  exit codes, YAML shape, relative default path, and network timeouts.
-- Add canonical layered APIs without requiring current callers to migrate in
-  Phase 1.
-- Test public façades as adapters; test behavior exhaustively at the canonical
-  layer rather than duplicating identical test cases in both locations.
-- Do not retain an old implementation after its façade delegates to the new
-  implementation.
+- Expose the layered modules directly from `lib.rs`; avoid duplicate root
+  re-exports and legacy façade modules.
+- Keep the documented CLI commands, output, exit codes, YAML shape, relative
+  default path, and network timeouts stable unless a later phase explicitly
+  changes them.
+- Keep protocol, domain, application, and infrastructure APIs named for their
+  actual responsibility rather than retaining obsolete v1 aliases.
 
 ## Verification Strategy
 
@@ -166,8 +153,7 @@ status rendering, argument errors, and exit codes.
 
 A source search is part of acceptance: domain modules and canonical application
 submodules must contain no imports from infrastructure, Tokio, serde,
-filesystem, networking, binary modules, or the `ApplicationService`
-compatibility façade. The full format, build, unit, integration, Clippy, and
+filesystem, networking, or binary modules. The full format, build, unit, integration, Clippy, and
 diff checks must pass with no live receiver dependency. Repository maps in
 `AGENTS.md`, `ARCHITECTURE.md`, and development documentation must describe the
 implemented layout rather than the former flat files.

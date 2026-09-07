@@ -92,7 +92,7 @@ deferred work list.
 
 ## Documentation
 
-- [CLI user guide](cli-user-guide.md)
+- [CLI user guide](../cli-user-guide.md)
 - [Phase 1 overview](phase-1-overview.md) and
   [Phase 1 architecture](phase-1-architecture.md)
 - [Phase 2 overview](phase-2-overview.md) and

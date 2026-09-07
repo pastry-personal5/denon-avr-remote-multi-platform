@@ -4,8 +4,7 @@
 
 1. Read the relevant phase and architecture documentation under `docs/v1/` or
    `docs/v2/`.
-2. Keep changes within the requested scope and preserve existing compatibility
-   behavior.
+2. Keep changes within the requested scope and preserve documented behavior.
 3. Add protocol and transport tests for behavior changes.
 4. Run the checks below before submitting the change.
 
@@ -18,8 +17,8 @@
   partial-status behavior.
 - Do not claim receiver capabilities without protocol evidence or live
   validation.
-- Prefer `ApplicationService` and `AsyncAvrTransport`; legacy direct status
-  transport APIs are compatibility wrappers.
+- Prefer application use cases and infrastructure adapters; protocol modules
+  stay independent of concrete transports.
 - Do not modify `.codex-firewall-hardening.ps1`.
 
 ## Verification

@@ -42,8 +42,8 @@ A structured result distinguishes:
 
 Add an execute-once transport contract alongside the existing asynchronous
 query contract. The session implementation uses its single serialized writer
-but bypasses `request_query` and its reconnect retry. Existing public query and
-synchronous compatibility APIs remain available.
+but bypasses `request_query` and its reconnect retry. Existing asynchronous queries and the bounded synchronous adapter remain
+available.
 
 Controls for a receiver are serialized. While one is pending, conflicting
 controls are disabled rather than queued from repeated UI input. Absolute

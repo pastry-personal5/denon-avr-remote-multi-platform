@@ -2,7 +2,7 @@
 
 CARGO ?= cargo
 
-.PHONY: help format format-check check test build run run-release clippy clean
+.PHONY: help format format-check check test build run run-release clippy boundary clean
 
 help: ## Show available developer commands
 	@echo "Available targets:"
@@ -14,9 +14,12 @@ format: ## Format Rust source files
 format-check: ## Verify Rust formatting without changing files
 	$(CARGO) fmt --all -- --check
 
-check: format-check ## Run formatting, compilation, and unit-test checks
+check: format-check boundary ## Run formatting, boundary, compilation, and unit-test checks
 	$(CARGO) check --all-targets
 	$(CARGO) test --all-targets
+
+boundary: ## Check canonical layer dependency boundaries
+	tools/check-boundaries.sh
 
 test: ## Run the test suite
 	$(CARGO) test --all-targets

@@ -11,7 +11,8 @@
 Run these from the repository root:
 
 ```text
-make check          # format check, compile, and tests
+make check          # format, boundaries, compile, and tests
+make boundary      # verify domain/application dependency boundaries
 make clippy         # Clippy with warnings denied
 make format         # format Rust sources
 make test           # run all tests
@@ -27,9 +28,7 @@ Contribution rules and engineering invariants are maintained in the
 ## Documentation
 
 Active version documentation is under `docs/v1/` and `docs/v2/`. Put retired
-material under `docs/archive/`. Phase directories are not used; phase numbers
-belong in filenames. Keep the root `README.md` concise and link to detailed
-guides from there.
+material under `docs/archive/`. Phase directories are not used; phase numbers belong in filenames. Keep the root `README.md` concise and link to detailed guides from there.
 
 Before submitting documentation changes, check links and run:
 

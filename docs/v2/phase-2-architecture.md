@@ -31,7 +31,7 @@ view and provides the seam where Phase 6 will add control intents.
 
 On connection, the worker queries all five main-zone fields and marks each
 successful value authoritative. Per-field errors remain independent. Validated
-unsolicited events pass through `state::parse_event` and update only the
+unsolicited events pass through `protocol::avr::parse_main_zone_event` and update only the
 affected field with event authority. On disconnect or reconnect, the worker
 invalidates all cached authority before querying a replacement snapshot.
 

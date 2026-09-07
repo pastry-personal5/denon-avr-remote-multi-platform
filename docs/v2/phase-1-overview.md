@@ -16,17 +16,16 @@ values and errors, application use cases depend on ports rather than concrete
 filesystem or network implementations, and the CLI becomes a composition and
 presentation boundary.
 
-Existing v1 public imports remain source-compatible through thin re-export or
-delegating façades. Compatibility code may call the new canonical
-implementation, but canonical implementation code must not depend on a
-compatibility façade.
+Legacy v1 façade modules are intentionally removed; callers use the layered
+modules directly. Canonical implementation code must not depend on a
+presentation or infrastructure API.
 
 This is a behavior-preserving refactor. The following remain out of scope:
 
 - GUI implementation and platform-native configuration migration;
 - receiver control commands or execute-once command semantics;
 - new discovery behavior, status fields, zones, HEOS features, or model claims;
-- removal of deprecated APIs or changes to established CLI text and exit codes;
+- removal of canonical APIs or changes to the Kubernetes-style CLI contract;
 - packaging, observability, and session lifecycle features planned for later
   phases.
 
@@ -40,13 +39,13 @@ This is a behavior-preserving refactor. The following remain out of scope:
 - Transport-independent AVR and HEOS protocol modules separated from Tokio,
   sockets, filesystem access, CLI rendering, and operating-system discovery.
 - Infrastructure adapters for YAML configuration, SSDP discovery, persistent
-  AVR sessions, and the synchronous compatibility TCP path.
+  AVR sessions, and the bounded synchronous TCP path.
 - A CLI composition root with parsing, rendering, and process exit behavior
   separated from application policy.
 - One canonical main-zone field plan, parser set, and reducer shared by the
-  asynchronous use case and synchronous compatibility adapter.
+  asynchronous use case and synchronous TCP adapter.
 - Structured internal errors with operation context; string conversion occurs
-  only at presentation or compatibility boundaries.
+  only at the presentation boundary.
 
 ## Acceptance Criteria
 
@@ -56,8 +55,7 @@ This is a behavior-preserving refactor. The following remain out of scope:
   not call concrete configuration, discovery, or transport functions directly.
 - Protocol modules remain usable without a network connection or async runtime.
 - Infrastructure implements application ports and contains all concrete I/O.
-- Internal imports use canonical layered modules rather than compatibility
-  paths.
+- Internal imports use the layered modules directly.
 - The five-field definition, parsing, and reduction are implemented once and
   still preserve independent field failures and reconnect authority rules.
 - Existing crate-root exports, documented module imports, CLI output, config
@@ -74,8 +72,8 @@ This is a behavior-preserving refactor. The following remain out of scope:
    cases with fake-port tests.
 4. Move YAML, SSDP, TCP, and Tokio implementations behind those ports.
 5. Move CLI dispatch and rendering into the binary presentation boundary.
-6. Reduce the old root modules to public compatibility façades, redirect old
-   APIs to canonical code, and remove superseded implementations and duplicate
+6. Remove the obsolete root modules and redirect all callers to
+   callers to canonical code, and remove superseded implementations and duplicate
    tests.
 7. Update `AGENTS.md`, `ARCHITECTURE.md`, and development documentation to the
    implemented source map and commands.

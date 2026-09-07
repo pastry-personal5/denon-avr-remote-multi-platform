@@ -2,19 +2,13 @@
 
 ## Repository map
 
+The canonical public API is organized under `src/domain`, `src/application`, `src/protocol`, and `src/infrastructure`. Legacy v1 façades have been removed.
+
 - `src/lib.rs`: public library API.
-- `src/avr.rs`, `src/heos.rs`: transport-independent protocol primitives.
-- `src/capabilities.rs`: model and evidence-bound capability declarations.
-- `src/discovery.rs`, `src/config.rs`: discovery and saved identity.
-- `src/application.rs`: application service and receiver-selection policy.
-- `src/status.rs`: status domain types and synchronous compatibility transport.
-- `src/session.rs`: persistent asynchronous AVR TCP session.
-- `src/transport.rs`: runtime-neutral asynchronous transport contract.
-- `src/response.rs`, `src/state.rs`: shared response handling and validated state reduction.
-- `src/main.rs`: CLI presentation and command dispatch.
+- `src/bin/denon-avr-remote/main.rs`: CLI composition, presentation, and command dispatch.
 - `tests/`: end-to-end and CLI tests.
 - `docs/archive/`: retired or superseded documentation.
-- `docs/v1/`, `docs/v2/`: release-scoped plans, user guides, and architecture.
+- `docs/`: user guides; `docs/v1/` and `docs/v2/`: release-scoped plans and architecture.
 - `ARCHITECTURE.md`: current design, invariants, and architecture TODOs.
 
 All project-plan documents belong under `docs/` and its scope-specific

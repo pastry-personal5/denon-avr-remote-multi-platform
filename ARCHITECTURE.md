@@ -5,14 +5,13 @@ toward stable protocol and domain code; network I/O, persistence, and runtime
 details stay at the edges.
 
 ```text
-CLI presentation                 src/main.rs
+CLI presentation                 src/bin/denon-avr-remote/main.rs
         |
-Application operations           status.rs, session-facing orchestration
+Application operations           src/application/, with ports and use cases
         |
-Domain and protocol              avr.rs, heos.rs, capabilities.rs
-        |
-Infrastructure                  discovery.rs, config.rs, status transport,
-                                  session.rs
+Domain and protocol              src/domain/, src/protocol/
+        ^
+Infrastructure adapters          src/infrastructure/
         |
 Operating system and network
 ```
@@ -21,36 +20,37 @@ Operating system and network
 
 ### Presentation
 
-`src/main.rs` parses commands, selects a receiver, calls library operations,
-and renders human-readable output. It owns no protocol framing or socket
-loops.
+`src/bin/denon-avr-remote/main.rs` parses commands, selects a receiver, calls
+library operations, and renders human-readable output. It owns no protocol
+framing or socket loops.
 
 ### Application operations
 
-The current application layer is intentionally small. `status.rs` coordinates
-the five-field main-zone snapshot and preserves independent field failures.
-The CLI coordinates saved-identity lookup, discovery fallback, and rendering.
-Persistent session consumers use `query_main_zone_async` and receive raw
-unsolicited events through `AvrSessionEvent`.
+`src/application/` contains the canonical ports and use cases. Receiver
+selection and main-zone status live behind those ports rather than in the
+presentation layer.
 
 ### Domain and protocol
 
-`avr.rs` owns AVR command validation, CR framing, line primitives, and volume
-encoding. `heos.rs` owns HEOS command validation and CRLF framing. These modules
-must remain usable without a network connection or async runtime.
+`src/domain/` owns receiver identity, capability, and main-zone value types.
+`src/protocol/` owns transport-independent AVR and HEOS protocol primitives.
+These modules remain usable without a network connection or async runtime.
 
-`capabilities.rs` records model facts and validation state. A command appearing
-in reference documentation is not, by itself, an enabled capability.
+`src/domain/capabilities.rs` records model facts and validation state. A command
+appearing in reference documentation is not, by itself, an enabled capability.
 
 ### Infrastructure
 
-- `discovery.rs` performs interface-aware SSDP discovery and bounded AIOS
-  description probing.
-- `config.rs` loads and saves the user’s receiver identity without credentials.
-- `status.rs` contains the bounded one-shot TCP adapter.
-- `session.rs` owns one Tokio TCP connection, serialized request writes,
-  bounded CR framing, unsolicited-event routing, structured errors, reconnect
-  backoff, and connection-generation tracking.
+- `src/infrastructure/discovery_ssdp.rs` performs interface-aware SSDP
+  discovery and bounded AIOS description probing.
+- `src/infrastructure/config_yaml.rs` loads and saves the user’s receiver
+  identity without credentials.
+- `src/infrastructure/tcp_avr.rs` contains the bounded synchronous TCP adapter.
+- `src/infrastructure/avr_session.rs` owns one Tokio TCP connection,
+  serialized request writes, bounded CR framing, unsolicited-event routing,
+  structured errors, reconnect backoff, and connection-generation tracking.
+
+The canonical infrastructure adapters are the only supported concrete I/O boundary.
 
 ## Invariants
 
@@ -84,7 +84,7 @@ application -> AvrSession request queue -> session actor -> TCP 23
 
 ## Boundaries
 
-The one-shot CLI is the stable v1.0.0 user interface. The persistent session is a
+The one-shot CLI is the supported Kubernetes-style user interface. The persistent session is a
 library capability; CLI control operations are deliberately not implied by it.
 HEOS remains a separate protocol and client boundary. JSON output, additional
 zones, and broader model compatibility require their own evidence and design.
@@ -96,8 +96,7 @@ current v1 capabilities.
 
 Phase 1 reorganizes the flat crate into domain, application, protocol,
 infrastructure, and presentation layers. Application policy depends on ports
-instead of concrete YAML, SSDP, or TCP implementations; existing v1 public
-paths remain compatibility façades over the canonical layered code.
+instead of concrete YAML, SSDP, or TCP implementations; the layered modules are exposed directly without legacy façade modules.
 
 Phase 2 adds a read-only GUI and a background receiver worker that owns the
 persistent session. Iced sends connect, disconnect, and refresh intents and
@@ -113,10 +112,10 @@ query. Only live-validated X3800H controls and choice values are exposed.
 Phase 7 extracts the temporary GUI worker into an application-owned
 `ReceiverController`, extends the Phase 1 ports for long-lived lifecycle
 coordination, and completes graceful shutdown and observability. The existing
-CLI and public compatibility APIs remain supported.
+CLI and canonical layered APIs remain supported.
 
 ```text
-CLI compatibility             Iced presentation
+CLI presentation             Iced presentation
           \                     /
              ReceiverController
             /    |       |     \
@@ -132,8 +131,8 @@ invariants above and add tests before becoming a user-facing capability.
 
 ### Remaining work
 
-- Implement the Version 2 clean layered source reorganization and compatibility
-  façades defined by the Phase 1 plans.
+- Keep the Phase 1 layered source reorganization and canonical APIs
+  covered by boundary and API tests.
 - Implement the Version 2 read-only Iced GUI and configuration migration
   defined by the Phase 2 plans.
 - Add the evidence-gated, execute-once control workflow defined by the Phase 6
@@ -159,7 +158,7 @@ invariants above and add tests before becoming a user-facing capability.
 
 Project plans and milestone records live under `docs/`:
 
-- `docs/v1/`: Version 1 phase plans, architecture notes, the CLI user guide,
+- `docs/`: user guides; `docs/v1/`: Version 1 phase plans and architecture notes,
   and release notes.
 - `docs/v2/`: Version 2 layered-architecture, GUI, control, and lifecycle
   stabilization plans plus GUI guidance.

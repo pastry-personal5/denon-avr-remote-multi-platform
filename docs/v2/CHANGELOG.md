@@ -22,7 +22,7 @@ and this project adheres to Semantic Versioning.
 - Defined Phase 6 as evidence-gated X3800H main-zone control with execute-once
   delivery and authoritative confirmation.
 - Replaced the generic future GUI boundary with the phased Version 2 user and
-  compatibility contract.
+  API contract.
 
 ### Fixed
 

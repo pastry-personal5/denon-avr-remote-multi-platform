@@ -7,7 +7,7 @@ application commands, while protocol modules remain independent of sockets,
 runtimes, and operating-system services.
 
 ```text
-CLI compatibility             Iced presentation
+CLI presentation             Iced presentation
           \                     /
              ReceiverController
             /    |       |     \
@@ -36,14 +36,12 @@ and observability needed by the long-lived controller. A no-op observability
 sink is the default; alternate sinks receive structured events without
 credentials, raw configuration contents, or unnecessary network identifiers.
 
-The new interfaces are additive. Existing `ApplicationService`,
-`AsyncAvrTransport`, synchronous status functions, and CLI entry points remain
-available as compatibility wrappers or delegates.
+The new interfaces are additive. The canonical application APIs, asynchronous
+status gateways, and CLI entry points remain available directly.
 
 ## State Integration
 
-Use the typed main-zone state and compatibility conversion established in Phase
-1. Authoritative query results and unsolicited events continue to use the same
+Use the typed main-zone state and reducer established in Phase 1. Authoritative query results and unsolicited events continue to use the same
 parsers and reducer while retaining different authority markers. The controller
 must not introduce a parallel GUI-specific snapshot model containing business
 rules.

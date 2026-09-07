@@ -4,7 +4,7 @@
 
 Stabilize the controller lifecycle after the read-only and control workflows
 are behaviorally complete, without breaking the layered Phase 1 architecture,
-the v1 CLI, or existing public compatibility APIs.
+the canonical CLI or layered APIs.
 
 ## Scope
 
@@ -30,7 +30,7 @@ or add new user-facing receiver features.
   in-flight work.
 - Structured observability for connection changes, reconnects, timeouts,
   malformed frames, command confirmation, and dropped events.
-- Regression coverage proving continued v1 CLI and library compatibility.
+- Regression coverage proving continued CLI and layered-library behavior.
 
 ## Acceptance Criteria
 
@@ -42,5 +42,5 @@ or add new user-facing receiver features.
   controls whose delivery became indeterminate.
 - Controller integration does not duplicate Phase 1 status parsing or
   reduction.
-- Existing CLI commands, output contracts, and deprecated synchronous exports
+- Existing CLI commands, output contracts, and the synchronous adapter
   remain usable.
