@@ -1,5 +1,8 @@
 # Version 2 - Phase 7 Architecture
 
+Main Zone is the only supported zone in all v2 phases. Additional zones are
+excluded from the controller and GUI architecture.
+
 Phase 7 replaces the temporary GUI-owned receiver worker with an
 application-owned controller built on the Phase 1 layers. Dependencies continue
 to point inward: Iced and the CLI translate presentation intents into
@@ -19,7 +22,7 @@ CLI presentation             Iced presentation
 ## Controller Contract
 
 `ReceiverController` accepts typed commands for receiver selection, connect,
-disconnect, refresh, and the Phase 6 main-zone controls. It publishes lifecycle
+disconnect, refresh, and the Phase 3 main-zone controls. It publishes lifecycle
 changes, partial typed snapshots, field errors, freshness/authority transitions,
 and structured control outcomes. The controller owns policy for saved identity,
 discovery fallback, reconnect invalidation, confirmation, and power-on timing.
@@ -71,4 +74,4 @@ Contract fakes and a controllable clock exercise selection, reconnect,
 confirmation, cancellation, and shutdown without wall-clock sleeps. Local TCP
 tests continue to verify the real session adapter. Compatibility tests pin v1
 CLI output and public wrappers, while GUI tests verify that the thinner Iced
-adapter preserves Phase 2 and Phase 6 behavior.
+adapter preserves Phase 2 and Phase 3 behavior.

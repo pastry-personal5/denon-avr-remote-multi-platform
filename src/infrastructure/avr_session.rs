@@ -1,7 +1,8 @@
 //! Persistent asynchronous AVR TCP sessions.
 
 use crate::application::{
-    AsyncStatusGateway, BoxFuture, OperationError, OperationErrorKind, SessionEvent,
+    AsyncControlGateway, AsyncStatusGateway, BoxFuture, OperationError, OperationErrorKind,
+    SessionEvent,
 };
 use crate::domain::{
     ConnectionState, FieldError, FieldErrorKind, MainZoneEvent, MainZoneField, MainZoneSnapshot,
@@ -240,6 +241,27 @@ impl AsyncStatusGateway for AvrSession {
                     "session event stream ended",
                 )),
             }
+        })
+    }
+}
+
+impl AsyncControlGateway for AvrSession {
+    fn execute_once(
+        &mut self,
+        control: crate::domain::MainZoneControl,
+    ) -> BoxFuture<'_, Result<(), OperationError>> {
+        Box::pin(async move {
+            let command = crate::protocol::avr::encode_control(&control).map_err(|error| {
+                OperationError::new(
+                    OperationErrorKind::Malformed,
+                    "encoding control command",
+                    error.to_string(),
+                )
+            })?;
+            self.request(command.as_str())
+                .await
+                .map(|_| ())
+                .map_err(OperationError::from)
         })
     }
 }

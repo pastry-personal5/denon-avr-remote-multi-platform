@@ -1,5 +1,7 @@
 # Version 2 - Phase 2 Architecture
 
+The [Phase 2 information architecture](phase-2-information-architecture.md) defines user-facing destinations and lifecycle semantics. The [GUI design specification](phase-2-gui-design.md) defines visual composition and states.
+
 Phase 2 adds an Iced presentation edge above the layered application built in
 Phase 1. The GUI owns display state and user intent only; it does not frame
 commands, open sockets, parse receiver lines, infer capabilities, or import
@@ -14,7 +16,7 @@ so the established CLI workflow is unambiguous.
 Iced view/update
       | GUI intents and immutable updates
 receiver worker
-      | receiver selection and status operations
+      | receiver selection and Main Zone status operations
 application use cases and ports
       | concrete adapters
 infrastructure AvrSession
@@ -27,7 +29,7 @@ receiver TCP 23
 One background worker owns the `AvrSession`, receives connect, disconnect, and
 refresh intents, and publishes structured lifecycle and snapshot updates. This
 single-owner design avoids sharing the session event receiver with the Iced
-view and provides the seam where Phase 6 will add control intents.
+view and provides the seam where Phase 3 will add control intents.
 
 On connection, the worker queries all five main-zone fields and marks each
 successful value authoritative. Per-field errors remain independent. Validated
@@ -37,17 +39,34 @@ invalidates all cached authority before querying a replacement snapshot.
 
 All discovery and network work runs outside Iced's synchronous view function.
 Operations remain bounded by existing timeouts, and results are returned as
-messages rather than panics or blocking UI calls. Dropping the GUI channels
+messages rather than panics or blocking UI calls. The Iced application uses
+`boot` for initial state and configuration work, `update` for message-driven
+state transitions and one-shot `Task`s, `view` as a pure state projection, and
+`subscription` for the long-lived worker event stream. The GUI never starts a
+network future in a widget callback.
+
+Every asynchronous result carries the receiver identity, fixed Main Zone scope,
+connection generation, and request identity that produced it. The reducer
+drops results from a superseded context. The worker subscription is keyed by
+worker lifetime, not by the current field values; rebuilding it on every render
+would risk duplicate streams or lost events. These invariants are detailed in
+the [Iced implementation contract](phase-2-gui-design.md#iced-implementation-contract). Dropping the GUI channels
 ends Phase 2 work using the existing bounded session behavior; explicit
 cancellation and graceful shutdown are completed in Phase 7.
 
 ## GUI State
 
 The GUI state models receiver selection, connection lifecycle, current partial
-main-zone state, field errors, freshness, authority, and the last actionable
+Main Zone state, field errors, freshness, authority, and the last actionable
 operation error. Views derive enabled actions exclusively from that state.
 Connection and availability must be conveyed with text or accessible labels in
-addition to styling.
+addition to styling. Model connection, field availability, evidence, freshness,
+and operation outcome independently, following the
+[IA state model](phase-2-information-architecture.md#information-states-and-user-language).
+Tag asynchronous results with receiver, fixed Main Zone scope, and connection context so old
+results cannot populate a newly selected context. Focus and navigation follow
+the [GUI contract](phase-2-gui-design.md#focus-and-keyboard); network updates
+must not take over the user's current page or input.
 
 The initial flow is:
 

@@ -1,5 +1,7 @@
 # Version 2 - Phase 1 Overview
 
+Status: Complete.
+
 ## Objective
 
 Reorganize the v1 codebase into a clean layered architecture before adding the
@@ -20,11 +22,12 @@ Legacy v1 façade modules are intentionally removed; callers use the layered
 modules directly. Canonical implementation code must not depend on a
 presentation or infrastructure API.
 
-This is a behavior-preserving refactor. The following remain out of scope:
+This is a behavior-preserving refactor. Main Zone is the only supported zone in
+all v2 phases; additional zones are excluded. The following remain out of scope:
 
 - GUI implementation and platform-native configuration migration;
 - receiver control commands or execute-once command semantics;
-- new discovery behavior, status fields, zones, HEOS features, or model claims;
+- new discovery behavior, status fields, additional zones, HEOS features, or model claims;
 - removal of canonical APIs or changes to the Kubernetes-style CLI contract;
 - packaging, observability, and session lifecycle features planned for later
   phases.

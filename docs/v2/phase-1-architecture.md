@@ -1,5 +1,7 @@
 # Version 2 - Phase 1 Architecture
 
+Status: Complete. The layered source reorganization, direct public API, protocol/infrastructure boundary, and verification suite described here are implemented.
+
 Phase 1 establishes the dependency structure used by every later Version 2
 phase. Clean architecture means policy is independent of delivery frameworks
 and I/O mechanisms, not merely that files are stored in different directories.

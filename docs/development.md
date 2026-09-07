@@ -12,7 +12,7 @@ Run these from the repository root:
 
 ```text
 make check          # format, boundaries, compile, and tests
-make boundary      # verify domain/application dependency boundaries
+make boundary      # verify domain/application/protocol dependency boundaries
 make clippy         # Clippy with warnings denied
 make format         # format Rust sources
 make test           # run all tests

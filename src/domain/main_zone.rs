@@ -86,6 +86,52 @@ pub struct Volume {
     db_tenths: i16,
 }
 
+/// A receiver-independent volume level for user interfaces.
+///
+/// Values are stored in half-level steps: `0` represents 0.0 and `1000`
+/// represents 100.0. Protocol-specific volume codes never cross this boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct VolumeLevel(u16);
+
+impl VolumeLevel {
+    pub const MIN: u16 = 0;
+    pub const MAX: u16 = 1000;
+
+    pub fn new(tenths: u16) -> Result<Self, &'static str> {
+        if tenths > Self::MAX || !tenths.is_multiple_of(5) {
+            return Err("volume level must be between 0.0 and 100.0 in 0.5 steps");
+        }
+        Ok(Self(tenths))
+    }
+
+    pub fn from_native_code(code: u16) -> Result<Self, &'static str> {
+        if code > 985 || !code.is_multiple_of(5) {
+            return Err("native volume code is outside the supported range");
+        }
+        let level = ((u32::from(code) * u32::from(Self::MAX) + 492) / 985) as u16;
+        Self::new((level / 5) * 5)
+    }
+
+    pub fn tenths(self) -> u16 {
+        self.0
+    }
+
+    pub fn as_f32(self) -> f32 {
+        self.0 as f32 / 10.0
+    }
+
+    pub fn to_native_code(self) -> u16 {
+        let raw = (u32::from(self.0) * 985 + 500) / 1000;
+        (((raw + 2) / 5) * 5) as u16
+    }
+}
+
+impl fmt::Display for VolumeLevel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:.1}", self.as_f32())
+    }
+}
+
 impl Volume {
     pub fn from_parts(code: impl Into<String>, db_tenths: i16) -> Self {
         Self {
@@ -100,6 +146,15 @@ impl Volume {
 
     pub fn db_tenths(&self) -> i16 {
         self.db_tenths
+    }
+
+    pub fn native_code(&self) -> u16 {
+        let base = self.code.trim_end_matches('5').parse::<u16>().unwrap_or(0);
+        base * 10 + u16::from(self.code.ends_with('5')) * 5
+    }
+
+    pub fn level(&self) -> Result<VolumeLevel, &'static str> {
+        VolumeLevel::from_native_code(self.native_code())
     }
 }
 
@@ -148,6 +203,15 @@ pub enum MainZoneValue {
     Power(PowerState),
     Input(Input),
     Volume(Volume),
+    Mute(MuteState),
+    SurroundMode(SurroundMode),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MainZoneControl {
+    Power(PowerState),
+    Input(Input),
+    Volume(VolumeLevel),
     Mute(MuteState),
     SurroundMode(SurroundMode),
 }
@@ -224,6 +288,7 @@ pub struct MainZoneSnapshot {
     pub surround_mode: FieldStatus<SurroundMode>,
     pub freshness: Freshness,
     pub authority: StateAuthority,
+    resource_version: u64,
 }
 
 impl Default for MainZoneSnapshot {
@@ -236,17 +301,30 @@ impl Default for MainZoneSnapshot {
             surround_mode: FieldStatus::Unavailable(not_queried()),
             freshness: Freshness::Unknown,
             authority: StateAuthority::Unconfirmed,
+            resource_version: 0,
         }
     }
 }
 
 impl MainZoneSnapshot {
     pub fn invalidate(&mut self) {
+        let version = self.resource_version.saturating_add(1);
         *self = Self::default();
         self.freshness = Freshness::Invalidated;
+        self.resource_version = version;
     }
 
     pub fn set_value(&mut self, value: MainZoneValue, authority: StateAuthority) {
+        let field = match &value {
+            MainZoneValue::Power(_) => MainZoneField::Power,
+            MainZoneValue::Input(_) => MainZoneField::Input,
+            MainZoneValue::Volume(_) => MainZoneField::Volume,
+            MainZoneValue::Mute(_) => MainZoneField::Mute,
+            MainZoneValue::SurroundMode(_) => MainZoneField::SurroundMode,
+        };
+        if self.value(field).as_ref() != Some(&value) {
+            self.resource_version = self.resource_version.saturating_add(1);
+        }
         match value {
             MainZoneValue::Power(value) => self.power = FieldStatus::Value(value),
             MainZoneValue::Input(value) => self.input = FieldStatus::Value(value),
@@ -259,6 +337,26 @@ impl MainZoneSnapshot {
     }
 
     pub fn set_error(&mut self, field: MainZoneField, error: FieldError) {
+        let changed = match field {
+            MainZoneField::Power => {
+                !matches!(&self.power, FieldStatus::Unavailable(old) if old == &error)
+            }
+            MainZoneField::Input => {
+                !matches!(&self.input, FieldStatus::Unavailable(old) if old == &error)
+            }
+            MainZoneField::Volume => {
+                !matches!(&self.volume, FieldStatus::Unavailable(old) if old == &error)
+            }
+            MainZoneField::Mute => {
+                !matches!(&self.mute, FieldStatus::Unavailable(old) if old == &error)
+            }
+            MainZoneField::SurroundMode => {
+                !matches!(&self.surround_mode, FieldStatus::Unavailable(old) if old == &error)
+            }
+        };
+        if changed {
+            self.resource_version = self.resource_version.saturating_add(1);
+        }
         match field {
             MainZoneField::Power => self.power = FieldStatus::Unavailable(error),
             MainZoneField::Input => self.input = FieldStatus::Unavailable(error),
@@ -310,6 +408,10 @@ impl MainZoneSnapshot {
                 .map(MainZoneValue::SurroundMode),
         }
     }
+
+    pub fn resource_version(&self) -> u64 {
+        self.resource_version
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -353,5 +455,18 @@ mod tests {
             .apply_authoritative_event(MainZoneEvent::Changed(MainZoneValue::Mute(MuteState::Off)));
         assert_eq!(state.mute.value(), Some(&MuteState::Off));
         assert_eq!(state.authority, StateAuthority::Authoritative);
+    }
+
+    #[test]
+    fn volume_level_round_trips_native_endpoints_and_half_steps() {
+        let minimum = VolumeLevel::new(0).unwrap();
+        let midpoint = VolumeLevel::new(500).unwrap();
+        let maximum = VolumeLevel::new(1000).unwrap();
+        assert_eq!(minimum.to_native_code(), 0);
+        assert_eq!(midpoint.to_native_code(), 495);
+        assert_eq!(maximum.to_native_code(), 985);
+        assert_eq!(VolumeLevel::from_native_code(0).unwrap(), minimum);
+        assert_eq!(VolumeLevel::from_native_code(985).unwrap(), maximum);
+        assert!(VolumeLevel::new(501).is_err());
     }
 }

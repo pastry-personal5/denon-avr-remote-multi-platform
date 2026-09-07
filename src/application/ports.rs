@@ -23,6 +23,7 @@ pub enum OperationErrorKind {
     Unavailable,
     Unsupported,
     Stopped,
+    Conflict,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -88,6 +89,22 @@ pub trait StatusGateway {
     fn query_field(&mut self, field: MainZoneField) -> Result<MainZoneValue, OperationError>;
     fn connection_generation(&self) -> u64;
     fn next_event(&mut self, timeout: Option<Duration>) -> Result<SessionEvent, OperationError>;
+}
+
+/// A write-only boundary for state-changing commands. Implementations must
+/// never retry a command after dispatch has begun.
+pub trait ControlGateway {
+    fn execute_once(
+        &mut self,
+        control: crate::domain::MainZoneControl,
+    ) -> Result<(), OperationError>;
+}
+
+pub trait AsyncControlGateway: Send {
+    fn execute_once(
+        &mut self,
+        control: crate::domain::MainZoneControl,
+    ) -> BoxFuture<'_, Result<(), OperationError>>;
 }
 
 pub trait AsyncStatusGateway: Send {

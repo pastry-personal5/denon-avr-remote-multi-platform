@@ -94,3 +94,25 @@ fn unexpected(field: MainZoneField, response: &str) -> AvrProtocolError {
         response: response.to_owned(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn response_family_is_the_command_prefix_before_query_marker() {
+        assert_eq!(get_command_family("SI?"), "SI");
+        assert_eq!(get_command_family("Z2?"), "Z2");
+        assert_eq!(get_command_family("CUSTOM"), "CUSTOM");
+    }
+
+    #[test]
+    fn response_matching_rejects_wrong_or_malformed_families() {
+        assert!(response_matches("SI", "SICD"));
+        assert!(!response_matches("SI", "MSSTEREO"));
+        assert!(response_matches("MV", "MV---"));
+        assert!(response_matches("MV", "MV805"));
+        assert!(!response_matches("MV", "MV80.5"));
+        assert!(!response_matches("MV", "MVMAX 615"));
+    }
+}

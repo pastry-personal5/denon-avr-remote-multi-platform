@@ -11,11 +11,12 @@ pub mod protocol;
 pub use application::{query_main_zone_status, query_main_zone_status_async};
 
 pub use application::ports::{
-    AsyncConfigRepository, AsyncReceiverDiscovery, AsyncStatusGateway, BoxFuture, ConfigRepository,
-    OperationError, OperationErrorKind, ReceiverDiscovery, SessionEvent, StatusGateway,
+    AsyncConfigRepository, AsyncControlGateway, AsyncReceiverDiscovery, AsyncStatusGateway,
+    BoxFuture, ConfigRepository, ControlGateway, OperationError, OperationErrorKind,
+    ReceiverDiscovery, SessionEvent, StatusGateway,
 };
 pub use domain::{
     ConfiguredReceivers, ConnectionState, DiscoveredReceiver, FieldError, FieldErrorKind,
-    FieldStatus, Input, MainZoneField, MainZoneSnapshot, MainZoneValue, MuteState, PowerState,
-    ReceiverEndpoint, SurroundMode, Volume,
+    FieldStatus, Input, MainZoneControl, MainZoneField, MainZoneSnapshot, MainZoneValue, MuteState,
+    PowerState, ReceiverEndpoint, SurroundMode, Volume, VolumeLevel,
 };

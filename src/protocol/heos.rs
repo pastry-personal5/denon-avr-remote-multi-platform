@@ -80,4 +80,36 @@ mod tests {
     fn command_requires_heos_scheme() {
         assert!(HeosCommand::new("player/get_players").is_err());
     }
+
+    #[test]
+    fn command_rejects_line_breaks() {
+        assert!(matches!(
+            HeosCommand::new("heos://player/get_players\n"),
+            Err(HeosProtocolError::InvalidCommand)
+        ));
+    }
+
+    #[test]
+    fn parser_preserves_json_and_raw_lines() {
+        assert_eq!(
+            parse_heos_line(b"{\"heos\":{\"result\":\"success\"}}\r\n").unwrap(),
+            HeosLine::Json("{\"heos\":{\"result\":\"success\"}}".into())
+        );
+        assert_eq!(
+            parse_heos_line(b"event/player_state_changed\r\n").unwrap(),
+            HeosLine::Raw("event/player_state_changed".into())
+        );
+    }
+
+    #[test]
+    fn parser_rejects_invalid_utf8_and_empty_lines() {
+        assert!(matches!(
+            parse_heos_line(&[0xff]),
+            Err(HeosProtocolError::InvalidUtf8)
+        ));
+        assert!(matches!(
+            parse_heos_line(b"\r\n"),
+            Err(HeosProtocolError::EmptyLine)
+        ));
+    }
 }

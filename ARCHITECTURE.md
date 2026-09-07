@@ -52,6 +52,16 @@ appearing in reference documentation is not, by itself, an enabled capability.
 
 The canonical infrastructure adapters are the only supported concrete I/O boundary.
 
+### Crate boundary decision
+
+Phase 1 intentionally remains one Cargo package with module-level layers. The
+protocol and domain modules are transport-independent, and the boundary check
+rejects runtime, filesystem, socket, and infrastructure imports there. Separate
+workspace crates are not justified yet: they would add public-surface and
+composition overhead without changing the current dependency rules. Introduce
+a dedicated core crate only if a future feature requires independent release,
+independent dependency resolution, or reuse by another package.
+
 ## Invariants
 
 1. AVR commands end in exactly one CR; HEOS commands end in CRLF.
@@ -94,7 +104,7 @@ zones, and broader model compatibility require their own evidence and design.
 Version 2 has four defined milestones. These are planned boundaries, not
 current v1 capabilities.
 
-Phase 1 reorganizes the flat crate into domain, application, protocol,
+Phase 1 has reorganized the flat crate into domain, application, protocol,
 infrastructure, and presentation layers. Application policy depends on ports
 instead of concrete YAML, SSDP, or TCP implementations; the layered modules are exposed directly without legacy façade modules.
 
@@ -104,7 +114,7 @@ receives immutable lifecycle and partial-state updates. Both CLI and GUI use a
 platform-native configuration file after a non-destructive one-time import of
 the legacy relative YAML file.
 
-Phase 6 adds typed main-zone controls and an execute-once transport path.
+Phase 3 adds typed main-zone controls and an execute-once transport path.
 Read-only queries may repeat after reconnect; state-changing commands never do.
 Each command is capability-gated, serialized, and followed by an authoritative
 query. Only live-validated X3800H controls and choice values are exposed.
@@ -131,12 +141,8 @@ invariants above and add tests before becoming a user-facing capability.
 
 ### Remaining work
 
-- Keep the Phase 1 layered source reorganization and canonical APIs
-  covered by boundary and API tests.
 - Implement the Version 2 read-only Iced GUI and configuration migration
   defined by the Phase 2 plans.
-- Add the evidence-gated, execute-once control workflow defined by the Phase 6
-  plans.
 - Extract the reusable controller, injectable edges, cancellation, graceful
   shutdown, and observability defined by the Phase 7 plans.
 - Add property/fuzz tests for CR framing, malformed UTF-8, oversized frames,

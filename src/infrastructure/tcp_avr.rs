@@ -1,10 +1,12 @@
 //! Synchronous TCP AVR adapter.
 
-use crate::application::{OperationError, OperationErrorKind, SessionEvent, StatusGateway};
-use crate::domain::{MainZoneEvent, MainZoneField, MainZoneValue};
+use crate::application::{
+    ControlGateway, OperationError, OperationErrorKind, SessionEvent, StatusGateway,
+};
+use crate::domain::{MainZoneControl, MainZoneEvent, MainZoneField, MainZoneValue};
 use crate::protocol::avr::{
-    get_command_family, parse_main_zone_event, parse_main_zone_response, query_command,
-    response_matches, AvrCommand,
+    encode_control, get_command_family, parse_main_zone_event, parse_main_zone_response,
+    query_command, response_matches, AvrCommand,
 };
 use std::collections::VecDeque;
 use std::io::{BufReader, Read, Write};
@@ -84,6 +86,16 @@ impl SyncAvrClient {
             self.events.push_back(session_event(&line));
         }
     }
+
+    /// Dispatch one already-validated command without waiting for a reply.
+    /// This is intended for the one-shot CLI; callers must obtain confirmation
+    /// with a later status query.
+    pub fn send_once(&mut self, command: &AvrCommand) -> Result<(), OperationError> {
+        self.stream
+            .get_mut()
+            .write_all(&command.as_bytes())
+            .map_err(|e| connection_error("dispatching AVR command", e))
+    }
     fn read_line(&mut self, timeout: Option<Duration>) -> Result<String, OperationError> {
         self.stream
             .get_mut()
@@ -147,6 +159,19 @@ impl StatusGateway for SyncAvrClient {
             MainZoneEvent::Unknown(line) => SessionEvent::MainZone(MainZoneEvent::Unknown(line)),
             event => SessionEvent::MainZone(event),
         })
+    }
+}
+
+impl ControlGateway for SyncAvrClient {
+    fn execute_once(&mut self, control: MainZoneControl) -> Result<(), OperationError> {
+        let command = encode_control(&control).map_err(|error| {
+            OperationError::new(
+                OperationErrorKind::Malformed,
+                "encoding control command",
+                error.to_string(),
+            )
+        })?;
+        self.request_raw(command.as_str()).map(|_| ())
     }
 }
 fn session_event(line: &str) -> SessionEvent {

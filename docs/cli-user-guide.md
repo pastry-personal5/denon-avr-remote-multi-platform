@@ -1,9 +1,10 @@
 # CLI User Guide
 
-The `denon-avr-remote` CLI discovers Denon and Marantz receivers and displays
-read-only main-zone status. The validated project target is the Denon
-AVR-X3800H. The CLI does not change receiver state, control HEOS, or promise
-compatibility with unvalidated models.
+The `denon-avr-remote` CLI discovers Denon and Marantz receivers, displays
+Main Zone status, and provides capability-gated controls for the validated
+Denon AVR-X3800H. State-changing commands dispatch once and report that they
+are not confirmed; run a later status command to verify the receiver state.
+The CLI does not control HEOS or promise compatibility with unvalidated models.
 
 ## Requirements
 
@@ -18,7 +19,9 @@ Use `make run ARGS="..."` when preferred.
 
 ```text
 denon-avr-remote help
+denon-avr-remote --version
 denon-avr-remote get receivers
+denon-avr-remote get capabilities [--host HOST | --receiver N]
 denon-avr-remote get status
 denon-avr-remote get status --receiver <number>
 denon-avr-remote get status --host <receiver-ip-or-host>
@@ -27,12 +30,20 @@ denon-avr-remote get input [--host HOST | --receiver N]
 denon-avr-remote get volume [--host HOST | --receiver N]
 denon-avr-remote get mute [--host HOST | --receiver N]
 denon-avr-remote get surround [--host HOST | --receiver N]
+denon-avr-remote get level [--host HOST | --receiver N]
+denon-avr-remote set power on [--resource-version N] [--host HOST | --receiver N]
+denon-avr-remote set input CD [--resource-version N] [--host HOST | --receiver N]
+denon-avr-remote set volume 50.0 [--resource-version N] [--host HOST | --receiver N]
+denon-avr-remote set level 50.0 [--resource-version N] [--host HOST | --receiver N]
+denon-avr-remote set mute off [--resource-version N] [--host HOST | --receiver N]
+denon-avr-remote set surround STEREO [--resource-version N] [--host HOST | --receiver N]
 ```
 
-`surround-mode` is accepted as an alias for `surround`. `get receivers` does
-not accept receiver selectors. All other resources use the saved receiver when
-possible, fall back to discovery when necessary, and accept either `--host`
-or `--receiver N`; the two selectors cannot be combined.
+`level` is an alias for `volume`, and `surround-mode` is an alias for
+`surround`. Power accepts `off` as an alias for `standby`. `get receivers` does
+not accept receiver selectors. Read resources use the saved receiver when
+possible and fall back to discovery; writes use the saved receiver only unless
+`--host` or `--receiver N` is supplied. The two selectors cannot be combined.
 
 ## Discovering receivers
 
@@ -61,12 +72,37 @@ cargo run -- get power --host 192.0.2.10
 ```
 
 `get status` preserves the complete status output, reporting power, input,
-volume, mute, and surround mode independently. The individual resources print
-the corresponding line using the same labels and value formatting. An
+volume level, mute, and surround mode independently. The individual resources
+print the corresponding line using the same labels and value formatting. An
 unavailable field is reported as unavailable rather than replaced with an
-invented value.
+invented value. Every successful read prints the receiver target and snapshot
+resource version; use that version with `set`.
 
-Invalid arguments or failed operations exit non-zero and print usage guidance.
+`get capabilities` lists the validated writable operations and exact input and
+surround values. An unknown model returns a successful read-only report with
+no writable capabilities.
+
+## Controlling the Main Zone
+
+The `set` command accepts one operation per invocation. Power values are `on`
+and `off` (`standby` is also accepted); mute values are `on` and `off`.
+Volume level accepts 0.0 through 100.0 in 0.5 steps, and `level` is an alias
+for the volume operation. Input and surround values must exactly match the
+allowlist shown by `get capabilities`.
+
+Before dispatch, `set` performs a fresh status preflight. If
+`--resource-version` is supplied, it compares it with the live version; when
+omitted, the live preflight version is used automatically. A mismatch,
+unavailable preflight,
+unsupported model, or invalid value prevents all state-changing traffic. A
+matching value is reported as a no-op. `--dry-run` validates and prints the
+planned receiver action without dispatching it. A live command sends exactly
+once and prints that it is unconfirmed;
+run `get status` to check the resulting state.
+
+Results are printed on stdout and diagnostics on stderr. Exit status `0` means
+success; parse, validation, receiver, stale-version, transport, and unsupported
+outcomes return exit status `2` and print usage guidance.
 
 ## Configuration
 
@@ -90,5 +126,6 @@ replacement flow.
   unsuitable for the bounded discovery fallback.
 - If only some fields are unavailable, the receiver may omit or delay those
   responses; other fields remain valid.
-- See the [Phase 1 architecture](v1/phase-1-architecture.md) and [Phase 2
-overview](v2/phase-2-overview.md) for evidence and validation boundaries.
+- See the [Phase 1 architecture](v1/phase-1-architecture.md), [Phase 2
+overview](v2/phase-2-overview.md), and [Phase 3 overview](v2/phase-3-overview.md)
+for evidence and validation boundaries.

@@ -1,5 +1,13 @@
 # Version 2 - Phase 2 Overview
 
+The [information architecture specification](phase-2-information-architecture.md) is authoritative for destinations, content priority, and flows. The [GUI design specification](phase-2-gui-design.md) is authoritative for layout, visual states, and interaction.
+
+The specifications distinguish the planned Phase 2 read-only Main Zone
+experience from later Main Zone controls. Their
+[delivery matrix](phase-2-information-architecture.md#delivery-and-product-boundaries)
+and [usability criteria](phase-2-information-architecture.md#usability-acceptance)
+make those boundaries and user outcomes explicit.
+
 ## Objective
 
 Deliver a buildable native desktop application that presents the existing
@@ -19,7 +27,7 @@ Both the CLI and GUI move to one platform-native configuration location. If
 that file does not exist, a valid legacy `config/denon-avr-remote.yaml` is
 imported once and left intact. An existing platform configuration always wins.
 
-Phase 2 is read-only. Receiver control, HEOS, additional zones, JSON or HTTP
+Phase 2 is read-only and Main Zone only. Receiver control, HEOS, additional zones, JSON or HTTP
 APIs, browser and mobile clients, credentials, installers, signing,
 notarization, auto-update, and a cross-platform CI build matrix remain out of
 scope. The deliverable is buildable source, not packaged release artifacts.

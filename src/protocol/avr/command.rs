@@ -1,6 +1,6 @@
 //! AVR command validation and framing.
 
-use crate::domain::MainZoneField;
+use crate::domain::{MainZoneControl, MainZoneField, MuteState, PowerState};
 use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,6 +61,32 @@ pub fn encode_volume(db_tenths: i16) -> Result<AvrCommand, AvrProtocolError> {
         format!("{base:02}5")
     };
     AvrCommand::new(format!("MV{code}"))
+}
+
+pub fn encode_native_volume(code: u16) -> Result<AvrCommand, AvrProtocolError> {
+    if code > 985 || !code.is_multiple_of(5) {
+        return Err(AvrProtocolError::InvalidVolume(
+            "volume code is outside AVR code range",
+        ));
+    }
+    let command = if code % 10 == 5 {
+        format!("MV{:02}5", code / 10)
+    } else {
+        format!("MV{:02}", code / 10)
+    };
+    AvrCommand::new(command)
+}
+
+pub fn encode_control(control: &MainZoneControl) -> Result<AvrCommand, AvrProtocolError> {
+    match control {
+        MainZoneControl::Power(PowerState::On) => AvrCommand::new("PWON"),
+        MainZoneControl::Power(PowerState::Standby) => AvrCommand::new("PWSTANDBY"),
+        MainZoneControl::Input(value) => AvrCommand::new(format!("SI{}", value.as_str())),
+        MainZoneControl::Volume(value) => encode_native_volume(value.to_native_code()),
+        MainZoneControl::Mute(MuteState::On) => AvrCommand::new("MUON"),
+        MainZoneControl::Mute(MuteState::Off) => AvrCommand::new("MUOFF"),
+        MainZoneControl::SurroundMode(value) => AvrCommand::new(format!("MS{}", value.as_str())),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -136,5 +162,70 @@ mod tests {
     fn encodes_volume_in_half_db_steps() {
         assert_eq!(encode_volume(5).unwrap().as_str(), "MV805");
         assert!(encode_volume(3).is_err());
+    }
+
+    #[test]
+    fn encodes_typed_main_zone_controls() {
+        use crate::domain::{
+            Input, MainZoneControl, MuteState, PowerState, SurroundMode, VolumeLevel,
+        };
+        assert_eq!(
+            encode_control(&MainZoneControl::Power(PowerState::On))
+                .unwrap()
+                .as_str(),
+            "PWON"
+        );
+        assert_eq!(
+            encode_control(&MainZoneControl::Power(PowerState::Standby))
+                .unwrap()
+                .as_str(),
+            "PWSTANDBY"
+        );
+        assert_eq!(
+            encode_control(&MainZoneControl::Input(Input::new("CD").unwrap()))
+                .unwrap()
+                .as_str(),
+            "SICD"
+        );
+        assert_eq!(
+            encode_control(&MainZoneControl::Volume(VolumeLevel::new(500).unwrap()))
+                .unwrap()
+                .as_str(),
+            "MV495"
+        );
+        assert_eq!(
+            encode_control(&MainZoneControl::Mute(MuteState::Off))
+                .unwrap()
+                .as_str(),
+            "MUOFF"
+        );
+        assert_eq!(
+            encode_control(&MainZoneControl::SurroundMode(
+                SurroundMode::new("STEREO").unwrap()
+            ))
+            .unwrap()
+            .as_str(),
+            "MSSTEREO"
+        );
+    }
+
+    #[test]
+    fn command_rejects_line_breaks_and_empty_values() {
+        assert!(matches!(
+            AvrCommand::new("SI?\r"),
+            Err(AvrProtocolError::InvalidCommand(_))
+        ));
+        assert!(matches!(
+            AvrCommand::new(""),
+            Err(AvrProtocolError::InvalidCommand(_))
+        ));
+    }
+
+    #[test]
+    fn query_commands_cover_each_main_zone_field() {
+        assert_eq!(query_command(MainZoneField::Input).as_str(), "SI?");
+        assert_eq!(query_command(MainZoneField::Volume).as_str(), "MV?");
+        assert_eq!(query_command(MainZoneField::Mute).as_str(), "MU?");
+        assert_eq!(query_command(MainZoneField::SurroundMode).as_str(), "MS?");
     }
 }
