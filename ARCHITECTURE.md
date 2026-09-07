@@ -89,6 +89,42 @@ library capability; CLI control operations are deliberately not implied by it.
 HEOS remains a separate protocol and client boundary. JSON output, additional
 zones, and broader model compatibility require their own evidence and design.
 
+## Version 2 Planned Architecture
+
+Version 2 has four defined milestones. These are planned boundaries, not
+current v1 capabilities.
+
+Phase 1 reorganizes the flat crate into domain, application, protocol,
+infrastructure, and presentation layers. Application policy depends on ports
+instead of concrete YAML, SSDP, or TCP implementations; existing v1 public
+paths remain compatibility façades over the canonical layered code.
+
+Phase 2 adds a read-only GUI and a background receiver worker that owns the
+persistent session. Iced sends connect, disconnect, and refresh intents and
+receives immutable lifecycle and partial-state updates. Both CLI and GUI use a
+platform-native configuration file after a non-destructive one-time import of
+the legacy relative YAML file.
+
+Phase 6 adds typed main-zone controls and an execute-once transport path.
+Read-only queries may repeat after reconnect; state-changing commands never do.
+Each command is capability-gated, serialized, and followed by an authoritative
+query. Only live-validated X3800H controls and choice values are exposed.
+
+Phase 7 extracts the temporary GUI worker into an application-owned
+`ReceiverController`, extends the Phase 1 ports for long-lived lifecycle
+coordination, and completes graceful shutdown and observability. The existing
+CLI and public compatibility APIs remain supported.
+
+```text
+CLI compatibility             Iced presentation
+          \                     /
+             ReceiverController
+            /    |       |     \
+      discovery config transport observability
+                         |
+                     AVR session
+```
+
 ## Architecture TODO
 
 The following work is intentionally deferred. Each item should preserve the
@@ -96,19 +132,21 @@ invariants above and add tests before becoming a user-facing capability.
 
 ### Remaining work
 
-- Add cancellation and graceful shutdown to `AvrSession`, including clear
-  behavior for queued requests when a session stops.
-- Make discovery and description scanning independently injectable and expose
-  scan limits/configuration at the application boundary.
+- Implement the Version 2 clean layered source reorganization and compatibility
+  façades defined by the Phase 1 plans.
+- Implement the Version 2 read-only Iced GUI and configuration migration
+  defined by the Phase 2 plans.
+- Add the evidence-gated, execute-once control workflow defined by the Phase 6
+  plans.
+- Extract the reusable controller, injectable edges, cancellation, graceful
+  shutdown, and observability defined by the Phase 7 plans.
 - Add property/fuzz tests for CR framing, malformed UTF-8, oversized frames,
   response correlation, and configuration parsing.
 - Define a capability registry keyed by model and firmware evidence instead of
   expanding a single placeholder record.
 
-### Before broader product scope
+### After the Version 2 roadmap
 
-- Design explicit control operations with safety rules, one-second power-on
-  sequencing, idempotency, and confirmation queries.
 - Implement HEOS as a separate async client with JSON envelope parsing,
   player identity, event registration, and reconnect refresh.
 - Decide whether JSON output belongs in a versioned CLI contract.
@@ -123,7 +161,8 @@ Project plans and milestone records live under `docs/`:
 
 - `docs/v1/`: Version 1 phase plans, architecture notes, the CLI user guide,
   and release notes.
-- `docs/v2/`: Version 2 phase plans, architecture notes, and future GUI guidance.
+- `docs/v2/`: Version 2 layered-architecture, GUI, control, and lifecycle
+  stabilization plans plus GUI guidance.
 - `docs/archive/`: retired or superseded documentation; it is not active scope.
 
 Active phase files use `phase-<number>-<topic>.md`; phase directories are not

@@ -10,7 +10,13 @@ and this project adheres to Semantic Versioning.
 
 ### Added
 
+- Added the Version 2 layered-architecture, GUI, control, and lifecycle
+  stabilization roadmap.
+
 ### Changed
+
+- Updated the root architecture and documentation navigation for the active
+  Version 2 phase plan.
 
 ### Fixed
 

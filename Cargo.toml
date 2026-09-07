@@ -1,15 +1,26 @@
+[workspace]
+members = [".", "crates/core", "crates/platform"]
+resolver = "2"
+
+[workspace.package]
+version = "2.0.0-alpha.1"
+edition = "2021"
+license = "All Rights Reserved"
+
 [package]
 name = "denon-avr-remote"
 version = "1.0.0"
 edition = "2021"
 description = "Denon and Marantz AVR IP control library"
-license = "MIT"
+license = "All Rights Reserved"
 
 [lib]
 name = "denon_avr_remote"
 path = "src/lib.rs"
 
 [dependencies]
+denon-avr-core = { path = "crates/core", version = "=2.0.0-alpha.1" }
+denon-avr-platform = { path = "crates/platform", version = "=2.0.0-alpha.1" }
 if-addrs = "0.15"
 serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"

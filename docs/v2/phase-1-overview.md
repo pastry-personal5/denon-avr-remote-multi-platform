@@ -2,12 +2,80 @@
 
 ## Objective
 
-<!-- Describe the primary objective of Version 2 Phase 1. -->
+Reorganize the v1 codebase into a clean layered architecture before adding the
+Version 2 GUI. Improve cohesion, naming, dependency direction, error handling,
+and testability without changing receiver behavior, CLI output, configuration
+semantics, or supported capabilities.
 
 ## Scope
 
-<!-- Define what is and is not included in this phase. -->
+Phase 1 separates the crate into domain, application, protocol, infrastructure,
+and presentation layers. Existing flat source files may be renamed or split
+when they currently mix responsibilities. Internal code moves to typed domain
+values and errors, application use cases depend on ports rather than concrete
+filesystem or network implementations, and the CLI becomes a composition and
+presentation boundary.
+
+Existing v1 public imports remain source-compatible through thin re-export or
+delegating façades. Compatibility code may call the new canonical
+implementation, but canonical implementation code must not depend on a
+compatibility façade.
+
+This is a behavior-preserving refactor. The following remain out of scope:
+
+- GUI implementation and platform-native configuration migration;
+- receiver control commands or execute-once command semantics;
+- new discovery behavior, status fields, zones, HEOS features, or model claims;
+- removal of deprecated APIs or changes to established CLI text and exit codes;
+- packaging, observability, and session lifecycle features planned for later
+  phases.
 
 ## Key Deliverables
 
-<!-- List the major deliverables of this phase. -->
+- A documented source tree with enforced inward dependency direction.
+- Pure domain types for receiver identity, capabilities, main-zone values,
+  partial snapshots, freshness, authority, and typed events.
+- Application ports for configuration, discovery, and main-zone status access,
+  plus focused receiver-selection and status-query use cases.
+- Transport-independent AVR and HEOS protocol modules separated from Tokio,
+  sockets, filesystem access, CLI rendering, and operating-system discovery.
+- Infrastructure adapters for YAML configuration, SSDP discovery, persistent
+  AVR sessions, and the synchronous compatibility TCP path.
+- A CLI composition root with parsing, rendering, and process exit behavior
+  separated from application policy.
+- One canonical main-zone field plan, parser set, and reducer shared by the
+  asynchronous use case and synchronous compatibility adapter.
+- Structured internal errors with operation context; string conversion occurs
+  only at presentation or compatibility boundaries.
+
+## Acceptance Criteria
+
+- Domain and application modules do not import Tokio, sockets, filesystem APIs,
+  serde/YAML, SSDP implementation details, or CLI code.
+- Application use cases are constructible with deterministic fake ports and do
+  not call concrete configuration, discovery, or transport functions directly.
+- Protocol modules remain usable without a network connection or async runtime.
+- Infrastructure implements application ports and contains all concrete I/O.
+- Internal imports use canonical layered modules rather than compatibility
+  paths.
+- The five-field definition, parsing, and reduction are implemented once and
+  still preserve independent field failures and reconnect authority rules.
+- Existing crate-root exports, documented module imports, CLI output, config
+  shape/path, command framing, and timeout behavior continue to pass regression
+  tests.
+- `make check`, `make clippy`, and `git diff --check` pass after obsolete flat
+  implementations are removed.
+
+## Implementation Order
+
+1. Introduce the target modules and pure typed domain model.
+2. Move AVR/HEOS framing and parsing into the protocol layer.
+3. Define application ports and move selection/status orchestration into use
+   cases with fake-port tests.
+4. Move YAML, SSDP, TCP, and Tokio implementations behind those ports.
+5. Move CLI dispatch and rendering into the binary presentation boundary.
+6. Reduce the old root modules to public compatibility façades, redirect old
+   APIs to canonical code, and remove superseded implementations and duplicate
+   tests.
+7. Update `AGENTS.md`, `ARCHITECTURE.md`, and development documentation to the
+   implemented source map and commands.
