@@ -121,7 +121,8 @@ invariants above and add tests before becoming a user-facing capability.
 
 Project plans and milestone records live under `docs/`:
 
-- `docs/v1/`: Version 1 phase plans, architecture notes, and the CLI user guide.
+- `docs/v1/`: Version 1 phase plans, architecture notes, the CLI user guide,
+  and release notes.
 - `docs/v2/`: Version 2 phase plans, architecture notes, and future GUI guidance.
 - `docs/archive/`: retired or superseded documentation; it is not active scope.
 

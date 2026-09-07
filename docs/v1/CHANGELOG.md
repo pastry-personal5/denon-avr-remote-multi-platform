@@ -10,16 +10,20 @@ and this project adheres to Semantic Versioning.
 
 ### Added
 
+### Changed
+
+### Fixed
+
+## [1.0.0] - 2026-09-07
+
+### Added
+
+- Initial Version 1 documentation structure and baseline.
 - Added the Version 1 CLI user guide.
+- Added the Version 1.0.0 release notes.
 
 ### Changed
 
 - Updated Version 1 documentation links and current CLI scope.
 
 ### Fixed
-
-## [0.1.0] - 2026-09-07
-
-### Added
-
-- Initial Version 1 documentation structure and baseline.

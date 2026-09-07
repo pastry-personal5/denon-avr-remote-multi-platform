@@ -10,6 +10,15 @@ and this project adheres to Semantic Versioning.
 
 ### Added
 
+### Changed
+
+### Fixed
+
+## [1.0.0] - 2026-09-07
+
+### Added
+
+- Initial Version 2 documentation structure and baseline.
 - Added a future GUI user guide defining the proposed scope and boundaries.
 
 ### Changed
@@ -18,9 +27,3 @@ and this project adheres to Semantic Versioning.
   implementation.
 
 ### Fixed
-
-## [0.1.0] - 2026-09-07
-
-### Added
-
-- Initial Version 2 documentation structure and baseline.

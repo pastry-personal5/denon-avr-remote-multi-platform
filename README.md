@@ -20,4 +20,5 @@ Documentation:
 - [Architecture](ARCHITECTURE.md)
 - [CLI user guide](docs/v1/cli-user-guide.md)
 - [Version 1 documentation](docs/v1/phase-1-overview.md)
+- [Version 1.0.0 release notes](docs/v1/RELEASE_NOTES.md)
 - [Future GUI guide](docs/v2/gui-user-guide.md)

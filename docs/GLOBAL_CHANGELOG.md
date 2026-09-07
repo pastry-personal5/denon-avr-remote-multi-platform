@@ -10,22 +10,28 @@ and this project adheres to Semantic Versioning.
 
 ### Added
 
+### Changed
+
+### Fixed
+
+## [1.0.0] - 2026-09-07
+
+### Added
+
+- Initial documentation structure and baseline.
 - Added the development guide.
 - Added the standalone contribution guide.
 - Added the Version 1 CLI user guide and Version 2 future GUI user guide.
+- Added the Version 1.0.0 release notes.
 
 ### Changed
 
 - Updated active documentation links and architecture guidance to match the
   canonical version and archive hierarchy.
+- Renamed the 0.1.0 documentation baseline release to 1.0.0 and recorded it as
+  the Version 1.0.0 freeze.
 
 ### Fixed
-
-## [0.1.0] - 2026-09-07
-
-### Added
-
-- Initial documentation structure and baseline.
 
 ## Documentation hierarchy exception
 
