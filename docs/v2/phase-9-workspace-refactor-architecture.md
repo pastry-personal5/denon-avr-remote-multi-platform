@@ -1,6 +1,6 @@
 # Version 2 - Phase 9 Architecture
 
-**Status: Planned — begins after completed Phase 8.**
+**Status: Implemented.**
 
 ```text
 apps/cli ───────────────┐
@@ -18,7 +18,7 @@ apps/desktop ──> gui ───┘          ^                 ^
 | `denon-avr-protocol` | Rust standard library | AVR, HEOS, and AppCommand framing/parsing. |
 | `denon-avr-application` | `denon-avr-domain` | Ports, use cases, controller policy, commands, events, and application errors. |
 | `denon-avr-infrastructure` | application, domain, protocol | Network, filesystem, runtime, and concrete adapters. |
-| `denon-avr-gui` | application, Iced | Presentation state, messages, reducers, views, components, and the bridge. |
+| `denon-avr-gui-lib` | application, Iced | Presentation state, messages, reducers, views, components, and the bridge. |
 | `denon-avr-cli` | application, infrastructure | CLI parsing, dependency injection, and process entry point. |
 | `denon-avr-desktop` | application, infrastructure, gui | Iced lifecycle and concrete GUI service wiring. |
 | `denon-avr-diagnostics` | infrastructure, protocol, domain | X3800H diagnostic probe entry points and evidence output. |
@@ -48,7 +48,7 @@ receiver behavior.
 
 ## GUI boundary
 
-`denon-avr-gui` owns the presentation-facing controller/event bridge and maps
+`denon-avr-gui-lib` owns the presentation-facing controller/event bridge and maps
 user intent to typed application contracts. It receives a small trait-object
 service bundle for controller, configuration, and discovery operations. It does
 not construct `AvrSession`, YAML, SSDP, Tokio, or protocol frames.

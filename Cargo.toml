@@ -1,35 +1,8 @@
-[package]
-name = "denon-avr-remote"
+[workspace]
+members = ["crates/domain", "crates/protocol", "crates/application", "crates/infrastructure", "crates/gui-lib", "apps/cli", "apps/desktop", "apps/diagnostics"]
+resolver = "2"
+
+[workspace.package]
 version = "1.0.0"
 edition = "2021"
-description = "Denon and Marantz AVR IP control library"
 license = "All Rights Reserved"
-autobins = false
-
-[lib]
-name = "denon_avr_remote"
-path = "src/lib.rs"
-
-[[bin]]
-name = "denon-avr-remote"
-path = "src/bin/denon-avr-remote/main.rs"
-
-[[bin]]
-name = "denon-avr-remote-gui"
-path = "src/bin/denon-avr-remote-gui/main.rs"
-
-[[bin]]
-name = "x3800h-context-probe"
-path = "tools/x3800h-context-probe.rs"
-
-[[bin]]
-name = "x3800h-http-info-probe"
-path = "tools/x3800h-http-info-probe.rs"
-
-[dependencies]
-if-addrs = "0.15"
-iced = { version = "0.14", default-features = true, features = ["tokio"] }
-quick-xml = "0.41"
-serde = { version = "1", features = ["derive"] }
-serde_yaml = "0.9"
-tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }

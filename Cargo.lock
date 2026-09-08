@@ -619,15 +619,79 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f27ae1dd37df86211c42e150270f82743308803d90a6f6e6651cd730d5e1732f"
 
 [[package]]
-name = "denon-avr-remote"
+name = "denon-avr-application"
 version = "1.0.0"
 dependencies = [
+ "denon-avr-domain",
+ "tokio",
+]
+
+[[package]]
+name = "denon-avr-cli"
+version = "1.0.0"
+dependencies = [
+ "denon-avr-application",
+ "denon-avr-domain",
+ "denon-avr-infrastructure",
+ "denon-avr-protocol",
+]
+
+[[package]]
+name = "denon-avr-desktop"
+version = "1.0.0"
+dependencies = [
+ "denon-avr-application",
+ "denon-avr-domain",
+ "denon-avr-gui-lib",
+ "denon-avr-infrastructure",
  "iced",
+]
+
+[[package]]
+name = "denon-avr-diagnostics"
+version = "1.0.0"
+dependencies = [
+ "denon-avr-domain",
+ "denon-avr-infrastructure",
+ "denon-avr-protocol",
+]
+
+[[package]]
+name = "denon-avr-domain"
+version = "1.0.0"
+
+[[package]]
+name = "denon-avr-gui-lib"
+version = "1.0.0"
+dependencies = [
+ "denon-avr-application",
+ "denon-avr-domain",
+ "denon-avr-infrastructure",
+ "iced",
+ "tokio",
+]
+
+[[package]]
+name = "denon-avr-infrastructure"
+version = "1.0.0"
+dependencies = [
+ "denon-avr-application",
+ "denon-avr-domain",
+ "denon-avr-protocol",
  "if-addrs",
  "quick-xml",
  "serde",
  "serde_yaml",
  "tokio",
+]
+
+[[package]]
+name = "denon-avr-protocol"
+version = "1.0.0"
+dependencies = [
+ "denon-avr-domain",
+ "quick-xml",
+ "serde",
 ]
 
 [[package]]

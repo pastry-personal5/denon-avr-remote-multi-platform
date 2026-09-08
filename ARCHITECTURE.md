@@ -1,8 +1,8 @@
 # Architecture
 
-The current project is one Cargo package with layered modules. Presentation
-assembles application policy with concrete adapters; network, filesystem, and
-runtime details stay at the edge.
+The project is a virtual Cargo workspace with independently compiled layered
+packages. Presentation assembles application policy with concrete adapters;
+network, filesystem, and runtime details stay at the edge.
 
 ```text
 CLI / Iced GUI

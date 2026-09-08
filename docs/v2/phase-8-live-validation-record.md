@@ -7,7 +7,7 @@ row has been completed against the target receiver.
 The existing diagnostic probe emits the read-only rows with:
 
 ```text
-cargo run --bin x3800h-context-probe -- HOST TIMEOUT-MS MODEL FIRMWARE
+cargo run -p denon-avr-diagnostics --bin x3800h-context-probe -- HOST TIMEOUT-MS MODEL FIRMWARE
 ```
 
 Quick Select recall is deliberately not part of that read-only probe. It must

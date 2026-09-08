@@ -1,0 +1,17 @@
+[package]
+name = "denon-avr-gui-lib"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+[lib]
+name = "denon_avr_gui_lib"
+path = "src/lib.rs"
+[dependencies]
+denon-avr-application = { path = "../application" }
+denon-avr-domain = { path = "../domain" }
+iced = { version = "0.14", default-features = true, features = ["tokio"] }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
+
+[dev-dependencies]
+denon-avr-infrastructure = { path = "../infrastructure" }

@@ -1,0 +1,16 @@
+[package]
+name = "denon-avr-diagnostics"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+[[bin]]
+name = "x3800h-context-probe"
+path = "src/context_probe.rs"
+[[bin]]
+name = "x3800h-http-info-probe"
+path = "src/http_info_probe.rs"
+[dependencies]
+denon-avr-domain = { path = "../../crates/domain" }
+denon-avr-infrastructure = { path = "../../crates/infrastructure" }
+denon-avr-protocol = { path = "../../crates/protocol" }

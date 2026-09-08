@@ -1,0 +1,12 @@
+[package]
+name = "denon-avr-protocol"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+[lib]
+path = "src/lib.rs"
+[dependencies]
+denon-avr-domain = { path = "../domain" }
+quick-xml = "0.41"
+serde = { version = "1", features = ["derive"] }

@@ -2,8 +2,8 @@
 //!
 //! Protocol construction/parsing and socket I/O live in the canonical library
 //! layers. This binary is limited to argument parsing and presentation.
-use denon_avr_remote::domain::ReceiverEndpoint;
-use denon_avr_remote::infrastructure::AppCommandHttpClient;
+use denon_avr_domain::ReceiverEndpoint;
+use denon_avr_infrastructure::AppCommandHttpClient;
 use std::env;
 use std::io;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -56,7 +56,7 @@ fn print_control_summary(
     model: &str,
     firmware: &str,
     timestamp: u64,
-    response: &denon_avr_remote::protocol::AppCommandResponse,
+    response: &denon_avr_protocol::AppCommandResponse,
     command_name: &str,
 ) {
     let Some(command) = response.command(command_name) else {

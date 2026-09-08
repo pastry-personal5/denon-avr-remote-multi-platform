@@ -4,7 +4,7 @@ use std::io::{self, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use denon_avr_remote::protocol::response_matches;
+use denon_avr_protocol::response_matches;
 
 // Read-only Telnet queries. Extended families and sample-rate/EQ queries are
 // diagnostic candidates; their values are not promoted by this tool.

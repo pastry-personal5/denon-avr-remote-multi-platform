@@ -1,15 +1,13 @@
-use denon_avr_remote::application::{
+use denon_avr_application::{
     query_main_zone_status, resolve_status_receiver_with_probe, ConfigRepository, ReceiverDiscovery,
 };
-use denon_avr_remote::domain::{
+use denon_avr_domain::{
     ConfiguredReceivers, DiscoveredReceiver, MainZoneControl, MainZoneField, MainZoneSnapshot,
     Model, ModelCapabilities, MuteState, PowerState, ReceiverIdentity, VolumeLevel,
 };
-use denon_avr_remote::infrastructure::discovery_ssdp::{
-    SsdpDiscoveryAdapter, DEFAULT_DISCOVERY_TIMEOUT,
-};
-use denon_avr_remote::infrastructure::{SyncAvrClient, YamlConfigRepository};
-use denon_avr_remote::protocol::avr::encode_control;
+use denon_avr_infrastructure::discovery_ssdp::{SsdpDiscoveryAdapter, DEFAULT_DISCOVERY_TIMEOUT};
+use denon_avr_infrastructure::{SyncAvrClient, YamlConfigRepository};
+use denon_avr_protocol::avr::encode_control;
 use std::collections::BTreeMap;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -235,7 +233,7 @@ fn saved_identity_is_usable(identity: &ReceiverIdentity) -> bool {
 }
 fn resolve_read_identity(
     selection: &Selection,
-) -> Result<denon_avr_remote::application::ResolvedReceiver, String> {
+) -> Result<denon_avr_application::ResolvedReceiver, String> {
     resolve_status_receiver_with_probe(
         &YamlConfigRepository::default(),
         &SsdpDiscoveryAdapter,
@@ -248,9 +246,9 @@ fn resolve_read_identity(
 }
 fn resolve_write_identity(
     selection: &Selection,
-) -> Result<denon_avr_remote::application::ResolvedReceiver, String> {
+) -> Result<denon_avr_application::ResolvedReceiver, String> {
     if let Some(host) = selection.host.as_deref() {
-        return Ok(denon_avr_remote::application::ResolvedReceiver {
+        return Ok(denon_avr_application::ResolvedReceiver {
             name: None,
             identity: ReceiverIdentity::ad_hoc(host),
         });
@@ -262,7 +260,7 @@ fn resolve_write_identity(
         let receiver = receivers
             .get(index)
             .ok_or_else(|| "receiver selection is out of range".to_owned())?;
-        return Ok(denon_avr_remote::application::ResolvedReceiver {
+        return Ok(denon_avr_application::ResolvedReceiver {
             name: None,
             identity: receiver.identity(),
         });
@@ -273,7 +271,7 @@ fn resolve_write_identity(
     let (name, identity) = config
         .current()
         .ok_or_else(|| "set requires a saved receiver or an explicit selector".to_owned())?;
-    Ok(denon_avr_remote::application::ResolvedReceiver {
+    Ok(denon_avr_application::ResolvedReceiver {
         name: Some(name.to_owned()),
         identity: identity.clone(),
     })
@@ -448,24 +446,20 @@ fn operation_field(operation: Operation) -> MainZoneField {
         Operation::Surround => MainZoneField::SurroundMode,
     }
 }
-fn control_matches(
-    control: &MainZoneControl,
-    value: &denon_avr_remote::domain::MainZoneValue,
-) -> bool {
+fn control_matches(control: &MainZoneControl, value: &denon_avr_domain::MainZoneValue) -> bool {
     match (control, value) {
-        (MainZoneControl::Power(a), denon_avr_remote::domain::MainZoneValue::Power(b)) => a == b,
-        (MainZoneControl::Input(a), denon_avr_remote::domain::MainZoneValue::Input(b)) => a == b,
-        (MainZoneControl::Volume(a), denon_avr_remote::domain::MainZoneValue::Volume(b)) => {
+        (MainZoneControl::Power(a), denon_avr_domain::MainZoneValue::Power(b)) => a == b,
+        (MainZoneControl::Input(a), denon_avr_domain::MainZoneValue::Input(b)) => a == b,
+        (MainZoneControl::Volume(a), denon_avr_domain::MainZoneValue::Volume(b)) => {
             b.level().ok().as_ref() == Some(a)
         }
-        (MainZoneControl::Mute(a), denon_avr_remote::domain::MainZoneValue::Mute(b)) => a == b,
-        (
-            MainZoneControl::SurroundMode(a),
-            denon_avr_remote::domain::MainZoneValue::SurroundMode(b),
-        ) => a == b,
+        (MainZoneControl::Mute(a), denon_avr_domain::MainZoneValue::Mute(b)) => a == b,
+        (MainZoneControl::SurroundMode(a), denon_avr_domain::MainZoneValue::SurroundMode(b)) => {
+            a == b
+        }
         (
             MainZoneControl::ListeningModeGroup(_),
-            denon_avr_remote::domain::MainZoneValue::SurroundMode(_),
+            denon_avr_domain::MainZoneValue::SurroundMode(_),
         ) => true,
         _ => false,
     }
@@ -525,11 +519,11 @@ fn render_status_snapshot(snapshot: &MainZoneSnapshot) -> String {
 }
 fn render_status_line<T: std::fmt::Display>(
     name: &str,
-    field: &denon_avr_remote::domain::FieldStatus<T>,
+    field: &denon_avr_domain::FieldStatus<T>,
 ) -> String {
     match field {
-        denon_avr_remote::domain::FieldStatus::Value(value) => format!("{name}: {value}"),
-        denon_avr_remote::domain::FieldStatus::Unavailable(error) => {
+        denon_avr_domain::FieldStatus::Value(value) => format!("{name}: {value}"),
+        denon_avr_domain::FieldStatus::Unavailable(error) => {
             format!("{name}: unavailable ({})", error.message)
         }
     }

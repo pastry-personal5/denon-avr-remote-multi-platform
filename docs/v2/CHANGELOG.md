@@ -10,6 +10,9 @@ and this project adheres to Semantic Versioning.
 
 ### Added
 
+- Implemented Phase 9 as a virtual Cargo workspace with explicit role-based
+  packages, desktop-owned GUI composition, and a dedicated diagnostics package.
+
 - Added the Version 2 Phase 8 implementation surfaces: typed Main Zone Quick
   Select slots and execute-once recall outcomes, independent EQ status fields,
   candidate AVR protocol fixtures, controller/session boundaries, and GUI

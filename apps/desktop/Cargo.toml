@@ -1,0 +1,15 @@
+[package]
+name = "denon-avr-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+[[bin]]
+name = "denon-avr-remote-gui"
+path = "src/main.rs"
+[dependencies]
+denon-avr-gui-lib = { path = "../../crates/gui-lib" }
+denon-avr-application = { path = "../../crates/application" }
+denon-avr-infrastructure = { path = "../../crates/infrastructure" }
+denon-avr-domain = { path = "../../crates/domain" }
+iced = { version = "0.14", default-features = true, features = ["tokio"] }

@@ -12,7 +12,8 @@ The CLI does not control HEOS or promise compatibility with unvalidated models.
 - The computer and receiver on a reachable network.
 - Network Control enabled when required by the receiver configuration.
 
-Run commands from the project root during development with `cargo run --`.
+Run commands from the project root during development with
+`cargo run -p denon-avr-cli --bin denon-avr-remote --` (or `make run`).
 Use `make run ARGS="..."` when preferred.
 
 ## Commands

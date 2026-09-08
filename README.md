@@ -16,4 +16,4 @@ accept `--host HOST` or `--receiver N`.
 
 See the [CLI guide](docs/cli-user-guide.md), [development guide](docs/development.md),
 [contributing guide](docs/contributing.md), [architecture](ARCHITECTURE.md),
-and [V2 roadmap](docs/v2/phase-8-quick-select-eq-overview.md).
+and [V2 roadmap](docs/v2/phase-9-workspace-refactor-overview.md).

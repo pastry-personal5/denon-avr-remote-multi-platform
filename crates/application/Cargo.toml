@@ -1,0 +1,11 @@
+[package]
+name = "denon-avr-application"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+[lib]
+path = "src/lib.rs"
+[dependencies]
+denon-avr-domain = { path = "../domain" }
+tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }

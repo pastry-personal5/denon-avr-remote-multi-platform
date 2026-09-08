@@ -2,7 +2,7 @@
 
 CARGO ?= cargo
 
-.PHONY: help format format-check check test build run run-gui run-release clippy boundary clean
+.PHONY: help format format-check check test build run run-gui run-release run-diagnostics run-diagnostics-http clippy boundary clean
 
 help: ## Show available developer commands
 	@echo "Available targets:"
@@ -28,13 +28,19 @@ build: ## Build the project
 	$(CARGO) build
 
 run: ## Run the CLI in debug mode (use ARGS="...")
-	$(CARGO) run -- $(ARGS)
+	$(CARGO) run -p denon-avr-cli --bin denon-avr-remote -- $(ARGS)
 
 run-gui: ## Run the Iced desktop GUI
-	$(CARGO) run --bin denon-avr-remote-gui
+	$(CARGO) run -p denon-avr-desktop --bin denon-avr-remote-gui
+
+run-diagnostics: ## Run the diagnostics probe (use ARGS="...")
+	$(CARGO) run -p denon-avr-diagnostics --bin x3800h-context-probe -- $(ARGS)
+
+run-diagnostics-http: ## Run the HTTP diagnostics probe (use ARGS="...")
+	$(CARGO) run -p denon-avr-diagnostics --bin x3800h-http-info-probe -- $(ARGS)
 
 run-release: ## Run the CLI with release optimizations (use ARGS="...")
-	$(CARGO) run --release -- $(ARGS)
+	$(CARGO) run --release -p denon-avr-cli --bin denon-avr-remote -- $(ARGS)
 
 clippy: ## Run Clippy with warnings treated as errors
 	$(CARGO) clippy --all-targets -- -D warnings
