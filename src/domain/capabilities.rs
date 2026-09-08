@@ -34,6 +34,17 @@ pub struct ModelCapabilities {
     pub native_volume_max: u16,
     pub inputs: &'static [&'static str],
     pub surround_modes: &'static [&'static str],
+    pub quick_select_recall: bool,
+    pub eq_status: bool,
+}
+
+/// Capabilities may be enabled only after model/firmware-specific Phase 8
+/// validation has been recorded. The default application profile leaves this
+/// absent, so candidate commands cannot become supported accidentally.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ValidatedPhase8Capabilities {
+    pub quick_select_recall: bool,
+    pub eq_status: bool,
 }
 
 const X3800H_INPUTS: &[&str] = &[
@@ -91,7 +102,20 @@ impl ModelCapabilities {
             native_volume_max: 985,
             inputs: if writable { X3800H_INPUTS } else { &[] },
             surround_modes: if writable { X3800H_SURROUND_MODES } else { &[] },
+            // Phase 8 wire commands remain candidate evidence until a live
+            // X3800H record confirms their exact request/response behavior.
+            // Do not inherit the Main Zone control capability here.
+            quick_select_recall: false,
+            eq_status: false,
         }
+    }
+
+    pub const fn with_validated_phase8(mut self, phase8: ValidatedPhase8Capabilities) -> Self {
+        if matches!(self.model, Model::AvrX3800h) {
+            self.quick_select_recall = phase8.quick_select_recall;
+            self.eq_status = phase8.eq_status;
+        }
+        self
     }
 
     pub fn supports_control(&self, control: &MainZoneControl) -> bool {
@@ -193,5 +217,37 @@ mod tests {
                 &crate::domain::AudioContextSnapshot::default(),
             )
             .is_empty());
+    }
+
+    #[test]
+    fn phase8_candidates_do_not_inherit_main_zone_validation() {
+        let capabilities = ModelCapabilities::for_model(Model::AvrX3800h);
+        assert!(capabilities.writable);
+        assert!(!capabilities.quick_select_recall);
+        assert!(!capabilities.eq_status);
+    }
+
+    #[test]
+    fn validated_phase8_profile_is_explicit_opt_in() {
+        let capabilities = ModelCapabilities::for_model(Model::AvrX3800h).with_validated_phase8(
+            ValidatedPhase8Capabilities {
+                quick_select_recall: true,
+                eq_status: true,
+            },
+        );
+        assert!(capabilities.quick_select_recall);
+        assert!(capabilities.eq_status);
+    }
+
+    #[test]
+    fn unknown_models_never_inherit_phase8_validation() {
+        let capabilities = ModelCapabilities::for_model(Model::Unknown).with_validated_phase8(
+            ValidatedPhase8Capabilities {
+                quick_select_recall: true,
+                eq_status: true,
+            },
+        );
+        assert!(!capabilities.quick_select_recall);
+        assert!(!capabilities.eq_status);
     }
 }

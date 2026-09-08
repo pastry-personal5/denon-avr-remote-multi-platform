@@ -10,6 +10,11 @@ and this project adheres to Semantic Versioning.
 
 ### Added
 
+- Added the Version 2 Phase 8 implementation surfaces: typed Main Zone Quick
+  Select slots and execute-once recall outcomes, independent EQ status fields,
+  candidate AVR protocol fixtures, controller/session boundaries, and GUI
+  dashboard and diagnostics presentation. Live receiver validation remains a
+  release gate before enabling the capability flags.
 - Added Phase 9 workspace-refactor and Phase 10 visual-identity plans.
 - Completed Version 2 Phase 5 with the Iced 0.14 desktop GUI, typed
   controller bridge, receiver setup/discovery flows, Main Zone dashboard,

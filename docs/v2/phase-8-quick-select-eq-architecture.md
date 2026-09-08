@@ -1,6 +1,10 @@
 # Version 2 - Phase 8 Architecture
 
-**Status: Planned — complete before Phases 9 and 10.**
+**Status: Implemented — live receiver validation remains a release gate.**
+
+The protocol helpers are candidate-only until live records are accepted into
+the X3800H capability profile; the application does not claim Phase 8 support
+merely because Main Zone controls are validated.
 
 ```text
 Iced Quick Select / EQ views
@@ -21,8 +25,9 @@ independent user commands.
 
 ## Quick Select Model
 
-Represent four Main Zone slots with a stable slot identifier, receiver display
-name, availability, and a registered-item summary. Registered items are
+Represent four Main Zone slots with a stable slot identifier, optional
+receiver display name, availability, and a registered-item summary.
+Registered items are
 explicitly distinguished from omitted or unknown items. The model supports
 input source, volume, sound mode, channel levels, Audyssey parameters,
 Restorer, Dialog Enhancer, HDMI video output, speaker preset, Dirac Live, and
@@ -62,7 +67,7 @@ response, timing, and date. Unknown models never inherit X3800H capabilities.
 
 ## Verification
 
-Tests cover slot discovery/display, preset recall, omitted registered fields,
+Tests cover slot display, preset recall, omitted/unknown registered fields,
 stale versions, execute-once uncertainty, reconnect invalidation, independent
 EQ states, Direct/Pure Direct restrictions, missing Audyssey calibration,
 unknown responses, partial failures, Diagnostics wording, keyboard access,

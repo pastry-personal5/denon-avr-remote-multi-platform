@@ -21,9 +21,12 @@ pub use application::ports::{
 };
 pub use domain::{
     AudioContextField, AudioContextSnapshot, AudioContextValue, Confidence, ConfiguredReceivers,
-    ConfiguredSpeakerLayout, ConnectionState, DiscoveredReceiver, FieldError, FieldErrorKind,
-    FieldStatus, Input, InputChannelLayout, ListeningModeGroup, MainZoneControl, MainZoneField,
-    MainZoneSnapshot, MainZoneValue, MuteState, Observation, Observed, OutputChannelLayout,
-    PowerState, Provenance, RawObservation, ReceiverEndpoint, SampleRate, SignalCodec, SignalFlags,
-    SignalFormat, SurroundMode, Volume, VolumeLevel,
+    ConfiguredSpeakerLayout, ConnectionState, DiscoveredReceiver, EqEvidence, EqFeature, EqState,
+    EqStatus, FieldError, FieldErrorKind, FieldStatus, Input, InputChannelLayout,
+    ListeningModeGroup, MainZoneControl, MainZoneField, MainZoneSnapshot, MainZoneValue, MuteState,
+    Observation, Observed, OutputChannelLayout, PowerState, Provenance, QuickSelectName,
+    QuickSelectPreset, QuickSelectRecallConfirmation, QuickSelectRecallOutcome, QuickSelectSlot,
+    QuickSelectSnapshot, QuickSelectSummary, RawObservation, ReceiverEndpoint, Registered,
+    SampleRate, SignalCodec, SignalFlags, SignalFormat, SurroundMode, ValidatedPhase8Capabilities,
+    Volume, VolumeLevel,
 };

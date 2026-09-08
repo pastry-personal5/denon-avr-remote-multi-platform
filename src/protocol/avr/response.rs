@@ -141,6 +141,8 @@ mod tests {
         assert!(response_matches("MV", "MV805"));
         assert!(!response_matches("MV", "MV80.5"));
         assert!(!response_matches("MV", "MVMAX 615"));
+        assert!(response_matches("MSQUICK1", "MSQUICK1"));
+        assert!(!response_matches("MSQUICK1", "MSQUICKX"));
     }
 
     #[test]

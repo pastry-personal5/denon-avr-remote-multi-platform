@@ -2,9 +2,10 @@
 
 use super::ports::{BoxFuture, OperationError, OperationErrorKind};
 use crate::domain::{
-    AudioContextSnapshot, ConnectionState, DiscoveredReceiver, MainZoneControl, MainZoneEvent,
-    MainZoneField, MainZoneSnapshot, MainZoneValue, Model, ModelCapabilities, ReceiverIdentity,
-    StateAuthority,
+    AudioContextSnapshot, ConnectionState, DiscoveredReceiver, EqStatus, MainZoneControl,
+    MainZoneEvent, MainZoneField, MainZoneSnapshot, MainZoneValue, Model, ModelCapabilities,
+    QuickSelectRecallConfirmation, QuickSelectRecallOutcome, QuickSelectSlot, QuickSelectSnapshot,
+    ReceiverIdentity, StateAuthority, ValidatedPhase8Capabilities,
 };
 use std::sync::Arc;
 use std::time::Duration;
@@ -23,6 +24,27 @@ pub trait ReceiverSession: Send {
     fn query_audio_context(&mut self) -> BoxFuture<'_, AudioContextSnapshot>;
     fn next_event(&mut self) -> BoxFuture<'_, Result<SessionEvent, OperationError>>;
     fn close(&mut self) -> BoxFuture<'_, Result<(), OperationError>>;
+    fn recall_quick_select(
+        &mut self,
+        _slot: QuickSelectSlot,
+    ) -> BoxFuture<'_, Result<QuickSelectRecallConfirmation, OperationError>> {
+        Box::pin(async {
+            Err(OperationError::new(
+                OperationErrorKind::Unsupported,
+                "Quick Select",
+                "Quick Select protocol is not validated",
+            ))
+        })
+    }
+    fn query_eq_status(&mut self) -> BoxFuture<'_, Result<EqStatus, OperationError>> {
+        Box::pin(async {
+            Err(OperationError::new(
+                OperationErrorKind::Unsupported,
+                "EQ status",
+                "EQ protocol is not validated",
+            ))
+        })
+    }
 }
 pub trait SessionFactory: Send + Sync + 'static {
     fn connect(
@@ -61,6 +83,11 @@ pub enum ReceiverCommand {
     Refresh,
     Control {
         control: MainZoneControl,
+        expected_version: Option<u64>,
+    },
+    RefreshPhase8,
+    RecallQuickSelect {
+        slot: QuickSelectSlot,
         expected_version: Option<u64>,
     },
     Shutdown,
@@ -109,6 +136,9 @@ pub enum ReceiverEvent {
     Control(ControlResult),
     Cancelled,
     Diagnostic(Diagnostic),
+    QuickSelect(QuickSelectSnapshot),
+    QuickSelectRecall(QuickSelectRecallOutcome),
+    EqStatus(EqStatus),
 }
 pub trait Observability: Send + Sync {
     fn record(&self, event: Diagnostic);
@@ -137,6 +167,9 @@ pub struct ControllerConfig {
     pub close_timeout: Duration,
     pub queue_capacity: usize,
     pub sleeper: Arc<dyn Sleeper>,
+    /// Explicit model/firmware validation output. `None` keeps Phase 8
+    /// operations read-only even for a known X3800H.
+    pub validated_phase8: Option<ValidatedPhase8Capabilities>,
 }
 impl Default for ControllerConfig {
     fn default() -> Self {
@@ -146,6 +179,7 @@ impl Default for ControllerConfig {
             close_timeout: Duration::from_secs(1),
             queue_capacity: 32,
             sleeper: Arc::new(TokioSleeper),
+            validated_phase8: None,
         }
     }
 }
@@ -196,6 +230,20 @@ impl ControllerHandle {
     pub async fn shutdown(&self) -> Result<CommandReply, OperationError> {
         self.send(ReceiverCommand::Shutdown).await
     }
+    pub async fn refresh_phase8(&self) -> Result<CommandReply, OperationError> {
+        self.send(ReceiverCommand::RefreshPhase8).await
+    }
+    pub async fn recall_quick_select(
+        &self,
+        slot: QuickSelectSlot,
+        expected_version: Option<u64>,
+    ) -> Result<CommandReply, OperationError> {
+        self.send(ReceiverCommand::RecallQuickSelect {
+            slot,
+            expected_version,
+        })
+        .await
+    }
 }
 
 pub struct ReceiverController;
@@ -211,6 +259,7 @@ impl ReceiverController {
         let (commands, mut rx) = mpsc::channel::<Envelope>(config.queue_capacity.max(1));
         let (events, event_rx) = mpsc::channel::<ReceiverEvent>(config.queue_capacity.max(1));
         tokio::spawn(async move {
+            let validated_phase8 = config.validated_phase8;
             let mut state = State {
                 factory,
                 config,
@@ -220,6 +269,9 @@ impl ReceiverController {
                 snapshot: MainZoneSnapshot::default(),
                 lifecycle: Lifecycle::NoReceiver,
                 generation: 0,
+                quick_select: QuickSelectSnapshot::default(),
+                eq_status: EqStatus::default(),
+                validated_phase8,
             };
             while let Some(envelope) = rx.recv().await {
                 let stop = matches!(envelope.command, ReceiverCommand::Shutdown);
@@ -228,6 +280,7 @@ impl ReceiverController {
                 if stop {
                     break;
                 }
+                state.drain_session_events(&events).await;
             }
             let _ = events
                 .send(ReceiverEvent::Lifecycle(Lifecycle::Stopped))
@@ -252,6 +305,9 @@ struct State<F> {
     snapshot: MainZoneSnapshot,
     lifecycle: Lifecycle,
     generation: u64,
+    quick_select: QuickSelectSnapshot,
+    eq_status: EqStatus,
+    validated_phase8: Option<ValidatedPhase8Capabilities>,
 }
 impl<F: SessionFactory> State<F> {
     async fn handle(
@@ -278,6 +334,25 @@ impl<F: SessionFactory> State<F> {
             ReceiverCommand::Refresh => {
                 self.refresh(events).await?;
                 Ok(Some(ReceiverEvent::Snapshot(self.snapshot.clone())))
+            }
+            ReceiverCommand::RefreshPhase8 => {
+                self.refresh_phase8(events).await?;
+                Ok(Some(ReceiverEvent::QuickSelect(self.quick_select.clone())))
+            }
+            ReceiverCommand::RecallQuickSelect {
+                slot,
+                expected_version,
+            } => {
+                Self::emit(
+                    events,
+                    ReceiverEvent::QuickSelectRecall(QuickSelectRecallOutcome::Pending { slot }),
+                )
+                .await;
+                let result = self
+                    .recall_quick_select(slot, expected_version, events)
+                    .await;
+                Self::emit(events, ReceiverEvent::QuickSelectRecall(result)).await;
+                Ok(Some(ReceiverEvent::QuickSelect(self.quick_select.clone())))
             }
             ReceiverCommand::Control {
                 control,
@@ -310,6 +385,10 @@ impl<F: SessionFactory> State<F> {
             Ok(s) => {
                 self.session = Some(s);
                 self.generation += 1;
+                self.quick_select.invalidate();
+                self.eq_status.invalidate();
+                self.quick_select.generation = self.generation;
+                self.eq_status.generation = self.generation;
                 self.lifecycle = Lifecycle::Connected {
                     generation: self.generation,
                 };
@@ -336,7 +415,65 @@ impl<F: SessionFactory> State<F> {
         } else {
             Lifecycle::NoReceiver
         };
+        self.quick_select.invalidate();
+        self.eq_status.invalidate();
         Ok(())
+    }
+
+    async fn drain_session_events(&mut self, events: &mpsc::Sender<ReceiverEvent>) {
+        loop {
+            let result = {
+                let Some(session) = self.session.as_mut() else {
+                    return;
+                };
+                match tokio::time::timeout(Duration::from_millis(1), session.next_event()).await {
+                    Ok(result) => result,
+                    Err(_) => return,
+                }
+            };
+            match result {
+                Ok(SessionEvent::Connection(ConnectionState::Reconnecting)) => {
+                    self.generation = self.generation.saturating_add(1);
+                    self.lifecycle = Lifecycle::Reconnecting {
+                        generation: self.generation,
+                    };
+                    self.snapshot.invalidate();
+                    self.quick_select.invalidate();
+                    self.eq_status.invalidate();
+                    Self::emit(events, ReceiverEvent::Lifecycle(self.lifecycle.clone())).await;
+                }
+                Ok(SessionEvent::Connection(ConnectionState::Connected)) => {
+                    if matches!(self.lifecycle, Lifecycle::Reconnecting { .. }) {
+                        self.lifecycle = Lifecycle::Connected {
+                            generation: self.generation,
+                        };
+                        Self::emit(events, ReceiverEvent::Lifecycle(self.lifecycle.clone())).await;
+                    }
+                }
+                Ok(SessionEvent::Connection(ConnectionState::Disconnected)) => {
+                    self.lifecycle = Lifecycle::Disconnected;
+                    self.snapshot.invalidate();
+                    self.quick_select.invalidate();
+                    self.eq_status.invalidate();
+                    Self::emit(events, ReceiverEvent::Lifecycle(self.lifecycle.clone())).await;
+                }
+                Ok(SessionEvent::MainZone(event)) => {
+                    self.snapshot.apply_event(event);
+                    Self::emit(events, ReceiverEvent::Snapshot(self.snapshot.clone())).await;
+                }
+                Err(error) => {
+                    self.observability.record(Diagnostic::Timeout {
+                        context: error.to_string(),
+                    });
+                    self.lifecycle = Lifecycle::Disconnected;
+                    self.snapshot.invalidate();
+                    self.quick_select.invalidate();
+                    self.eq_status.invalidate();
+                    Self::emit(events, ReceiverEvent::Lifecycle(self.lifecycle.clone())).await;
+                    return;
+                }
+            }
+        }
     }
     async fn refresh(
         &mut self,
@@ -383,6 +520,111 @@ impl<F: SessionFactory> State<F> {
         }
         Self::emit(events, ReceiverEvent::Snapshot(self.snapshot.clone())).await;
         Ok(())
+    }
+    async fn refresh_phase8(
+        &mut self,
+        events: &mpsc::Sender<ReceiverEvent>,
+    ) -> Result<(), OperationError> {
+        let capabilities = self.capabilities();
+        if !capabilities.quick_select_recall && !capabilities.eq_status {
+            return Err(OperationError::new(
+                OperationErrorKind::Unsupported,
+                "Phase 8 status",
+                "selected receiver has no validated Phase 8 capability",
+            ));
+        }
+        if self.session.is_none() {
+            self.connect(events).await?;
+        }
+        // Quick Select is an execute-only capability.  Denon does not expose
+        // a validated per-slot query for the registered fields, so refresh
+        // must not invent availability or names from a guessed response.
+        if capabilities.eq_status {
+            let previous_eq_status = self.eq_status.clone();
+            let result = {
+                let session = self.session.as_mut().ok_or_else(stopped)?;
+                session.query_eq_status().await
+            };
+            match result {
+                Ok(mut refreshed_eq_status) => {
+                    refreshed_eq_status.preserve_failed_observations(&previous_eq_status);
+                    if let Some(mode) = self.snapshot.audio_context.current_mode.value.known() {
+                        refreshed_eq_status.apply_mode_restrictions(mode.as_str());
+                    }
+                    self.eq_status = refreshed_eq_status;
+                    Self::emit(events, ReceiverEvent::EqStatus(self.eq_status.clone())).await;
+                }
+                Err(error) => {
+                    Self::emit(
+                        events,
+                        ReceiverEvent::Diagnostic(Diagnostic::Timeout {
+                            context: format!("refreshing EQ status: {error}"),
+                        }),
+                    )
+                    .await
+                }
+            }
+        }
+        Ok(())
+    }
+    async fn recall_quick_select(
+        &mut self,
+        slot: QuickSelectSlot,
+        expected: Option<u64>,
+        events: &mpsc::Sender<ReceiverEvent>,
+    ) -> QuickSelectRecallOutcome {
+        if !self.capabilities().quick_select_recall {
+            return QuickSelectRecallOutcome::Unsupported(
+                "selected receiver has no validated Quick Select capability".into(),
+            );
+        }
+        if let Some(expected) = expected {
+            let current = self.quick_select.resource_version();
+            if expected != current {
+                return QuickSelectRecallOutcome::Conflict { expected, current };
+            }
+        }
+        if self.session.is_none() {
+            if let Err(error) = self.connect(events).await {
+                return QuickSelectRecallOutcome::Rejected(error.to_string());
+            }
+        }
+        let Some(session) = self.session.as_mut() else {
+            return QuickSelectRecallOutcome::Rejected("receiver is not connected".into());
+        };
+        match session.recall_quick_select(slot).await {
+            Ok(QuickSelectRecallConfirmation::Authoritative) => {
+                QuickSelectRecallOutcome::Confirmed { slot }
+            }
+            Ok(QuickSelectRecallConfirmation::Dispatched) => QuickSelectRecallOutcome::Unconfirmed(
+                "receiver acknowledged the preset command; resulting state was not authoritative"
+                    .into(),
+            ),
+            Err(error) if error.kind == OperationErrorKind::Unsupported => {
+                QuickSelectRecallOutcome::Unsupported(error.to_string())
+            }
+            Err(error)
+                if matches!(
+                    error.kind,
+                    OperationErrorKind::Timeout
+                        | OperationErrorKind::Disconnected
+                        | OperationErrorKind::Connection
+                ) =>
+            {
+                QuickSelectRecallOutcome::Unconfirmed(error.to_string())
+            }
+            Err(error) => QuickSelectRecallOutcome::TransportFailure(error.to_string()),
+        }
+    }
+    fn capabilities(&self) -> ModelCapabilities {
+        let model = self
+            .selection
+            .as_ref()
+            .and_then(|s| s.identity().model.clone())
+            .map(|value| Model::from_reported(&value))
+            .unwrap_or(Model::Unknown);
+        ModelCapabilities::for_model(model)
+            .with_validated_phase8(self.validated_phase8.unwrap_or_default())
     }
     async fn control(
         &mut self,
@@ -523,5 +765,154 @@ fn control_matches(
                 .contains(&actual.as_str())
         }
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::{AudioContextSnapshot, QuickSelectRecallConfirmation, ReceiverIdentity};
+
+    #[derive(Clone)]
+    struct FakeFactory;
+
+    struct FakeSession;
+
+    impl SessionFactory for FakeFactory {
+        fn connect(
+            &self,
+            _identity: ReceiverIdentity,
+        ) -> BoxFuture<'_, Result<Box<dyn ReceiverSession>, OperationError>> {
+            Box::pin(async { Ok(Box::new(FakeSession) as Box<dyn ReceiverSession>) })
+        }
+    }
+
+    impl ReceiverSession for FakeSession {
+        fn query_field(
+            &mut self,
+            _field: MainZoneField,
+        ) -> BoxFuture<'_, Result<MainZoneValue, OperationError>> {
+            Box::pin(async {
+                Err(OperationError::new(
+                    OperationErrorKind::Unsupported,
+                    "test",
+                    "not needed",
+                ))
+            })
+        }
+
+        fn execute_once(
+            &mut self,
+            _control: MainZoneControl,
+        ) -> BoxFuture<'_, Result<(), OperationError>> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn query_audio_context(&mut self) -> BoxFuture<'_, AudioContextSnapshot> {
+            Box::pin(async { AudioContextSnapshot::default() })
+        }
+
+        fn next_event(&mut self) -> BoxFuture<'_, Result<SessionEvent, OperationError>> {
+            Box::pin(async {
+                Err(OperationError::new(
+                    OperationErrorKind::Stopped,
+                    "test",
+                    "event stream is idle",
+                ))
+            })
+        }
+
+        fn close(&mut self) -> BoxFuture<'_, Result<(), OperationError>> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn recall_quick_select(
+            &mut self,
+            _slot: QuickSelectSlot,
+        ) -> BoxFuture<'_, Result<QuickSelectRecallConfirmation, OperationError>> {
+            Box::pin(async { Ok(QuickSelectRecallConfirmation::Authoritative) })
+        }
+    }
+
+    fn selection() -> ReceiverSelection {
+        ReceiverSelection::ExplicitHost(ReceiverIdentity {
+            host: "test.invalid".into(),
+            model: Some("AVR-X3800H".into()),
+            friendly_name: None,
+        })
+    }
+
+    async fn next_recall_outcome(handle: &mut ControllerHandle) -> QuickSelectRecallOutcome {
+        for _ in 0..8 {
+            if let Ok(Some(ReceiverEvent::QuickSelectRecall(outcome))) =
+                tokio::time::timeout(Duration::from_millis(50), handle.next_event()).await
+            {
+                if !matches!(outcome, QuickSelectRecallOutcome::Pending { .. }) {
+                    return outcome;
+                }
+            }
+        }
+        panic!("no Quick Select recall outcome was emitted")
+    }
+
+    #[tokio::test]
+    async fn default_profile_rejects_unvalidated_quick_select() {
+        let mut handle = ReceiverController::spawn(FakeFactory, ControllerConfig::default());
+        handle.select(selection()).await.unwrap();
+        handle
+            .recall_quick_select(QuickSelectSlot::new(1).unwrap(), None)
+            .await
+            .unwrap();
+        assert!(matches!(
+            next_recall_outcome(&mut handle).await,
+            QuickSelectRecallOutcome::Unsupported(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn validated_profile_preserves_authoritative_recall_result() {
+        let config = ControllerConfig {
+            validated_phase8: Some(ValidatedPhase8Capabilities {
+                quick_select_recall: true,
+                eq_status: true,
+            }),
+            ..ControllerConfig::default()
+        };
+        let mut handle = ReceiverController::spawn(FakeFactory, config);
+        handle.select(selection()).await.unwrap();
+        handle
+            .recall_quick_select(QuickSelectSlot::new(2).unwrap(), None)
+            .await
+            .unwrap();
+        assert_eq!(
+            next_recall_outcome(&mut handle).await,
+            QuickSelectRecallOutcome::Confirmed {
+                slot: QuickSelectSlot::new(2).unwrap()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_quick_select_version_is_rejected_before_dispatch() {
+        let config = ControllerConfig {
+            validated_phase8: Some(ValidatedPhase8Capabilities {
+                quick_select_recall: true,
+                eq_status: true,
+            }),
+            ..ControllerConfig::default()
+        };
+        let mut handle = ReceiverController::spawn(FakeFactory, config);
+        handle.select(selection()).await.unwrap();
+        handle
+            .recall_quick_select(QuickSelectSlot::new(1).unwrap(), Some(0))
+            .await
+            .unwrap();
+        assert_eq!(
+            next_recall_outcome(&mut handle).await,
+            QuickSelectRecallOutcome::Conflict {
+                expected: 0,
+                current: 1
+            }
+        );
     }
 }

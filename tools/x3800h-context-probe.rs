@@ -6,9 +6,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use denon_avr_remote::protocol::response_matches;
 
-// Read-only Telnet queries. The four extended families and the sample-rate
-// query are diagnostic candidates; their values are not promoted by this tool.
-const COMMANDS: [&str; 10] = [
+// Read-only Telnet queries. Extended families and sample-rate/EQ queries are
+// diagnostic candidates; their values are not promoted by this tool.
+const COMMANDS: [&str; 16] = [
     "SI?",
     "SD?",
     "DC?",
@@ -19,6 +19,14 @@ const COMMANDS: [&str; 10] = [
     "OPINFASP ?",
     "SYSMI ?",
     "SSINFAISFSV ?",
+    // Phase 8 EQ read-only candidates. Quick Select recall is execute-only
+    // and is intentionally excluded from this diagnostic probe.
+    "PSMULTEQ:?",
+    "PSDYNEQ?",
+    "PSREFLEV?",
+    "PSDYNVOL?",
+    "PSLFC?",
+    "PSDIRAC?",
 ];
 
 fn main() -> io::Result<()> {
@@ -127,7 +135,8 @@ fn epoch_seconds() -> u64 {
 }
 
 fn response_is_match(command: &str, response: &str) -> bool {
-    response != command_family(command) && response_matches(command_family(command), response)
+    let family = command_family(command);
+    response != family && response_matches(family, response)
 }
 
 #[cfg(test)]

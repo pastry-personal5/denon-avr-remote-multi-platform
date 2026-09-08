@@ -6,11 +6,13 @@ use crate::application::{
     SessionEvent,
 };
 use crate::domain::{
-    AudioContextSnapshot, Confidence, ConnectionState, FieldError, FieldErrorKind, MainZoneEvent,
-    MainZoneField, MainZoneSnapshot, MainZoneValue, Observed, RawObservation, StateAuthority,
-    SurroundMode,
+    AudioContextSnapshot, Confidence, ConnectionState, EqEvidence, EqFeature, EqState, EqStatus,
+    FieldError, FieldErrorKind, Freshness, MainZoneEvent, MainZoneField, MainZoneSnapshot,
+    MainZoneValue, Observed, QuickSelectRecallConfirmation, QuickSelectSlot, RawObservation,
+    StateAuthority, SurroundMode,
 };
 use crate::protocol::avr::AvrCommand;
+use crate::protocol::avr::{eq_status_query, parse_eq_status, quick_select_command};
 use crate::protocol::{
     get_command_family, parse_main_zone_event, parse_main_zone_response, query_command,
     response_matches,
@@ -408,6 +410,55 @@ impl ReceiverSession for AvrSession {
 
     fn query_audio_context(&mut self) -> BoxFuture<'_, AudioContextSnapshot> {
         <Self as AsyncStatusGateway>::query_audio_context(self)
+    }
+
+    fn recall_quick_select(
+        &mut self,
+        slot: QuickSelectSlot,
+    ) -> BoxFuture<'_, Result<QuickSelectRecallConfirmation, OperationError>> {
+        Box::pin(async move {
+            self.request(quick_select_command(slot).as_str())
+                .await
+                .map(|_| QuickSelectRecallConfirmation::Dispatched)
+                .map_err(OperationError::from)
+        })
+    }
+
+    fn query_eq_status(&mut self) -> BoxFuture<'_, Result<EqStatus, OperationError>> {
+        Box::pin(async move {
+            let mut status = EqStatus::default();
+            for feature in EqFeature::ALL {
+                let started = std::time::Instant::now();
+                let result = self.request_query(eq_status_query(feature).as_str()).await;
+                let (state, response, error) = match result {
+                    Ok(response) => match parse_eq_status(feature, &response) {
+                        Ok(state) => (state, Some(response), None),
+                        Err(error) => (EqState::Unknown, Some(response), Some(error.to_string())),
+                    },
+                    Err(error) => {
+                        let message = error.to_string();
+                        (EqState::Unavailable(message.clone()), None, Some(message))
+                    }
+                };
+                status.record_evidence(EqEvidence {
+                    feature,
+                    response,
+                    error,
+                    elapsed_millis: started.elapsed().as_millis(),
+                });
+                match feature {
+                    EqFeature::MultEqXt32 => status.multeq_xt32 = state,
+                    EqFeature::DynamicEq => status.dynamic_eq = state,
+                    EqFeature::DynamicEqReferenceLevel => status.dynamic_eq_reference_level = state,
+                    EqFeature::DynamicVolume => status.dynamic_volume = state,
+                    EqFeature::AudysseyLfc => status.audyssey_lfc = state,
+                    EqFeature::DiracLive => status.dirac_live = state,
+                }
+            }
+            status.generation = self.connection_generation();
+            status.freshness = Freshness::Live;
+            Ok(status)
+        })
     }
 }
 

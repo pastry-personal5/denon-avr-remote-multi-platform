@@ -22,6 +22,8 @@ sound modes. The probe sends the documented baseline queries `SI?`, `SD?`,
 `DC?`, `MS?`, and `CV?`, one at a time with CR framing. It also sends the
 diagnostic candidate queries
 `SYSDA ?`, `OPINFINS ?`, `OPINFASP ?`, `SYSMI ?`, and `SSINFAISFSV ?`.
+The same diagnostic probe also emits the Phase 8 read-only candidate queries;
+those rows remain raw evidence and are not promoted by this Phase 7 surface.
 Output records receiver identity, epoch timestamp,
 elapsed time, status, and raw response; failures produce a nonzero exit status.
 If a query times out or encounters a read error, the probe reconnects before

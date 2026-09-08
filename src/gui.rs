@@ -10,8 +10,9 @@ use crate::application::{
     SessionFactory,
 };
 use crate::domain::{
-    ConfiguredReceivers, ListeningModeGroup, MainZoneControl, MainZoneSnapshot, Model,
-    ModelCapabilities, PowerState,
+    ConfiguredReceivers, EqFeature, EqStatus, ListeningModeGroup, MainZoneControl,
+    MainZoneSnapshot, Model, ModelCapabilities, PowerState, QuickSelectSlot, QuickSelectSnapshot,
+    Registered, ValidatedPhase8Capabilities,
 };
 use crate::infrastructure::{AvrSessionFactory, SsdpDiscoveryAdapter, YamlConfigRepository};
 use iced::futures::SinkExt;
@@ -50,6 +51,8 @@ enum BridgeCommand {
     Refresh(u64),
     Disconnect(u64),
     Control(u64, MainZoneControl, Option<u64>),
+    RefreshPhase8(u64),
+    RecallQuickSelect(u64, QuickSelectSlot, Option<u64>),
     Shutdown(u64),
 }
 
@@ -62,11 +65,18 @@ pub struct ControllerBridge {
 
 impl ControllerBridge {
     pub fn new<F: SessionFactory>(factory: F) -> Self {
+        Self::new_with_config(factory, Default::default())
+    }
+
+    pub fn new_with_config<F: SessionFactory>(
+        factory: F,
+        config: crate::application::ControllerConfig,
+    ) -> Self {
         let (commands, mut command_rx) = mpsc::channel(16);
         let (event_sender, event_rx) = mpsc::channel(32);
         let events = Arc::new(Mutex::new(event_rx));
         tokio::spawn(async move {
-            let handle = ReceiverController::spawn(factory, Default::default());
+            let handle = ReceiverController::spawn(factory, config);
             run_bridge(handle, &mut command_rx, event_sender).await;
         });
         Self {
@@ -132,6 +142,10 @@ async fn run_bridge(
             BridgeCommand::Disconnect(id) => (id, handle.disconnect().await),
             BridgeCommand::Control(id, control, version) => {
                 (id, handle.control(control, version).await)
+            }
+            BridgeCommand::RefreshPhase8(id) => (id, handle.refresh_phase8().await),
+            BridgeCommand::RecallQuickSelect(id, slot, expected_version) => {
+                (id, handle.recall_quick_select(slot, expected_version).await)
             }
             BridgeCommand::Shutdown(id) => (id, handle.shutdown().await),
         };
@@ -202,6 +216,8 @@ pub enum Message {
     Unmute,
     SelectListeningModeGroup(ListeningModeGroup),
     SelectSurroundMode(String),
+    RefreshPhase8,
+    RecallQuickSelect(QuickSelectSlot),
     Shutdown,
     Bridge(Box<BridgeEvent>),
 }
@@ -219,11 +235,21 @@ pub struct Gui {
     pub name: String,
     pub request_id: u64,
     pub generation: u64,
+    pub quick_select: QuickSelectSnapshot,
+    pub eq_status: EqStatus,
+    validated_phase8: Option<ValidatedPhase8Capabilities>,
     bridge: ControllerBridge,
 }
 
 impl Gui {
     pub fn new(bridge: ControllerBridge) -> Self {
+        Self::new_with_phase8(bridge, None)
+    }
+
+    pub fn new_with_phase8(
+        bridge: ControllerBridge,
+        validated_phase8: Option<ValidatedPhase8Capabilities>,
+    ) -> Self {
         Self {
             route: Route::Dashboard,
             window_class: WindowClass::Wide,
@@ -237,6 +263,9 @@ impl Gui {
             name: String::new(),
             request_id: 0,
             generation: 0,
+            quick_select: QuickSelectSnapshot::default(),
+            eq_status: EqStatus::default(),
+            validated_phase8,
             bridge,
         }
     }
@@ -251,6 +280,17 @@ impl Gui {
             async move { bridge.send(command).await },
             Message::CommandFinished,
         )
+    }
+
+    fn selected_capabilities(&self) -> ModelCapabilities {
+        let model = self
+            .selection
+            .as_ref()
+            .and_then(|selection| selection.identity().model)
+            .map(|model| Model::from_reported(&model))
+            .unwrap_or(Model::Unknown);
+        ModelCapabilities::for_model(model)
+            .with_validated_phase8(self.validated_phase8.unwrap_or_default())
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
@@ -297,6 +337,8 @@ impl Gui {
             Message::Select(selection) => {
                 self.selection = Some(selection.clone());
                 self.snapshot.invalidate();
+                self.quick_select.invalidate();
+                self.eq_status.invalidate();
                 let id = self.next_request();
                 self.command(BridgeCommand::Select(id, selection))
             }
@@ -326,6 +368,20 @@ impl Gui {
                     Task::none()
                 }
             },
+            Message::RefreshPhase8 => {
+                let id = self.next_request();
+                self.announcement = "Refreshing Quick Select and EQ status…".into();
+                self.command(BridgeCommand::RefreshPhase8(id))
+            }
+            Message::RecallQuickSelect(slot) => {
+                let id = self.next_request();
+                self.announcement = format!("Recalling Main Zone Quick Select {}…", slot.number());
+                self.command(BridgeCommand::RecallQuickSelect(
+                    id,
+                    slot,
+                    Some(self.quick_select.resource_version()),
+                ))
+            }
             Message::Discover => {
                 self.announcement = "Searching for receivers…".into();
                 Task::perform(
@@ -385,8 +441,24 @@ impl Gui {
                     self.generation = event.generation;
                 }
                 match event.event {
-                    ReceiverEvent::Lifecycle(lifecycle) => self.lifecycle = lifecycle,
+                    ReceiverEvent::Lifecycle(lifecycle) => {
+                        if matches!(
+                            &lifecycle,
+                            crate::application::Lifecycle::Selected
+                                | crate::application::Lifecycle::Reconnecting { .. }
+                                | crate::application::Lifecycle::Disconnected
+                        ) {
+                            self.quick_select.invalidate();
+                            self.eq_status.invalidate();
+                        }
+                        self.lifecycle = lifecycle;
+                    }
                     ReceiverEvent::Snapshot(snapshot) => self.snapshot = snapshot,
+                    ReceiverEvent::QuickSelect(snapshot) => self.quick_select = snapshot,
+                    ReceiverEvent::EqStatus(status) => self.eq_status = status,
+                    ReceiverEvent::QuickSelectRecall(outcome) => {
+                        self.announcement = format!("Quick Select: {outcome:?}")
+                    }
                     ReceiverEvent::Control(result) => self.announcement = control_message(&result),
                     ReceiverEvent::FieldError { field, error } => {
                         self.announcement =
@@ -426,21 +498,28 @@ impl Gui {
             text(format!("{} · {:?}", self.announcement, self.lifecycle))
         ]
         .spacing(16);
-        let body = match self.route {
-            Route::Dashboard => self.dashboard(),
-            Route::Receivers => self.receivers(),
-            Route::Settings => column![
+        let body =
+            match self.route {
+                Route::Dashboard => self.dashboard(),
+                Route::Receivers => self.receivers(),
+                Route::Settings => column![
                 text("Settings").size(32),
-                text("Dark appearance · YAML configuration")
+                text("Dark appearance · YAML configuration"),
+                text("Quick Select management"),
+                text("Slot names and registered-item editing require validated receiver support.")
             ]
-            .spacing(16),
-            Route::Diagnostics => column![
+                .spacing(16),
+                Route::Diagnostics => column![
                 text("Diagnostics").size(32),
                 text(format!("Lifecycle: {:?}", self.lifecycle)),
-                text(format!("Snapshot authority: {:?}", self.snapshot.authority))
+                text(format!("Snapshot authority: {:?}", self.snapshot.authority)),
+                text(format!("Quick Select freshness: {:?}", self.quick_select.freshness)),
+                text(eq_summary(&self.eq_status)),
+                text(eq_evidence_summary(&self.eq_status)),
+                text("EQ fields are reported independently; unavailable and unknown are not Off.")
             ]
-            .spacing(16),
-        };
+                .spacing(16),
+            };
         container(column![nav, toolbar, body].spacing(20).padding(24))
             .width(Length::Fill)
             .height(Length::Fill)
@@ -485,12 +564,10 @@ impl Gui {
             .value()
             .map(ToString::to_string)
             .unwrap_or_else(|| "Unavailable".into());
-        let writable = self
-            .selection
-            .as_ref()
-            .and_then(|selection| selection.identity().model)
-            .map(|model| ModelCapabilities::for_model(Model::from_reported(&model)).writable)
-            .unwrap_or(false);
+        let phase8_capabilities = self.selected_capabilities();
+        let writable = phase8_capabilities.writable;
+        let quick_select_supported = phase8_capabilities.quick_select_recall;
+        let phase8_status_supported = quick_select_supported || phase8_capabilities.eq_status;
         let controls = if writable {
             row![
                 button("Mute").on_press(Message::Mute),
@@ -540,6 +617,32 @@ impl Gui {
             text("Mode group").size(18),
             group_controls,
             mode_controls,
+            text("Quick Select").size(22),
+            if quick_select_supported {
+                row![QuickSelectSlot::ALL
+                    .into_iter()
+                    .fold(row![].spacing(8), |r, slot| r.push(
+                        button(text(format!("Quick Select {}", slot.number())))
+                            .on_press(Message::RecallQuickSelect(slot))
+                    ))]
+            } else {
+                row![text(
+                    "Quick Select is unavailable until Phase 8 protocol evidence is validated."
+                )]
+            },
+            QuickSelectSlot::ALL
+                .into_iter()
+                .fold(column![].spacing(4), |page, slot| page
+                    .push(text(quick_select_line(&self.quick_select, slot)))),
+            text("EQ Status").size(22),
+            if phase8_status_supported {
+                row![button("Refresh Phase 8 status").on_press(Message::RefreshPhase8)]
+            } else {
+                row![text(
+                    "EQ status is unavailable until Phase 8 protocol evidence is validated."
+                )]
+            },
+            text(eq_summary(&self.eq_status)),
         ]
         .spacing(14)
     }
@@ -586,13 +689,106 @@ impl Gui {
     }
 }
 
+fn eq_summary(status: &EqStatus) -> String {
+    EqFeature::ALL
+        .into_iter()
+        .map(|feature| {
+            format!(
+                "{}: {}",
+                feature.label(),
+                status.state(feature).explanation()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
+
+fn eq_evidence_summary(status: &EqStatus) -> String {
+    if status.evidence.is_empty() {
+        return "No EQ query evidence recorded.".into();
+    }
+    status
+        .evidence
+        .iter()
+        .map(|evidence| {
+            format!(
+                "{}: {} ms; response={:?}; error={:?}",
+                evidence.feature.label(),
+                evidence.elapsed_millis,
+                evidence.response,
+                evidence.error
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
+
+fn quick_select_line(snapshot: &QuickSelectSnapshot, slot: QuickSelectSlot) -> String {
+    let Some(preset) = snapshot.preset(slot) else {
+        return format!(
+            "Quick Select {}: Unknown (slot details are not queryable)",
+            slot.number()
+        );
+    };
+    let name = preset
+        .name
+        .as_ref()
+        .map(|n| n.as_str())
+        .unwrap_or("Unnamed");
+    let summary = [
+        ("source", registered_label(&preset.summary.input)),
+        ("volume", registered_label(&preset.summary.volume)),
+        ("mode", registered_label(&preset.summary.sound_mode)),
+        (
+            "channel levels",
+            registered_label(&preset.summary.channel_levels),
+        ),
+        ("Audyssey", registered_label(&preset.summary.audyssey)),
+        ("Restorer", registered_label(&preset.summary.restorer)),
+        (
+            "Dialog Enhancer",
+            registered_label(&preset.summary.dialog_enhancer),
+        ),
+        (
+            "HDMI output",
+            registered_label(&preset.summary.hdmi_video_output),
+        ),
+        (
+            "speaker preset",
+            registered_label(&preset.summary.speaker_preset),
+        ),
+        ("Dirac Live", registered_label(&preset.summary.dirac_live)),
+    ]
+    .into_iter()
+    .map(|(label, state)| format!("{label}={state}"))
+    .collect::<Vec<_>>()
+    .join(", ");
+    format!(
+        "Quick Select {} — {} · registered fields: {}",
+        slot.number(),
+        name,
+        summary
+    )
+}
+
+fn registered_label<T>(field: &Registered<T>) -> &'static str {
+    match field {
+        Registered::Included(_) => "included",
+        Registered::Omitted => "not included",
+        Registered::Unknown => "unknown",
+    }
+}
+
 fn control_message(result: &ControlResult) -> String {
     format!("Control outcome: {result:?}")
 }
 
 pub fn boot() -> (Gui, Task<Message>) {
-    let bridge = ControllerBridge::new(AvrSessionFactory::default());
-    let gui = Gui::new(bridge);
+    let controller_config = crate::application::ControllerConfig::default();
+    let gui = Gui::new_with_phase8(
+        ControllerBridge::new_with_config(AvrSessionFactory::default(), controller_config.clone()),
+        controller_config.validated_phase8,
+    );
     let repository = YamlConfigRepository::default();
     (
         gui,
@@ -640,5 +836,42 @@ mod tests {
             }),
         })));
         assert_eq!(gui.lifecycle, crate::application::Lifecycle::NoReceiver);
+    }
+
+    #[test]
+    fn quick_select_display_names_every_registered_field_state() {
+        let slot = QuickSelectSlot::new(1).unwrap();
+        let mut snapshot = QuickSelectSnapshot::default();
+        snapshot.set(crate::domain::QuickSelectPreset {
+            slot,
+            name: None,
+            available: true,
+            summary: Default::default(),
+        });
+        let display = quick_select_line(&snapshot, slot);
+        assert!(display.contains("channel levels=unknown"));
+        assert!(display.contains("Dirac Live=unknown"));
+    }
+
+    #[tokio::test]
+    async fn gui_uses_explicit_phase8_validation_for_known_models() {
+        let bridge = ControllerBridge::new(AvrSessionFactory::default());
+        let mut gui = Gui::new_with_phase8(
+            bridge,
+            Some(crate::domain::ValidatedPhase8Capabilities {
+                quick_select_recall: true,
+                eq_status: true,
+            }),
+        );
+        gui.selection = Some(ReceiverSelection::ExplicitHost(
+            crate::domain::ReceiverIdentity {
+                host: "receiver.local".into(),
+                model: Some("AVR-X3800H".into()),
+                friendly_name: None,
+            },
+        ));
+        let capabilities = gui.selected_capabilities();
+        assert!(capabilities.quick_select_recall);
+        assert!(capabilities.eq_status);
     }
 }

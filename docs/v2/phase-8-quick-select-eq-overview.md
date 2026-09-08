@@ -1,6 +1,10 @@
 # Version 2 - Phase 8 Overview
 
-**Status: Planned — complete before Phases 9 and 10.**
+**Status: Implemented — live receiver validation remains a release gate.**
+
+The typed paths and UI are implemented, but the Phase 8 capability flags remain
+disabled until the required X3800H live records confirm the candidate wire
+commands. Unknown and unvalidated receivers remain read-only.
 
 Phase 8 adds Main Zone Quick Select presets and EQ/room-correction status to
 the Phase 5 GUI, building on the grouped listening modes from Phase 6.
@@ -19,7 +23,9 @@ mode, channel levels, Audyssey parameters, Restorer, Dialog Enhancer, HDMI
 video output, speaker preset, Dirac Live, and related playback settings. The
 GUI shows each slot's receiver name and registered-item summary.
 
-The first delivery supports reading and recalling validated receiver presets.
+The first delivery supports recalling validated receiver presets. It does not
+claim a per-slot read/query operation because that wire behavior has not been
+validated.
 Editing slot names, choosing registered items, and saving a preset are
 separate operations and require explicit capability and protocol evidence.
 No preset operation silently falls back to another source, mode, or volume.
@@ -41,16 +47,17 @@ classification, installers, and cloud services remain out of scope.
 - Dashboard Quick Select controls and Settings management entry point.
 - Dashboard EQ Status summary and detailed Diagnostics presentation.
 - Typed, independent room-correction status fields and capability gates.
-- Automated fixtures and live validation records for every supported command,
-  query, and preset field.
+- Automated fixtures and live validation records for every supported command
+  and status query; Quick Select recall uses the execute-only `MSQUICKn`
+  command family.
 
 ## Acceptance Criteria
 
 - Recalling a preset clearly identifies the target slot and Main Zone.
 - Preset recall is execute-once and never automatically replayed after a
   timeout or reconnect.
-- The UI distinguishes a preset's registered fields from fields it does not
-  include.
+- The UI distinguishes known registered fields from fields that remain
+  unknown because no validated slot query has populated them.
 - EQ Status reports each validated processing feature independently.
 - Direct and Pure Direct modes, missing Audyssey calibration, unavailable
   Dirac state, and unknown receiver responses are represented honestly.
