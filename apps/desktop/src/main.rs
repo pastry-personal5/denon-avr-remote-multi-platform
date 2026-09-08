@@ -12,6 +12,12 @@ fn main() -> iced::Result {
         denon_avr_gui_lib::view,
     )
     .subscription(denon_avr_gui_lib::subscription)
+    .theme(denon_avr_gui_lib::app_theme)
+    .window(iced::window::Settings {
+        size: iced::Size::new(1400.0, 880.0),
+        min_size: Some(iced::Size::new(1400.0, 880.0)),
+        ..Default::default()
+    })
     .title("Denon AVR Remote")
     .run()
 }

@@ -25,6 +25,7 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{lookup_host, TcpStream};
 use tokio::sync::{mpsc, oneshot};
+use tokio::task::JoinHandle;
 
 const DEFAULT_MAX_LINE_LENGTH: usize = 135;
 
@@ -115,6 +116,7 @@ pub struct AvrSession {
     events: mpsc::Receiver<AvrSessionEvent>,
     generation: Arc<AtomicU64>,
     snapshot: Arc<Mutex<MainZoneSnapshot>>,
+    task_handle: JoinHandle<()>,
 }
 
 /// Production session factory used by persistent application clients.
@@ -158,7 +160,7 @@ impl AvrSession {
         let (event_tx, events) = mpsc::channel(32);
         let generation = Arc::new(AtomicU64::new(0));
         let snapshot = Arc::new(Mutex::new(MainZoneSnapshot::default()));
-        tokio::spawn(run_session(
+        let task_handle = tokio::spawn(run_session(
             address,
             config,
             reader,
@@ -172,6 +174,7 @@ impl AvrSession {
             events,
             generation,
             snapshot,
+            task_handle,
         })
     }
 
@@ -405,7 +408,26 @@ impl ReceiverSession for AvrSession {
     }
 
     fn close(&mut self) -> BoxFuture<'_, Result<(), OperationError>> {
-        Box::pin(async { Ok(()) })
+        Box::pin(async {
+            let task_handle =
+                std::mem::replace(&mut self.task_handle, tokio::task::spawn(async {}));
+            task_handle.abort();
+            match task_handle.await {
+                Ok(()) => Ok(()),
+                Err(join_error) => {
+                    // Treat normal cancellation as successful closure
+                    if join_error.is_cancelled() {
+                        Ok(())
+                    } else {
+                        Err(OperationError::new(
+                            OperationErrorKind::Stopped,
+                            "session shutdown",
+                            format!("unexpected task join error: {}", join_error),
+                        ))
+                    }
+                }
+            }
+        })
     }
 
     fn query_audio_context(&mut self) -> BoxFuture<'_, AudioContextSnapshot> {

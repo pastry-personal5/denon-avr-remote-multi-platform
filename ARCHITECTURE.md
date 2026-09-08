@@ -38,7 +38,7 @@ domain types     protocol primitives
 
 Phases 1 and 3–7 established the layers, controls, controller, desktop GUI,
 listening modes, and diagnostic observations. Phase 8 adds Quick Select and EQ
-status. Phase 9 then replaces this package with an enforced Cargo workspace;
+status. Phase 9 replaced the former package with an enforced Cargo workspace;
 Phase 10 applies the desktop visual identity. Detailed scope and acceptance
 criteria live in [the V2 plans](docs/v2/phase-8-quick-select-eq-overview.md),
 [Phase 9](docs/v2/phase-9-workspace-refactor-overview.md), and

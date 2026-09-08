@@ -1,6 +1,6 @@
 # Version 2 - Phase 9 Overview
 
-**Status: Implemented.**
+**Status: Complete — 2026-09-09**
 
 Phase 9 replaces the current single-package layout with a virtual Cargo
 workspace and clarifies the architecture without changing supported receiver
