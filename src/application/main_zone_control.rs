@@ -16,6 +16,47 @@ pub enum ControlOutcome {
     TransportFailure(OperationError),
 }
 
+/// One-shot admission policy used by the CLI. It performs the authoritative
+/// preflight and emits at most one state-changing dispatch; confirmation is
+/// intentionally left to a later status query.
+pub fn dispatch_main_zone_control(
+    status: &mut (impl StatusGateway + ControlGateway),
+    capabilities: &ModelCapabilities,
+    control: MainZoneControl,
+    expected_version: u64,
+) -> ControlOutcome {
+    let preflight = crate::application::main_zone_status::query_main_zone_status(status);
+    if preflight.resource_version() != expected_version {
+        return ControlOutcome::Rejected(OperationError::new(
+            OperationErrorKind::Conflict,
+            "checking resource version",
+            format!(
+                "expected {expected_version}, current {}",
+                preflight.resource_version()
+            ),
+        ));
+    }
+    if !capabilities.supports_control(&control) {
+        return ControlOutcome::Unsupported(
+            "the selected receiver does not support this validated control".into(),
+        );
+    }
+    if preflight
+        .value(control_field(&control))
+        .is_some_and(|value| control_matches(&control, &value))
+    {
+        return ControlOutcome::NoOp(preflight);
+    }
+    match status.execute_once(control) {
+        Ok(()) => ControlOutcome::Unconfirmed(OperationError::new(
+            OperationErrorKind::Unavailable,
+            "confirming control",
+            "dispatched once; confirmation is deferred to a later status query",
+        )),
+        Err(error) => ControlOutcome::TransportFailure(error),
+    }
+}
+
 pub fn execute_main_zone_control(
     status: &mut (impl StatusGateway + ControlGateway),
     capabilities: &ModelCapabilities,

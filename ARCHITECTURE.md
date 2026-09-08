@@ -119,10 +119,10 @@ Read-only queries may repeat after reconnect; state-changing commands never do.
 Each command is capability-gated, serialized, and followed by an authoritative
 query. Only live-validated X3800H controls and choice values are exposed.
 
-Phase 7 extracts the temporary GUI worker into an application-owned
-`ReceiverController`, extends the Phase 1 ports for long-lived lifecycle
-coordination, and completes graceful shutdown and observability. The existing
-CLI and canonical layered APIs remain supported.
+Phase 4 provides the application-owned `ReceiverController`, typed session
+factory, lifecycle coordination, bounded shutdown, and observability. Phase 7
+integrates the GUI with that controller; the existing CLI and canonical layered
+APIs remain supported.
 
 ```text
 CLI presentation             Iced presentation
@@ -143,8 +143,7 @@ invariants above and add tests before becoming a user-facing capability.
 
 - Implement the Version 2 read-only Iced GUI and configuration migration
   defined by the Phase 2 plans.
-- Extract the reusable controller, injectable edges, cancellation, graceful
-  shutdown, and observability defined by the Phase 7 plans.
+- Integrate the GUI presentation layer with the Phase 4 controller.
 - Add property/fuzz tests for CR framing, malformed UTF-8, oversized frames,
   response correlation, and configuration parsing.
 - Define a capability registry keyed by model and firmware evidence instead of

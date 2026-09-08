@@ -8,7 +8,7 @@ pub mod config_yaml;
 pub mod discovery_ssdp;
 pub mod tcp_avr;
 
-pub use avr_session::AvrSession;
+pub use avr_session::{AvrSession, AvrSessionConfig, AvrSessionFactory};
 pub use config_yaml::YamlConfigRepository;
 pub use discovery_ssdp::SsdpDiscoveryAdapter;
 pub use tcp_avr::SyncAvrClient;

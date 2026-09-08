@@ -11,9 +11,10 @@ the canonical CLI or layered APIs.
 Main Zone is the only supported zone in all v2 phases. Additional zones are
 excluded from this lifecycle phase and the wider v2 roadmap.
 
-Phase 7 extracts the receiver lifecycle and state machine from the temporary
-Iced worker, completes the application interfaces needed for deterministic
-lifecycle control, and adds graceful cancellation, shutdown, and observability.
+Phase 7 integrates the completed Phase 4 receiver controller with the Iced
+presentation layer. It maps typed controller events into view state and user
+messages; lifecycle, selection, retry, confirmation, and shutdown policy are
+already application-owned.
 The GUI becomes one consumer of reusable application operations rather than
 the owner of receiver policy.
 

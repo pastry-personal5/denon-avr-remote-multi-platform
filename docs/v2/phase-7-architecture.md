@@ -3,8 +3,8 @@
 Main Zone is the only supported zone in all v2 phases. Additional zones are
 excluded from the controller and GUI architecture.
 
-Phase 7 replaces the temporary GUI-owned receiver worker with an
-application-owned controller built on the Phase 1 layers. Dependencies continue
+Phase 4 provides the application-owned controller; Phase 7 integrates the
+temporary GUI worker with it. Dependencies continue
 to point inward: Iced and the CLI translate presentation intents into
 application commands, while protocol modules remain independent of sockets,
 runtimes, and operating-system services.

@@ -1,5 +1,6 @@
 //! Persistent asynchronous AVR TCP sessions.
 
+use crate::application::controller::{ReceiverSession, SessionEvent as ControllerSessionEvent};
 use crate::application::{
     AsyncControlGateway, AsyncStatusGateway, BoxFuture, OperationError, OperationErrorKind,
     SessionEvent,
@@ -111,6 +112,27 @@ pub struct AvrSession {
     events: mpsc::Receiver<AvrSessionEvent>,
     generation: Arc<AtomicU64>,
     snapshot: Arc<Mutex<MainZoneSnapshot>>,
+}
+
+/// Production session factory used by persistent application clients.
+#[derive(Debug, Clone, Default)]
+pub struct AvrSessionFactory {
+    pub config: AvrSessionConfig,
+}
+
+impl crate::application::SessionFactory for AvrSessionFactory {
+    fn connect(
+        &self,
+        identity: crate::domain::ReceiverIdentity,
+    ) -> BoxFuture<'_, Result<Box<dyn ReceiverSession>, OperationError>> {
+        let config = self.config.clone();
+        Box::pin(async move {
+            AvrSession::connect(&identity.host, config)
+                .await
+                .map(|session| Box::new(session) as Box<dyn ReceiverSession>)
+                .map_err(OperationError::from)
+        })
+    }
 }
 
 impl AvrSession {
@@ -263,6 +285,35 @@ impl AsyncControlGateway for AvrSession {
                 .map(|_| ())
                 .map_err(OperationError::from)
         })
+    }
+}
+
+impl ReceiverSession for AvrSession {
+    fn query_field(
+        &mut self,
+        field: MainZoneField,
+    ) -> BoxFuture<'_, Result<MainZoneValue, OperationError>> {
+        <Self as AsyncStatusGateway>::query_field(self, field)
+    }
+
+    fn execute_once(
+        &mut self,
+        control: crate::domain::MainZoneControl,
+    ) -> BoxFuture<'_, Result<(), OperationError>> {
+        <Self as AsyncControlGateway>::execute_once(self, control)
+    }
+
+    fn next_event(&mut self) -> BoxFuture<'_, Result<ControllerSessionEvent, OperationError>> {
+        Box::pin(async move {
+            match <Self as AsyncStatusGateway>::next_event(self).await? {
+                SessionEvent::Connection(state) => Ok(ControllerSessionEvent::Connection(state)),
+                SessionEvent::MainZone(event) => Ok(ControllerSessionEvent::MainZone(event)),
+            }
+        })
+    }
+
+    fn close(&mut self) -> BoxFuture<'_, Result<(), OperationError>> {
+        Box::pin(async { Ok(()) })
     }
 }
 

@@ -9,6 +9,7 @@ pub mod infrastructure;
 pub mod protocol;
 
 pub use application::{query_main_zone_status, query_main_zone_status_async};
+pub use application::{ControllerConfig, ReceiverCommand, ReceiverController, ReceiverEvent};
 
 pub use application::ports::{
     AsyncConfigRepository, AsyncControlGateway, AsyncReceiverDiscovery, AsyncStatusGateway,

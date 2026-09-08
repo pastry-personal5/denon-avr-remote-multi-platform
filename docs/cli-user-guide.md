@@ -129,3 +129,11 @@ replacement flow.
 - See the [Phase 1 architecture](v1/phase-1-architecture.md), [Phase 2
 overview](v2/phase-2-overview.md), and [Phase 3 overview](v2/phase-3-overview.md)
 for evidence and validation boundaries.
+# Controller-backed operation model
+
+The CLI uses the application controller’s typed admission policy for receiver
+selection, status reads, and Main Zone controls. A `set` command performs one
+validated dispatch only; it does not claim that the receiver has accepted the
+new value. Run the corresponding `get` command to obtain authoritative
+confirmation. Resource versions are selected automatically from the preflight
+snapshot unless `--resource-version` is supplied.

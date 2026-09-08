@@ -15,6 +15,8 @@ and this project adheres to Semantic Versioning.
 - Added the Phase 2 information architecture and GUI design specifications.
 - Marked Phase 3 complete after implementing typed Main Zone controls, CLI
   dispatch, capability gating, and normalized volume-level handling.
+- Added the Phase 4 application-owned receiver controller contract, typed
+  session factory, lifecycle events, bounded close, and architecture records.
 
 ### Changed
 
@@ -41,6 +43,7 @@ and this project adheres to Semantic Versioning.
   verification for normalized volume control.
 - Replaced the generic future GUI boundary with the phased Version 2 user and
   API contract.
+- Reframed Phase 7 as GUI integration over the completed Phase 4 controller.
 
 ### Fixed
 
