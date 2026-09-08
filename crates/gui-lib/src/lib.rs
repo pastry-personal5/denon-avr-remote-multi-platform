@@ -281,6 +281,7 @@ pub enum Message {
     SaveDiscovered(denon_avr_domain::DiscoveredReceiver),
     DiscoveredSaved(Result<(ConfiguredReceivers, ReceiverSelection), String>),
     ManualSetup,
+    ManualSaved(Result<(ConfiguredReceivers, ReceiverSelection), String>),
     Select(ReceiverSelection),
     Connect,
     Refresh,
@@ -482,6 +483,13 @@ impl Gui {
                         ) {
                             self.invalidate_phase8();
                         }
+                        if matches!(
+                            &lifecycle,
+                            denon_avr_application::Lifecycle::Reconnecting { .. }
+                                | denon_avr_application::Lifecycle::Disconnected
+                        ) {
+                            self.snapshot.invalidate();
+                        }
                         self.lifecycle = lifecycle;
                     }
                     ReceiverEvent::Snapshot(snapshot) => {
@@ -628,12 +636,39 @@ impl Gui {
                     friendly_name: (!self.name.trim().is_empty())
                         .then(|| self.name.trim().to_owned()),
                 };
-                self.selection = Some(ReceiverSelection::ExplicitHost(identity.clone()));
-                let id = self.next_request();
-                self.command(BridgeCommand::Select(
-                    id,
-                    ReceiverSelection::ExplicitHost(identity),
-                ))
+                let name = identity
+                    .friendly_name
+                    .clone()
+                    .unwrap_or_else(|| identity.host.clone());
+                let config = ConfiguredReceivers {
+                    current: Some(name.clone()),
+                    receivers: BTreeMap::from([(name.clone(), identity.clone())]),
+                };
+                let selection = ReceiverSelection::Saved { name, identity };
+                let configuration = Arc::clone(&self.configuration);
+                self.announce(format!(
+                    "Saving {} as the current receiver…",
+                    selection_label(&selection)
+                ));
+                Task::perform(
+                    async move {
+                        configuration
+                            .save(&config)
+                            .await
+                            .map(|_| (config, selection))
+                            .map_err(|error| error.to_string())
+                    },
+                    Message::ManualSaved,
+                )
+            }
+            Message::ManualSaved(Ok((config, selection))) => {
+                self.configured = config;
+                self.announce("Receiver saved; connecting…");
+                self.update(Message::Select(selection))
+            }
+            Message::ManualSaved(Err(error)) => {
+                self.announce(format!("Could not save receiver: {error}"));
+                Task::none()
             }
             Message::Shutdown => {
                 let id = self.next_request();
@@ -1383,6 +1418,34 @@ mod tests {
             }),
         })));
         assert_eq!(gui.lifecycle, denon_avr_application::Lifecycle::NoReceiver);
+    }
+
+    #[tokio::test]
+    async fn disconnected_lifecycle_invalidates_visible_main_zone_status() {
+        let bridge = ControllerBridge::new(AvrSessionFactory::default());
+        let mut gui = Gui::new(bridge);
+        gui.request_id = 1;
+        gui.lifecycle = denon_avr_application::Lifecycle::Connected { generation: 1 };
+        gui.snapshot.set_value(
+            denon_avr_domain::MainZoneValue::Power(denon_avr_domain::PowerState::On),
+            denon_avr_domain::StateAuthority::Authoritative,
+        );
+
+        let _ = gui.update(Message::Bridge(Box::new(BridgeEvent {
+            request_id: 1,
+            generation: 1,
+            event: ReceiverEvent::Lifecycle(denon_avr_application::Lifecycle::Disconnected),
+        })));
+
+        assert_eq!(
+            gui.lifecycle,
+            denon_avr_application::Lifecycle::Disconnected
+        );
+        assert!(gui.snapshot.power.value().is_none());
+        assert_eq!(
+            gui.snapshot.freshness,
+            denon_avr_domain::Freshness::Invalidated
+        );
     }
 
     #[test]

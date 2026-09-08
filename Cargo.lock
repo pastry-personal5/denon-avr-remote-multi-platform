@@ -668,6 +668,7 @@ dependencies = [
  "denon-avr-domain",
  "denon-avr-infrastructure",
  "iced",
+ "iced_runtime",
  "tokio",
 ]
 

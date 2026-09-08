@@ -328,7 +328,6 @@ impl<F: SessionFactory> State<F> {
             ReceiverCommand::Select(s) => {
                 self.disconnect().await?;
                 self.selection = Some(s);
-                self.snapshot.invalidate();
                 Self::emit(events, ReceiverEvent::Lifecycle(Lifecycle::Selected)).await;
                 Ok(Some(ReceiverEvent::Snapshot(self.snapshot.clone())))
             }
@@ -337,7 +336,9 @@ impl<F: SessionFactory> State<F> {
                 Ok(Some(ReceiverEvent::Lifecycle(self.lifecycle.clone())))
             }
             ReceiverCommand::Disconnect => {
-                self.disconnect().await?;
+                let result = self.disconnect().await;
+                Self::emit(events, ReceiverEvent::Snapshot(self.snapshot.clone())).await;
+                result?;
                 Ok(Some(ReceiverEvent::Lifecycle(self.lifecycle.clone())))
             }
             ReceiverCommand::Refresh => {
@@ -409,12 +410,17 @@ impl<F: SessionFactory> State<F> {
             }
             Err(e) => {
                 self.lifecycle = Lifecycle::Disconnected;
+                self.snapshot.invalidate();
+                self.invalidate_phase8();
                 Self::emit(events, ReceiverEvent::Lifecycle(Lifecycle::Disconnected)).await;
+                Self::emit(events, ReceiverEvent::Snapshot(self.snapshot.clone())).await;
                 Err(e)
             }
         }
     }
     async fn disconnect(&mut self) -> Result<(), OperationError> {
+        self.snapshot.invalidate();
+        self.invalidate_phase8();
         if let Some(mut s) = self.session.take() {
             tokio::time::timeout(self.config.close_timeout, s.close())
                 .await
@@ -425,7 +431,6 @@ impl<F: SessionFactory> State<F> {
         } else {
             Lifecycle::NoReceiver
         };
-        self.invalidate_phase8();
         Ok(())
     }
 
@@ -456,13 +461,20 @@ impl<F: SessionFactory> State<F> {
                     self.snapshot.invalidate();
                     self.invalidate_phase8();
                     Self::emit(events, ReceiverEvent::Lifecycle(self.lifecycle.clone())).await;
+                    Self::emit(events, ReceiverEvent::Snapshot(self.snapshot.clone())).await;
                 }
                 Ok(SessionEvent::Connection(ConnectionState::Connected)) => {
-                    if matches!(self.lifecycle, Lifecycle::Reconnecting { .. }) {
+                    let was_reconnecting = matches!(self.lifecycle, Lifecycle::Reconnecting { .. });
+                    if was_reconnecting {
                         self.lifecycle = Lifecycle::Connected {
                             generation: self.generation,
                         };
                         Self::emit(events, ReceiverEvent::Lifecycle(self.lifecycle.clone())).await;
+                        if let Err(error) = self.refresh(events).await {
+                            self.observability.record(Diagnostic::Timeout {
+                                context: format!("refreshing after reconnect: {error}"),
+                            });
+                        }
                     }
                 }
                 Ok(SessionEvent::Connection(ConnectionState::Disconnected)) => {
@@ -470,6 +482,7 @@ impl<F: SessionFactory> State<F> {
                     self.snapshot.invalidate();
                     self.invalidate_phase8();
                     Self::emit(events, ReceiverEvent::Lifecycle(self.lifecycle.clone())).await;
+                    Self::emit(events, ReceiverEvent::Snapshot(self.snapshot.clone())).await;
                 }
                 Ok(SessionEvent::MainZone(event)) => {
                     self.snapshot.apply_event(event);
@@ -483,6 +496,7 @@ impl<F: SessionFactory> State<F> {
                     self.snapshot.invalidate();
                     self.invalidate_phase8();
                     Self::emit(events, ReceiverEvent::Lifecycle(self.lifecycle.clone())).await;
+                    Self::emit(events, ReceiverEvent::Snapshot(self.snapshot.clone())).await;
                     return;
                 }
             }

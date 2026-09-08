@@ -15,3 +15,4 @@ tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
 
 [dev-dependencies]
 denon-avr-infrastructure = { path = "../infrastructure" }
+iced_runtime = "0.14"
