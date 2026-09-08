@@ -60,6 +60,9 @@ pub struct EqEvidence {
     pub response: Option<String>,
     pub error: Option<String>,
     pub elapsed_millis: u128,
+    /// The current value came from the preceding snapshot because this
+    /// feature's latest query failed.
+    pub preserved_previous: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -115,7 +118,10 @@ impl EqStatus {
     /// Merge a partial refresh without erasing an authoritative observation
     /// merely because its follow-up query failed.
     pub fn preserve_failed_observations(&mut self, previous: &Self) {
-        for evidence in &self.evidence {
+        if self.generation != previous.generation {
+            return;
+        }
+        for evidence in &mut self.evidence {
             if evidence.error.is_none() {
                 continue;
             }
@@ -123,6 +129,7 @@ impl EqStatus {
             if matches!(previous_state, EqState::Unknown) {
                 continue;
             }
+            evidence.preserved_previous = true;
             match evidence.feature {
                 EqFeature::MultEqXt32 => self.multeq_xt32 = previous_state,
                 EqFeature::DynamicEq => self.dynamic_eq = previous_state,
@@ -189,8 +196,34 @@ mod tests {
             response: None,
             error: Some("timeout".into()),
             elapsed_millis: 10,
+            preserved_previous: false,
         });
         refresh.preserve_failed_observations(&previous);
         assert_eq!(refresh.dynamic_eq, EqState::On);
+        assert!(refresh.evidence[0].preserved_previous);
+    }
+
+    #[test]
+    fn failed_refresh_does_not_preserve_another_connection_generation() {
+        let previous = EqStatus {
+            dynamic_eq: EqState::On,
+            generation: 1,
+            ..EqStatus::default()
+        };
+        let mut refresh = EqStatus {
+            dynamic_eq: EqState::Unavailable("timeout".into()),
+            generation: 2,
+            ..EqStatus::default()
+        };
+        refresh.record_evidence(EqEvidence {
+            feature: EqFeature::DynamicEq,
+            response: None,
+            error: Some("timeout".into()),
+            elapsed_millis: 10,
+            preserved_previous: false,
+        });
+        refresh.preserve_failed_observations(&previous);
+        assert!(matches!(refresh.dynamic_eq, EqState::Unavailable(_)));
+        assert!(!refresh.evidence[0].preserved_previous);
     }
 }

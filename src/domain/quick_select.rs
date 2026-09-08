@@ -23,10 +23,15 @@ pub struct QuickSelectName(String);
 impl QuickSelectName {
     pub fn new(value: impl Into<String>) -> Result<Self, &'static str> {
         let value = value.into();
-        if value.trim().is_empty() {
+        let value = value.trim();
+        if value.is_empty() {
             Err("Quick Select name must not be empty")
+        } else if value.chars().count() > 16 {
+            Err("Quick Select name must not exceed 16 characters")
+        } else if value.chars().any(char::is_control) {
+            Err("Quick Select name must not contain control characters")
         } else {
-            Ok(Self(value))
+            Ok(Self(value.to_owned()))
         }
     }
     pub fn as_str(&self) -> &str {
@@ -54,6 +59,10 @@ pub struct QuickSelectSummary {
     pub hdmi_video_output: Registered<String>,
     pub speaker_preset: Registered<String>,
     pub dirac_live: Registered<String>,
+    pub playback_content: Registered<String>,
+    pub all_zone_stereo: Registered<String>,
+    pub tv_audio_sharing: Registered<String>,
+    pub video_select: Registered<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -129,5 +138,15 @@ mod tests {
     #[test]
     fn omitted_is_not_unknown() {
         assert_ne!(Registered::<String>::Omitted, Registered::Unknown);
+    }
+
+    #[test]
+    fn names_follow_the_receivers_sixteen_character_limit() {
+        assert_eq!(
+            QuickSelectName::new("  Movie night  ").unwrap().as_str(),
+            "Movie night"
+        );
+        assert!(QuickSelectName::new("12345678901234567").is_err());
+        assert!(QuickSelectName::new("bad\nname").is_err());
     }
 }

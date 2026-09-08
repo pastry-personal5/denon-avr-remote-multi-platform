@@ -20,8 +20,9 @@ single source, sound mode, or generic “EQ on” flag.
 Quick Select exposes the receiver's four Main Zone preset slots. A preset may
 include the receiver-supported combination of input source, volume, sound
 mode, channel levels, Audyssey parameters, Restorer, Dialog Enhancer, HDMI
-video output, speaker preset, Dirac Live, and related playback settings. The
-GUI shows each slot's receiver name and registered-item summary.
+video output, playback content, speaker preset, All Zone Stereo, TV Audio
+Sharing, Dirac Live, Video Select, and related playback settings. The GUI
+shows each slot's receiver name and registered-item summary.
 
 The first delivery supports recalling validated receiver presets. It does not
 claim a per-slot read/query operation because that wire behavior has not been
@@ -63,3 +64,5 @@ classification, installers, and cloud services remain out of scope.
   Dirac state, and unknown receiver responses are represented honestly.
 - Failed recall or status queries preserve existing observations and expose a
   clear Refresh or Retry action.
+- Preserved EQ values are never presented as fresh observations: diagnostics
+  identify the failed query and retained previous value.

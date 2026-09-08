@@ -324,6 +324,9 @@ impl<T> FieldStatus<T> {
 pub enum Freshness {
     Unknown,
     Live,
+    /// A refresh completed, but one or more independent fields retained an
+    /// older observation because their query failed.
+    Partial,
     Invalidated,
 }
 

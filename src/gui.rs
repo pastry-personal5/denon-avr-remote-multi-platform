@@ -61,6 +61,7 @@ enum BridgeCommand {
 pub struct ControllerBridge {
     commands: mpsc::Sender<BridgeCommand>,
     events: Arc<Mutex<mpsc::Receiver<BridgeEvent>>>,
+    validated_phase8: Option<ValidatedPhase8Capabilities>,
 }
 
 impl ControllerBridge {
@@ -72,6 +73,7 @@ impl ControllerBridge {
         factory: F,
         config: crate::application::ControllerConfig,
     ) -> Self {
+        let validated_phase8 = config.validated_phase8;
         let (commands, mut command_rx) = mpsc::channel(16);
         let (event_sender, event_rx) = mpsc::channel(32);
         let events = Arc::new(Mutex::new(event_rx));
@@ -82,6 +84,7 @@ impl ControllerBridge {
         Self {
             commands,
             events: Arc::clone(&events),
+            validated_phase8,
         }
     }
 
@@ -243,13 +246,7 @@ pub struct Gui {
 
 impl Gui {
     pub fn new(bridge: ControllerBridge) -> Self {
-        Self::new_with_phase8(bridge, None)
-    }
-
-    pub fn new_with_phase8(
-        bridge: ControllerBridge,
-        validated_phase8: Option<ValidatedPhase8Capabilities>,
-    ) -> Self {
+        let validated_phase8 = bridge.validated_phase8;
         Self {
             route: Route::Dashboard,
             window_class: WindowClass::Wide,
@@ -291,6 +288,13 @@ impl Gui {
             .unwrap_or(Model::Unknown);
         ModelCapabilities::for_model(model)
             .with_validated_phase8(self.validated_phase8.unwrap_or_default())
+    }
+
+    fn invalidate_phase8(&mut self) {
+        self.quick_select.invalidate();
+        self.eq_status.invalidate();
+        self.quick_select.generation = self.generation;
+        self.eq_status.generation = self.generation;
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
@@ -337,8 +341,7 @@ impl Gui {
             Message::Select(selection) => {
                 self.selection = Some(selection.clone());
                 self.snapshot.invalidate();
-                self.quick_select.invalidate();
-                self.eq_status.invalidate();
+                self.invalidate_phase8();
                 let id = self.next_request();
                 self.command(BridgeCommand::Select(id, selection))
             }
@@ -370,7 +373,7 @@ impl Gui {
             },
             Message::RefreshPhase8 => {
                 let id = self.next_request();
-                self.announcement = "Refreshing Quick Select and EQ status…".into();
+                self.announcement = "Refreshing EQ status…".into();
                 self.command(BridgeCommand::RefreshPhase8(id))
             }
             Message::RecallQuickSelect(slot) => {
@@ -448,16 +451,15 @@ impl Gui {
                                 | crate::application::Lifecycle::Reconnecting { .. }
                                 | crate::application::Lifecycle::Disconnected
                         ) {
-                            self.quick_select.invalidate();
-                            self.eq_status.invalidate();
+                            self.invalidate_phase8();
                         }
                         self.lifecycle = lifecycle;
                     }
                     ReceiverEvent::Snapshot(snapshot) => self.snapshot = snapshot,
-                    ReceiverEvent::QuickSelect(snapshot) => self.quick_select = snapshot,
-                    ReceiverEvent::EqStatus(status) => self.eq_status = status,
+                    ReceiverEvent::QuickSelect(snapshot) => self.quick_select = *snapshot,
+                    ReceiverEvent::EqStatus(status) => self.eq_status = *status,
                     ReceiverEvent::QuickSelectRecall(outcome) => {
-                        self.announcement = format!("Quick Select: {outcome:?}")
+                        self.announcement = quick_select_recall_message(&outcome)
                     }
                     ReceiverEvent::Control(result) => self.announcement = control_message(&result),
                     ReceiverEvent::FieldError { field, error } => {
@@ -567,7 +569,7 @@ impl Gui {
         let phase8_capabilities = self.selected_capabilities();
         let writable = phase8_capabilities.writable;
         let quick_select_supported = phase8_capabilities.quick_select_recall;
-        let phase8_status_supported = quick_select_supported || phase8_capabilities.eq_status;
+        let phase8_status_supported = phase8_capabilities.eq_status;
         let controls = if writable {
             row![
                 button("Mute").on_press(Message::Mute),
@@ -636,7 +638,7 @@ impl Gui {
                     .push(text(quick_select_line(&self.quick_select, slot)))),
             text("EQ Status").size(22),
             if phase8_status_supported {
-                row![button("Refresh Phase 8 status").on_press(Message::RefreshPhase8)]
+                row![button("Refresh EQ status").on_press(Message::RefreshPhase8)]
             } else {
                 row![text(
                     "EQ status is unavailable until Phase 8 protocol evidence is validated."
@@ -712,11 +714,16 @@ fn eq_evidence_summary(status: &EqStatus) -> String {
         .iter()
         .map(|evidence| {
             format!(
-                "{}: {} ms; response={:?}; error={:?}",
+                "{}: {} ms; response={:?}; error={:?}{}",
                 evidence.feature.label(),
                 evidence.elapsed_millis,
                 evidence.response,
-                evidence.error
+                evidence.error,
+                if evidence.preserved_previous {
+                    "; retained previous value"
+                } else {
+                    ""
+                }
             )
         })
         .collect::<Vec<_>>()
@@ -730,6 +737,9 @@ fn quick_select_line(snapshot: &QuickSelectSnapshot, slot: QuickSelectSlot) -> S
             slot.number()
         );
     };
+    if !preset.available {
+        return format!("Quick Select {}: Unavailable", slot.number());
+    }
     let name = preset
         .name
         .as_ref()
@@ -758,6 +768,22 @@ fn quick_select_line(snapshot: &QuickSelectSnapshot, slot: QuickSelectSlot) -> S
             registered_label(&preset.summary.speaker_preset),
         ),
         ("Dirac Live", registered_label(&preset.summary.dirac_live)),
+        (
+            "playback content",
+            registered_label(&preset.summary.playback_content),
+        ),
+        (
+            "All Zone Stereo",
+            registered_label(&preset.summary.all_zone_stereo),
+        ),
+        (
+            "TV Audio Sharing",
+            registered_label(&preset.summary.tv_audio_sharing),
+        ),
+        (
+            "Video Select",
+            registered_label(&preset.summary.video_select),
+        ),
     ]
     .into_iter()
     .map(|(label, state)| format!("{label}={state}"))
@@ -783,12 +809,40 @@ fn control_message(result: &ControlResult) -> String {
     format!("Control outcome: {result:?}")
 }
 
+fn quick_select_recall_message(outcome: &crate::domain::QuickSelectRecallOutcome) -> String {
+    use crate::domain::QuickSelectRecallOutcome;
+    match outcome {
+        QuickSelectRecallOutcome::Pending { slot } => {
+            format!("Recalling Main Zone Quick Select {}…", slot.number())
+        }
+        QuickSelectRecallOutcome::Confirmed { slot } => format!(
+            "Main Zone Quick Select {} recalled and confirmed.",
+            slot.number()
+        ),
+        QuickSelectRecallOutcome::Rejected(reason) => {
+            format!("Quick Select recall was rejected: {reason}")
+        }
+        QuickSelectRecallOutcome::Conflict { .. } => {
+            "Quick Select state changed; retry the recall.".into()
+        }
+        QuickSelectRecallOutcome::Unsupported(reason) => {
+            format!("Quick Select recall is unsupported: {reason}")
+        }
+        QuickSelectRecallOutcome::TransportFailure(reason) => {
+            format!("Quick Select recall failed: {reason}")
+        }
+        QuickSelectRecallOutcome::Unconfirmed(reason) => format!(
+            "Quick Select may have been recalled, but confirmation is unavailable: {reason}"
+        ),
+    }
+}
+
 pub fn boot() -> (Gui, Task<Message>) {
     let controller_config = crate::application::ControllerConfig::default();
-    let gui = Gui::new_with_phase8(
-        ControllerBridge::new_with_config(AvrSessionFactory::default(), controller_config.clone()),
-        controller_config.validated_phase8,
-    );
+    let gui = Gui::new(ControllerBridge::new_with_config(
+        AvrSessionFactory::default(),
+        controller_config,
+    ));
     let repository = YamlConfigRepository::default();
     (
         gui,
@@ -851,18 +905,23 @@ mod tests {
         let display = quick_select_line(&snapshot, slot);
         assert!(display.contains("channel levels=unknown"));
         assert!(display.contains("Dirac Live=unknown"));
+        assert!(display.contains("All Zone Stereo=unknown"));
+        assert!(display.contains("Video Select=unknown"));
     }
 
     #[tokio::test]
     async fn gui_uses_explicit_phase8_validation_for_known_models() {
-        let bridge = ControllerBridge::new(AvrSessionFactory::default());
-        let mut gui = Gui::new_with_phase8(
-            bridge,
-            Some(crate::domain::ValidatedPhase8Capabilities {
-                quick_select_recall: true,
-                eq_status: true,
-            }),
+        let bridge = ControllerBridge::new_with_config(
+            AvrSessionFactory::default(),
+            crate::application::ControllerConfig {
+                validated_phase8: Some(crate::domain::ValidatedPhase8Capabilities {
+                    quick_select_recall: true,
+                    eq_status: true,
+                }),
+                ..crate::application::ControllerConfig::default()
+            },
         );
+        let mut gui = Gui::new(bridge);
         gui.selection = Some(ReceiverSelection::ExplicitHost(
             crate::domain::ReceiverIdentity {
                 host: "receiver.local".into(),
@@ -873,5 +932,23 @@ mod tests {
         let capabilities = gui.selected_capabilities();
         assert!(capabilities.quick_select_recall);
         assert!(capabilities.eq_status);
+    }
+
+    #[test]
+    fn recall_feedback_is_actionable_and_main_zone_specific() {
+        let slot = QuickSelectSlot::new(3).unwrap();
+        assert_eq!(
+            quick_select_recall_message(&crate::domain::QuickSelectRecallOutcome::Confirmed {
+                slot
+            }),
+            "Main Zone Quick Select 3 recalled and confirmed."
+        );
+        assert!(
+            quick_select_recall_message(&crate::domain::QuickSelectRecallOutcome::Conflict {
+                expected: 1,
+                current: 2,
+            })
+            .contains("retry")
+        );
     }
 }

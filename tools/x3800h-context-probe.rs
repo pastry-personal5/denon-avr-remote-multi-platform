@@ -21,12 +21,12 @@ const COMMANDS: [&str; 16] = [
     "SSINFAISFSV ?",
     // Phase 8 EQ read-only candidates. Quick Select recall is execute-only
     // and is intentionally excluded from this diagnostic probe.
-    "PSMULTEQ:?",
-    "PSDYNEQ?",
-    "PSREFLEV?",
-    "PSDYNVOL?",
-    "PSLFC?",
-    "PSDIRAC?",
+    "PSMULTEQ: ?",
+    "PSDYNEQ ?",
+    "PSREFLEV ?",
+    "PSDYNVOL ?",
+    "PSLFC ?",
+    "PSDIRAC ?",
 ];
 
 fn main() -> io::Result<()> {
@@ -125,7 +125,7 @@ fn connect(address: &std::net::SocketAddr, timeout: u64) -> io::Result<TcpStream
 }
 
 fn command_family(command: &str) -> &str {
-    command.trim_end_matches('?')
+    command.trim_end_matches('?').trim_end()
 }
 fn epoch_seconds() -> u64 {
     SystemTime::now()
@@ -149,6 +149,8 @@ mod tests {
         assert!(!response_is_match("SI?", "SI"));
         assert!(response_is_match("OPINFINS ?", "OPINFINS 222200000000"));
         assert!(response_is_match("SSINFAISFSV ?", "SSINFAISFSV 48K"));
+        assert!(response_is_match("PSMULTEQ: ?", "PSMULTEQ:AUDYSSEY"));
+        assert!(response_is_match("PSDYNEQ ?", "PSDYNEQ ON"));
         assert!(!response_is_match("OPINFINS ?", "OPINFASP 2222"));
     }
 }

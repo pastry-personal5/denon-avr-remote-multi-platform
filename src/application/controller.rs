@@ -136,9 +136,9 @@ pub enum ReceiverEvent {
     Control(ControlResult),
     Cancelled,
     Diagnostic(Diagnostic),
-    QuickSelect(QuickSelectSnapshot),
+    QuickSelect(Box<QuickSelectSnapshot>),
     QuickSelectRecall(QuickSelectRecallOutcome),
-    EqStatus(EqStatus),
+    EqStatus(Box<EqStatus>),
 }
 pub trait Observability: Send + Sync {
     fn record(&self, event: Diagnostic);
@@ -337,7 +337,9 @@ impl<F: SessionFactory> State<F> {
             }
             ReceiverCommand::RefreshPhase8 => {
                 self.refresh_phase8(events).await?;
-                Ok(Some(ReceiverEvent::QuickSelect(self.quick_select.clone())))
+                Ok(Some(ReceiverEvent::EqStatus(Box::new(
+                    self.eq_status.clone(),
+                ))))
             }
             ReceiverCommand::RecallQuickSelect {
                 slot,
@@ -352,7 +354,9 @@ impl<F: SessionFactory> State<F> {
                     .recall_quick_select(slot, expected_version, events)
                     .await;
                 Self::emit(events, ReceiverEvent::QuickSelectRecall(result)).await;
-                Ok(Some(ReceiverEvent::QuickSelect(self.quick_select.clone())))
+                Ok(Some(ReceiverEvent::QuickSelect(Box::new(
+                    self.quick_select.clone(),
+                ))))
             }
             ReceiverCommand::Control {
                 control,
@@ -385,10 +389,7 @@ impl<F: SessionFactory> State<F> {
             Ok(s) => {
                 self.session = Some(s);
                 self.generation += 1;
-                self.quick_select.invalidate();
-                self.eq_status.invalidate();
-                self.quick_select.generation = self.generation;
-                self.eq_status.generation = self.generation;
+                self.invalidate_phase8();
                 self.lifecycle = Lifecycle::Connected {
                     generation: self.generation,
                 };
@@ -415,9 +416,15 @@ impl<F: SessionFactory> State<F> {
         } else {
             Lifecycle::NoReceiver
         };
+        self.invalidate_phase8();
+        Ok(())
+    }
+
+    fn invalidate_phase8(&mut self) {
         self.quick_select.invalidate();
         self.eq_status.invalidate();
-        Ok(())
+        self.quick_select.generation = self.generation;
+        self.eq_status.generation = self.generation;
     }
 
     async fn drain_session_events(&mut self, events: &mpsc::Sender<ReceiverEvent>) {
@@ -438,8 +445,7 @@ impl<F: SessionFactory> State<F> {
                         generation: self.generation,
                     };
                     self.snapshot.invalidate();
-                    self.quick_select.invalidate();
-                    self.eq_status.invalidate();
+                    self.invalidate_phase8();
                     Self::emit(events, ReceiverEvent::Lifecycle(self.lifecycle.clone())).await;
                 }
                 Ok(SessionEvent::Connection(ConnectionState::Connected)) => {
@@ -453,8 +459,7 @@ impl<F: SessionFactory> State<F> {
                 Ok(SessionEvent::Connection(ConnectionState::Disconnected)) => {
                     self.lifecycle = Lifecycle::Disconnected;
                     self.snapshot.invalidate();
-                    self.quick_select.invalidate();
-                    self.eq_status.invalidate();
+                    self.invalidate_phase8();
                     Self::emit(events, ReceiverEvent::Lifecycle(self.lifecycle.clone())).await;
                 }
                 Ok(SessionEvent::MainZone(event)) => {
@@ -467,8 +472,7 @@ impl<F: SessionFactory> State<F> {
                     });
                     self.lifecycle = Lifecycle::Disconnected;
                     self.snapshot.invalidate();
-                    self.quick_select.invalidate();
-                    self.eq_status.invalidate();
+                    self.invalidate_phase8();
                     Self::emit(events, ReceiverEvent::Lifecycle(self.lifecycle.clone())).await;
                     return;
                 }
@@ -526,11 +530,11 @@ impl<F: SessionFactory> State<F> {
         events: &mpsc::Sender<ReceiverEvent>,
     ) -> Result<(), OperationError> {
         let capabilities = self.capabilities();
-        if !capabilities.quick_select_recall && !capabilities.eq_status {
+        if !capabilities.eq_status {
             return Err(OperationError::new(
                 OperationErrorKind::Unsupported,
-                "Phase 8 status",
-                "selected receiver has no validated Phase 8 capability",
+                "EQ status",
+                "selected receiver has no validated EQ status capability",
             ));
         }
         if self.session.is_none() {
@@ -547,12 +551,19 @@ impl<F: SessionFactory> State<F> {
             };
             match result {
                 Ok(mut refreshed_eq_status) => {
+                    // The controller owns lifecycle generations. Transport
+                    // adapters may use their own counters internally.
+                    refreshed_eq_status.generation = self.generation;
                     refreshed_eq_status.preserve_failed_observations(&previous_eq_status);
                     if let Some(mode) = self.snapshot.audio_context.current_mode.value.known() {
                         refreshed_eq_status.apply_mode_restrictions(mode.as_str());
                     }
                     self.eq_status = refreshed_eq_status;
-                    Self::emit(events, ReceiverEvent::EqStatus(self.eq_status.clone())).await;
+                    Self::emit(
+                        events,
+                        ReceiverEvent::EqStatus(Box::new(self.eq_status.clone())),
+                    )
+                    .await;
                 }
                 Err(error) => {
                     Self::emit(
@@ -832,6 +843,17 @@ mod tests {
         ) -> BoxFuture<'_, Result<QuickSelectRecallConfirmation, OperationError>> {
             Box::pin(async { Ok(QuickSelectRecallConfirmation::Authoritative) })
         }
+
+        fn query_eq_status(&mut self) -> BoxFuture<'_, Result<EqStatus, OperationError>> {
+            Box::pin(async {
+                Ok(EqStatus {
+                    dynamic_eq: crate::domain::EqState::On,
+                    generation: 999,
+                    freshness: crate::domain::Freshness::Live,
+                    ..EqStatus::default()
+                })
+            })
+        }
     }
 
     fn selection() -> ReceiverSelection {
@@ -914,5 +936,39 @@ mod tests {
                 current: 1
             }
         );
+    }
+
+    #[tokio::test]
+    async fn eq_refresh_returns_status_with_controller_generation() {
+        let config = ControllerConfig {
+            validated_phase8: Some(ValidatedPhase8Capabilities {
+                quick_select_recall: false,
+                eq_status: true,
+            }),
+            ..ControllerConfig::default()
+        };
+        let handle = ReceiverController::spawn(FakeFactory, config);
+        handle.select(selection()).await.unwrap();
+        let reply = handle.refresh_phase8().await.unwrap();
+        let Some(ReceiverEvent::EqStatus(status)) = reply else {
+            panic!("EQ refresh did not return an EQ status snapshot")
+        };
+        assert_eq!(status.dynamic_eq, crate::domain::EqState::On);
+        assert_eq!(status.generation, 1);
+    }
+
+    #[tokio::test]
+    async fn quick_select_only_profile_rejects_status_refresh() {
+        let config = ControllerConfig {
+            validated_phase8: Some(ValidatedPhase8Capabilities {
+                quick_select_recall: true,
+                eq_status: false,
+            }),
+            ..ControllerConfig::default()
+        };
+        let handle = ReceiverController::spawn(FakeFactory, config);
+        handle.select(selection()).await.unwrap();
+        let error = handle.refresh_phase8().await.unwrap_err();
+        assert_eq!(error.kind, OperationErrorKind::Unsupported);
     }
 }

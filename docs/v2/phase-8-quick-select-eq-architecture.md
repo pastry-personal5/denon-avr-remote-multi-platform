@@ -31,7 +31,8 @@ Registered items are
 explicitly distinguished from omitted or unknown items. The model supports
 input source, volume, sound mode, channel levels, Audyssey parameters,
 Restorer, Dialog Enhancer, HDMI video output, speaker preset, Dirac Live, and
-other fields only when the receiver capability record validates them.
+playback content, All Zone Stereo, TV Audio Sharing, and Video Select only
+when the receiver capability record validates them.
 
 Recall is one typed application operation. It is serialized, execute-once,
 resource-version-aware where applicable, and reports authoritative or
@@ -51,7 +52,8 @@ that condition must not be reported as off.
 Status queries and unsolicited updates use the existing connection-generation,
 partial-field, authority, freshness, and diagnostics rules. The Dashboard
 shows a compact summary; Diagnostics shows the per-feature evidence, query
-time, and reason for unavailable/unknown state.
+time, reason for unavailable/unknown state, and whether a failed query retained
+the prior value from the same connection generation.
 
 ## Protocol and Evidence
 

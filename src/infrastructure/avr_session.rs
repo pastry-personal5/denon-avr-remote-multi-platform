@@ -445,6 +445,7 @@ impl ReceiverSession for AvrSession {
                     response,
                     error,
                     elapsed_millis: started.elapsed().as_millis(),
+                    preserved_previous: false,
                 });
                 match feature {
                     EqFeature::MultEqXt32 => status.multeq_xt32 = state,
@@ -456,7 +457,11 @@ impl ReceiverSession for AvrSession {
                 }
             }
             status.generation = self.connection_generation();
-            status.freshness = Freshness::Live;
+            status.freshness = if status.evidence.iter().any(|item| item.error.is_some()) {
+                Freshness::Partial
+            } else {
+                Freshness::Live
+            };
             Ok(status)
         })
     }

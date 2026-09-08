@@ -36,6 +36,7 @@ pub fn get_command_family(command: &str) -> &str {
     command
         .split_once('?')
         .map_or(command, |(family, _)| family)
+        .trim_end()
 }
 
 pub fn response_matches(family: &str, response: &str) -> bool {
@@ -130,6 +131,8 @@ mod tests {
     fn response_family_is_the_command_prefix_before_query_marker() {
         assert_eq!(get_command_family("SI?"), "SI");
         assert_eq!(get_command_family("Z2?"), "Z2");
+        assert_eq!(get_command_family("PSMULTEQ: ?"), "PSMULTEQ:");
+        assert_eq!(get_command_family("PSDYNEQ ?"), "PSDYNEQ");
         assert_eq!(get_command_family("CUSTOM"), "CUSTOM");
     }
 

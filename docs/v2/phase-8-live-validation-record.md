@@ -33,12 +33,12 @@ CR-terminated response, elapsed time, and whether a reconnect occurred.
 | Quick Select 2 recall (`MSQUICK2`) | | | | | |
 | Quick Select 3 recall (`MSQUICK3`) | | | | | |
 | Quick Select 4 recall (`MSQUICK4`) | | | | | |
-| MultEQ XT32 | | | | | |
-| Dynamic EQ | | | | | |
-| Dynamic EQ reference level | | | | | |
-| Dynamic Volume | | | | | |
-| Audyssey LFC | | | | | |
-| Dirac Live | | | | | |
+| MultEQ XT32 (`PSMULTEQ: ?`) | | | | | |
+| Dynamic EQ (`PSDYNEQ ?`) | | | | | |
+| Dynamic EQ reference level (`PSREFLEV ?`) | | | | | |
+| Dynamic Volume (`PSDYNVOL ?`) | | | | | |
+| Audyssey LFC (`PSLFC ?`) | | | | | |
+| Dirac Live (`PSDIRAC ?`) | | | | | |
 
 Validation must also cover timeout/reconnect behavior: a recall that may have
 been dispatched is reported unconfirmed and is never replayed automatically.

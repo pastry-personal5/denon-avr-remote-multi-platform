@@ -66,6 +66,12 @@ and this project adheres to Semantic Versioning.
 
 ### Fixed
 
+- Corrected Phase 8 EQ query parameter spacing and MultEQ response parsing;
+  retained values are now limited to the same connection generation and are
+  identified as partial evidence.
+- Kept GUI and controller Phase 8 capability gates synchronized from one
+  configuration, and completed the X3800H Quick Select registered-field model.
+
 ## [1.0.0] - 2026-09-07
 
 ### Added
