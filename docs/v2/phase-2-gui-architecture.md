@@ -1,6 +1,6 @@
 # Version 2 - Phase 2 Architecture
 
-The [Phase 2 information architecture](phase-2-information-architecture.md) defines user-facing destinations and lifecycle semantics. The [GUI design specification](phase-2-gui-design.md) defines visual composition and states.
+The [Phase 2 information architecture](phase-2-gui-information-architecture.md) defines user-facing destinations and lifecycle semantics. The [GUI design specification](phase-2-gui-design-specification.md) defines visual composition and states.
 
 Phase 2 adds an Iced presentation edge above the layered application built in
 Phase 1. The GUI owns display state and user intent only; it does not frame
@@ -50,9 +50,10 @@ connection generation, and request identity that produced it. The reducer
 drops results from a superseded context. The worker subscription is keyed by
 worker lifetime, not by the current field values; rebuilding it on every render
 would risk duplicate streams or lost events. These invariants are detailed in
-the [Iced implementation contract](phase-2-gui-design.md#iced-implementation-contract). Dropping the GUI channels
+the [Iced implementation contract](phase-2-gui-design-specification.md#iced-implementation-contract). Dropping the GUI channels
 ends Phase 2 work using the existing bounded session behavior; explicit
-cancellation and graceful shutdown are completed in Phase 7.
+cancellation and graceful shutdown are completed through the Phase 4
+controller and Phase 5 integration.
 
 ## GUI State
 
@@ -62,10 +63,10 @@ operation error. Views derive enabled actions exclusively from that state.
 Connection and availability must be conveyed with text or accessible labels in
 addition to styling. Model connection, field availability, evidence, freshness,
 and operation outcome independently, following the
-[IA state model](phase-2-information-architecture.md#information-states-and-user-language).
+[IA state model](phase-2-gui-information-architecture.md#information-states-and-user-language).
 Tag asynchronous results with receiver, fixed Main Zone scope, and connection context so old
 results cannot populate a newly selected context. Focus and navigation follow
-the [GUI contract](phase-2-gui-design.md#focus-and-keyboard); network updates
+the [GUI contract](phase-2-gui-design-specification.md#focus-and-keyboard); network updates
 must not take over the user's current page or input.
 
 The initial flow is:

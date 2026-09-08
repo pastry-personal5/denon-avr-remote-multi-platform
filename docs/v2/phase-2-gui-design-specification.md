@@ -3,9 +3,9 @@
 ## Authority and design direction
 
 This is the visual and interaction specification for the
-[information architecture](phase-2-information-architecture.md). The
-[Phase 2 overview](phase-2-overview.md) sets delivery scope and the
-[architecture](phase-2-architecture.md) sets implementation boundaries.
+[information architecture](phase-2-gui-information-architecture.md). The
+[Phase 2 overview](phase-2-gui-overview.md) sets delivery scope and the
+[architecture](phase-2-gui-architecture.md) sets implementation boundaries.
 All layouts and measurements below are design targets awaiting implementation
 and usability verification.
 
@@ -532,7 +532,7 @@ resize, minimize, maximize/zoom, standard editing shortcuts, and platform
 Close/Quit behavior. The app has no hidden always-running tray service. Closing
 the sole receiver window releases its session; on a host that keeps the process
 alive, reopening follows the normal saved-receiver flow. Phase 2 uses bounded
-worker teardown; Phase 7 supplies explicit graceful cancellation. Do not block
+worker teardown; Phase 5 supplies explicit graceful cancellation. Do not block
 window closure on an unbounded network call or claim closure undid a command.
 
 Iced view renders state. Update maps user intent, handles presentation state,
@@ -544,7 +544,7 @@ a second policy engine.
 
 ## Acceptance and handoff
 
-Validate the [IA user tasks](phase-2-information-architecture.md#usability-acceptance)
+Validate the [IA user tasks](phase-2-gui-information-architecture.md#usability-acceptance)
 and capture these implementation cases before release. These are acceptance
 requirements, not evidence that a GUI has already passed.
 

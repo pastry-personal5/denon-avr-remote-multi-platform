@@ -127,7 +127,7 @@ replacement flow.
 - If only some fields are unavailable, the receiver may omit or delay those
   responses; other fields remain valid.
 - See the [Phase 1 architecture](v1/phase-1-architecture.md), [Phase 2
-overview](v2/phase-2-overview.md), and [Phase 3 overview](v2/phase-3-overview.md)
+overview](v2/phase-2-gui-overview.md), and [Phase 3 overview](v2/phase-3-main-zone-controls-overview.md)
 for evidence and validation boundaries.
 # Controller-backed operation model
 

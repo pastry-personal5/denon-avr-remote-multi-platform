@@ -2,7 +2,7 @@
 
 CARGO ?= cargo
 
-.PHONY: help format format-check check test build run run-release clippy boundary clean
+.PHONY: help format format-check check test build run run-gui run-release clippy boundary clean
 
 help: ## Show available developer commands
 	@echo "Available targets:"
@@ -29,6 +29,9 @@ build: ## Build the project
 
 run: ## Run the CLI in debug mode (use ARGS="...")
 	$(CARGO) run -- $(ARGS)
+
+run-gui: ## Run the Iced desktop GUI
+	$(CARGO) run --bin denon-avr-remote-gui
 
 run-release: ## Run the CLI with release optimizations (use ARGS="...")
 	$(CARGO) run --release -- $(ARGS)

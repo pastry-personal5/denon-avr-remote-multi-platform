@@ -17,6 +17,7 @@ make clippy         # Clippy with warnings denied
 make format         # format Rust sources
 make test           # run all tests
 make run ARGS="help"
+make run-gui          # run the native Iced desktop GUI
 ```
 
 Equivalent Cargo commands are documented by the Makefile. Do not run live

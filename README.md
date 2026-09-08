@@ -26,5 +26,5 @@ Documentation:
 - [CLI user guide](docs/cli-user-guide.md)
 - [Version 1 documentation](docs/v1/phase-1-overview.md)
 - [Version 1.0.0 release notes](docs/v1/RELEASE_NOTES.md)
-- [Version 2 Phase 1 architecture refactor](docs/v2/phase-1-overview.md)
-- [Version 2 Phase 2 plan](docs/v2/phase-2-overview.md)
+- [Version 2 Phase 1 architecture refactor](docs/v2/phase-1-foundation-overview.md)
+- [Version 2 Phase 2 plan](docs/v2/phase-2-gui-overview.md)

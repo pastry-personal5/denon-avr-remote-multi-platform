@@ -3,9 +3,9 @@
 ## Authority and user outcomes
 
 This is the authority for content, navigation, terminology, and information
-states. The [GUI design](phase-2-gui-design.md) specifies their presentation and
-interaction. The [overview](phase-2-overview.md) and
-[architecture](phase-2-architecture.md) define delivery and runtime boundaries.
+states. The [GUI design](phase-2-gui-design-specification.md) specifies their presentation and
+interaction. The [overview](phase-2-gui-overview.md) and
+[architecture](phase-2-gui-architecture.md) define delivery and runtime boundaries.
 These are design requirements; they do not claim an implemented or user-tested
 GUI.
 
@@ -14,6 +14,8 @@ The primary user is a home-theater owner. Design for these tasks:
 | User goal | Successful experience |
 | --- | --- |
 | Check the theater before watching | Identify the receiver, Main Zone, connection, power, source, volume, mute, and sound mode on one screen. |
+| Recall a familiar setup, later | Identify a Quick Select preset, understand what it contains, and recall it for Main Zone with a clear outcome. |
+| Understand room correction, later | See which Audyssey or Dirac processing features are active, unavailable, or unknown without reducing them to one EQ flag. |
 | Connect for the first time | Find a receiver or enter its address without understanding network protocols. |
 | Recover from a problem | See what is affected, retain useful values, and find one clear recovery action. |
 | Change the listening setup, later | Know that a control applies to Main Zone and whether the receiver confirmed the change. |
@@ -33,11 +35,11 @@ the only zone context in every v2 phase.
 
 | Surface | Phase 2 requirement | Later requirement |
 | --- | --- | --- |
-| Dashboard / Main Zone | Five Main Zone fields, read-only; refresh and events | Confirmed Main Zone controls under [Phase 3](phase-3-overview.md) |
+| Dashboard / Main Zone | Five Main Zone fields, read-only; refresh and events | Confirmed Main Zone controls under [Phase 3](phase-3-main-zone-controls-overview.md), grouped listening modes under [Phase 6](phase-6-listening-modes-overview.md), Quick Select and EQ Status under [Phase 8](phase-8-quick-select-eq-overview.md) |
 | Receivers | Load saved identities, explicit discovery selection, manual setup, connect/disconnect/reselection | Complete local rename/remove management as described below |
-| Settings | Configuration health and fixed dark appearance | Additional preferences only when useful and implemented |
-| Advanced Diagnostics | Existing lifecycle and five-field data only | Validated input/signal/channel details and richer reconnect history |
-| Lifecycle | Bounded worker/session behavior in the Phase 2 architecture | Explicit cancellation and reusable controller in [Phase 7](phase-7-overview.md) |
+| Settings | Configuration health and fixed dark appearance | Quick Select slot management and additional preferences only when useful and implemented |
+| Advanced Diagnostics | Existing lifecycle and five-field data only | Validated input/signal/channel details, EQ evidence, preset contents, and richer reconnect history |
+| Lifecycle | Bounded worker/session behavior in the Phase 2 architecture | Explicit cancellation and reusable controller in [Phase 4](phase-4-receiver-controller-overview.md), integrated by [Phase 5](phase-5-desktop-gui-overview.md) |
 
 HEOS, cloud access, credentials, remote-control services, macros, automation,
 raw command entry, and simultaneous multi-receiver monitoring are excluded.
@@ -101,7 +103,7 @@ query has failed.
 | Dimension | Meaning and presentation rule |
 | --- | --- |
 | Connection | No receiver selected, Connecting, Connected, Reconnecting, or Not connected. Connected describes transport, not complete status or power. |
-| Availability | Unknown until queried; usable value; temporarily unavailable with a reason; malformed response; or explicitly unsupported. A timeout alone never proves unsupported capability. |
+| Availability | Unknown until queried; usable value; temporarily unavailable with a reason; malformed response; or explicitly unsupported. A timeout alone never proves unsupported capability. Preset membership and EQ applicability may also be unknown. |
 | Evidence / authority | Successful query or validated event, scoped to the current connection. A disconnect invalidates prior authority. |
 | Freshness | Time of the last accepted observation and last successful query, independently. Age alone does not change the evidence source. |
 | Operation | Idle, pending, confirmed, rejected/not sent, or unconfirmed. Control outcomes are separate from displayed observations. |
@@ -121,6 +123,9 @@ Use these translations wherever those conditions need to be visible:
 | Pending control, later | “Setting volume…” | Requested target is separate from the observed value. |
 | Confirmed control, later | “Volume set to −35.0 dB” | Only after an agreeing follow-up query. |
 | Unconfirmed control, later | “Couldn’t confirm the change” | “It may have taken effect.” Offer Refresh status, never blind retry. |
+| Preset field omitted | “Not included in this Quick Select” | Do not imply that the current field was saved or will be changed. |
+| EQ feature unavailable | “Not available for the current setup” | Explain sound-mode, calibration, speaker, or receiver conditions when known. |
+| EQ feature unknown | “EQ status not reported” | Do not infer state from the generic receiver EQ indicator. |
 
 The normal Dashboard summary is compact: “Status checked 20 seconds ago” after
 a successful full query. After a partial query use “4 of 5 readings checked ·
@@ -149,14 +154,17 @@ action after setup. Leave through any destination, context selector, or field
 details link.
 
 Information priority is receiver/connection, Main Zone, power, source,
-volume/mute, sound mode, freshness/evidence, then the last operation result.
-Use three content groups: Power and source; Volume and mute; Sound mode.
+volume/mute, sound mode, Quick Select, EQ Status, freshness/evidence, then the
+last operation result. Use five content groups: Power and source; Volume and
+mute; Sound mode; Quick Select; EQ Status.
 Receiver identity belongs in the shell, not another large card.
 
 Phase 2 fields are readable values. Do not display inert sliders, switches, or
 menu arrows to advertise future controls. Later controls use these same groups
 and are enabled only by validated capabilities, connection state, and operation
-policy. Refresh applies to Main Zone; Phase 2 queries Main Zone only.
+policy. Phase 8 adds Quick Select recall as one preset operation and shows EQ
+Status as independent read-only processing fields. Refresh applies to Main Zone;
+Phase 2 queries Main Zone only.
 
 - Loading: name the selected receiver, retain field labels, show “Waiting for
   status”, and resolve each field independently.
@@ -237,6 +245,11 @@ specific failure. Put the complete platform path and migration explanation in
 a disclosure, with a link to Manage receivers. A valid native file takes
 precedence; a legacy import leaves its source intact.
 
+Later Phase 8 settings may manage Quick Select names and registered-item
+preferences when receiver support is validated. Settings must identify the
+Main Zone scope and distinguish receiver-stored preset contents from local
+application preferences.
+
 - Loading: only the configuration section waits; navigation remains available.
 - Empty: configuration is absent; Add receiver is the next action.
 - Unavailable: fixed appearance is descriptive text, not a disabled selector.
@@ -252,10 +265,11 @@ originating destination, scroll, and focus for an explicit Return action.
 
 Show receiver, Main Zone, and current connection scope above the details. Group
 Status readings (value, availability, evidence, observation time, query time),
+Audio processing (MultEQ, Dynamic EQ, reference offset, Dynamic Volume, LFC,
+Dirac Live), Quick Select (slot names, registered items, recall outcomes),
 Connection (lifecycle, generation, reconnects), and Errors (time, affected
-operation, understandable cause). Later validated rows include input mode,
-signal/channel details, and sound mode. Phase 2 renders only data that its
-worker exposes; never fill unimplemented diagnostics with plausible numbers or
+operation, understandable cause). Phase 2 renders only data that its worker
+exposes; never fill unimplemented diagnostics with plausible numbers or
 “None” that suggests a successful inspection.
 
 - Loading: rows resolve independently; navigating here alone starts no extra
@@ -270,7 +284,7 @@ worker exposes; never fill unimplemented diagnostics with plausible numbers or
 ## Lifecycle and action rules
 
 Each flow proceeds in the listed order. Focus policy is defined precisely in
-the [GUI interaction specification](phase-2-gui-design.md#focus-and-keyboard).
+the [GUI interaction specification](phase-2-gui-design-specification.md#focus-and-keyboard).
 Main Zone is fixed, so context focus rules apply to receiver and page changes only.
 “Preserve focus” includes background failure, not just background success.
 
@@ -291,7 +305,9 @@ Main Zone is fixed, so context focus rules apply to receiver and page changes on
 | Confirmed control, later | Agreeing query → observed value and concise confirmation. Preserve focus. | Re-enable eligible actions; no automatic replay. |
 | Unconfirmed control, later | Bounded confirmation ends → “May have taken effect” with receiver/Main Zone/target. Preserve focus. | Refresh status or reconnect; refreshing observes current state and does not retroactively prove the original command succeeded. |
 | Rejected/not-sent control, later | Explicit failure with target and reason. | A new request is possible only if supported and still wanted; never call this unconfirmed delivery. |
-| Shutdown | Close/quit requested → stop accepting intents → release worker/session. | Phase 2 bounded close; Phase 7 explicit cancellation. Do not send standby or claim a pending control was undone. |
+| Quick Select recall, later | Slot selected → “Recalling…” → confirmed or may have taken effect. | Recall is one execute-once operation; refresh observes resulting state and never replays the preset. |
+| EQ status refresh, later | Each processing field resolves independently with its evidence. | Query status only; unavailable is not the same as Off, and unknown is not inferred from a summary indicator. |
+| Shutdown | Close/quit requested → stop accepting intents → release worker/session. | Phase 5 bounded controller shutdown. Do not send standby or claim a pending control was undone. |
 
 Refresh is disabled while disconnected; show Connect/Try again instead.
 After an unconfirmed result, Refresh is available as soon as the connection and
@@ -334,5 +350,5 @@ observations. These are proposed evaluation targets, not measured results.
 | Keyboard-only and larger-text setup | Complete setup, navigation, refresh, recovery, and return from Diagnostics without a pointer or clipped essential text. |
 | Background update while entering an address | Draft, cursor, focus, and selected destination remain unchanged. |
 
-The companion [GUI acceptance criteria](phase-2-gui-design.md#acceptance-and-handoff)
+The companion [GUI acceptance criteria](phase-2-gui-design-specification.md#acceptance-and-handoff)
 cover presentation, contrast, platform behavior, and interaction verification.

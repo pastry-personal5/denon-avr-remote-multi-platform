@@ -101,7 +101,7 @@ zones, and broader model compatibility require their own evidence and design.
 
 ## Version 2 Planned Architecture
 
-Version 2 has four defined milestones. These are planned boundaries, not
+Version 2 has eight defined milestones. These are planned boundaries, not
 current v1 capabilities.
 
 Phase 1 has reorganized the flat crate into domain, application, protocol,
@@ -120,8 +120,11 @@ Each command is capability-gated, serialized, and followed by an authoritative
 query. Only live-validated X3800H controls and choice values are exposed.
 
 Phase 4 provides the application-owned `ReceiverController`, typed session
-factory, lifecycle coordination, bounded shutdown, and observability. Phase 7
-integrates the GUI with that controller; the existing CLI and canonical layered
+factory, lifecycle coordination, bounded shutdown, and observability. Phase 5
+delivers the Iced GUI and integrates it with that controller. Phase 6 adds
+evidence-gated listening-mode groups to the GUI. Phase 7 remains reserved for
+future roadmap work. Phase 8 adds Main Zone Quick Select presets and
+independent EQ/room-correction status. The existing CLI and canonical layered
 APIs remain supported.
 
 ```text
@@ -141,9 +144,12 @@ invariants above and add tests before becoming a user-facing capability.
 
 ### Remaining work
 
-- Implement the Version 2 read-only Iced GUI and configuration migration
-  defined by the Phase 2 plans.
-- Integrate the GUI presentation layer with the Phase 4 controller.
+- Implement the Version 2 Iced GUI and configuration migration defined by the
+  Phase 2 design and Phase 5 plans.
+- Add grouped listening-mode capabilities and context filtering defined by the
+  Phase 6 plans.
+- Add Main Zone Quick Select recall and independent EQ/room-correction status
+  defined by the Phase 8 plans.
 - Add property/fuzz tests for CR framing, malformed UTF-8, oversized frames,
   response correlation, and configuration parsing.
 - Define a capability registry keyed by model and firmware evidence instead of

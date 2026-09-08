@@ -1,11 +1,11 @@
 # Version 2 - Phase 2 Overview
 
-The [information architecture specification](phase-2-information-architecture.md) is authoritative for destinations, content priority, and flows. The [GUI design specification](phase-2-gui-design.md) is authoritative for layout, visual states, and interaction.
+The [information architecture specification](phase-2-gui-information-architecture.md) is authoritative for destinations, content priority, and flows. The [GUI design specification](phase-2-gui-design-specification.md) is authoritative for layout, visual states, and interaction.
 
 The specifications distinguish the planned Phase 2 read-only Main Zone
 experience from later Main Zone controls. Their
-[delivery matrix](phase-2-information-architecture.md#delivery-and-product-boundaries)
-and [usability criteria](phase-2-information-architecture.md#usability-acceptance)
+[delivery matrix](phase-2-gui-information-architecture.md#delivery-and-product-boundaries)
+and [usability criteria](phase-2-gui-information-architecture.md#usability-acceptance)
 make those boundaries and user outcomes explicit.
 
 ## Objective

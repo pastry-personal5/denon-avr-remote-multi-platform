@@ -5,6 +5,7 @@
 
 pub mod application;
 pub mod domain;
+pub mod gui;
 pub mod infrastructure;
 pub mod protocol;
 
