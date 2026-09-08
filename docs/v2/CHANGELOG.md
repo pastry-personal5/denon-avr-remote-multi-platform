@@ -10,6 +10,7 @@ and this project adheres to Semantic Versioning.
 
 ### Added
 
+- Added Phase 9 workspace-refactor and Phase 10 visual-identity plans.
 - Completed Version 2 Phase 5 with the Iced 0.14 desktop GUI, typed
   controller bridge, receiver setup/discovery flows, Main Zone dashboard,
   diagnostics routes, capability-gated controls, and stale-event protection.

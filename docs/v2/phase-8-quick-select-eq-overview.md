@@ -1,5 +1,7 @@
 # Version 2 - Phase 8 Overview
 
+**Status: Planned — complete before Phases 9 and 10.**
+
 Phase 8 adds Main Zone Quick Select presets and EQ/room-correction status to
 the Phase 5 GUI, building on the grouped listening modes from Phase 6.
 

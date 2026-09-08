@@ -19,7 +19,6 @@
   validation.
 - Prefer application use cases and infrastructure adapters; protocol modules
   stay independent of concrete transports.
-- Do not modify `.codex-firewall-hardening.ps1`.
 
 ## Verification
 
@@ -40,4 +39,6 @@ must record the model, firmware, settings, commands, responses, and date.
 Active documentation belongs under `docs/`. Version-specific material belongs
 under `docs/v1/` or `docs/v2/`; retired material belongs under `docs/archive/`.
 Do not create phase directories. Encode phases in filenames, and keep the root
-`README.md` concise.
+`README.md` concise. Name paired phase plans
+`phase-x-{main theme}-overview.md` and
+`phase-x-{main theme}-architecture.md`.

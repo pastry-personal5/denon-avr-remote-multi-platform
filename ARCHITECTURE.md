@@ -1,193 +1,48 @@
 # Architecture
 
-The project is a layered Rust library with a thin CLI. Dependencies point
-toward stable protocol and domain code; network I/O, persistence, and runtime
-details stay at the edges.
+The current project is one Cargo package with layered modules. Presentation
+assembles application policy with concrete adapters; network, filesystem, and
+runtime details stay at the edge.
 
 ```text
-CLI presentation                 src/bin/denon-avr-remote/main.rs
-        |
-Application operations           src/application/, with ports and use cases
-        |
-Domain and protocol              src/domain/, src/protocol/
-        ^
-Infrastructure adapters          src/infrastructure/
-        |
-Operating system and network
+CLI / Iced GUI
+      |
+application ports and use cases
+      |
+domain types     protocol primitives
+      ^                 ^
+      \---- infrastructure adapters ----/
 ```
 
-## Current components
-
-### Presentation
-
-`src/bin/denon-avr-remote/main.rs` parses commands, selects a receiver, calls
-library operations, and renders human-readable output. It owns no protocol
-framing or socket loops.
-
-### Application operations
-
-`src/application/` contains the canonical ports and use cases. Receiver
-selection and main-zone status live behind those ports rather than in the
-presentation layer.
-
-### Domain and protocol
-
-`src/domain/` owns receiver identity, capability, and main-zone value types.
-`src/protocol/` owns transport-independent AVR, HEOS, and AppCommand XML
-protocol primitives.
-These modules remain usable without a network connection or async runtime.
-
-`src/domain/capabilities.rs` records model facts and validation state. A command
-appearing in reference documentation is not, by itself, an enabled capability.
-
-### Infrastructure
-
-- `src/infrastructure/discovery_ssdp.rs` performs interface-aware SSDP
-  discovery and bounded AIOS description probing.
-- `src/infrastructure/config_yaml.rs` loads and saves the user’s receiver
-  identity without credentials.
-- `src/infrastructure/tcp_avr.rs` contains the bounded synchronous TCP adapter.
-- `src/infrastructure/app_command_http.rs` contains the bounded synchronous HTTP
-  adapter for typed, read-only AppCommand requests. It opens one connection per
-  exchange because receiver HTTP/1.0 responses may close the connection.
-- `src/infrastructure/avr_session.rs` owns one Tokio TCP connection,
-  serialized request writes, bounded CR framing, unsolicited-event routing,
-  structured errors, reconnect backoff, and connection-generation tracking.
-
-The canonical infrastructure adapters are the only supported concrete I/O boundary.
-
-### Crate boundary decision
-
-Phase 1 intentionally remains one Cargo package with module-level layers. The
-protocol and domain modules are transport-independent, and the boundary check
-rejects runtime, filesystem, socket, and infrastructure imports there. Separate
-workspace crates are not justified yet: they would add public-surface and
-composition overhead without changing the current dependency rules. Introduce
-a dedicated core crate only if a future feature requires independent release,
-independent dependency resolution, or reuse by another package.
+| Layer | Responsibility |
+| --- | --- |
+| `src/domain` | Receiver identity, capabilities, Main Zone, and audio-context values. |
+| `src/protocol` | Transport-independent AVR, HEOS, and AppCommand framing/parsing. |
+| `src/application` | Ports, selection, status/control use cases, and controller lifecycle. |
+| `src/infrastructure` | SSDP, YAML, synchronous TCP/HTTP, and the Tokio AVR session. |
+| `src/gui.rs`, `src/bin` | Iced and CLI presentation plus concrete composition. |
 
 ## Invariants
 
-1. AVR commands end in exactly one CR; HEOS commands end in CRLF.
-2. Protocol modules do not depend on sockets, Tokio, CLI code, or platform APIs.
-3. Every bounded operation has an explicit timeout and reports its context.
-4. A persistent session has one writer and one reader; requests are serialized.
-5. Lines that do not correlate to a solicited request are preserved as events.
-6. A reconnect invalidates cached authority; status is queried again.
-7. Unsupported, malformed, disconnected, and unavailable data remain distinct.
-8. Capabilities are evidence-bound and model-specific.
-9. Tests use deterministic fakes or local servers; live hardware tests document
-   model, firmware, settings, commands, responses, and date.
-10. Undocumented AppCommand operations remain typed read-only probes until
-    model/firmware evidence supports a domain interpretation.
-11. Read-only AppCommand query types reject state-changing operation names;
-    future setters require a separate execute-once application boundary.
+- AVR commands end in one CR; HEOS commands end in CRLF.
+- Domain and protocol code have no socket, filesystem, runtime, or presentation dependency.
+- Operations are bounded and report context; sessions serialize writes.
+- Uncorrelated lines remain events, and reconnect invalidates prior authority.
+- Unsupported, malformed, unavailable, disconnected, and unknown data stay distinct.
+- Capabilities are model- and evidence-bound; unvalidated models are read-only.
+- State-changing controls execute once and require authoritative confirmation.
+- Tests use deterministic fakes or local servers; live validation records model,
+  firmware, settings, command, response, and date.
 
-## Data flows
+## Roadmap
 
-### One-shot status
+Phases 1 and 3–7 established the layers, controls, controller, desktop GUI,
+listening modes, and diagnostic observations. Phase 8 adds Quick Select and EQ
+status. Phase 9 then replaces this package with an enforced Cargo workspace;
+Phase 10 applies the desktop visual identity. Detailed scope and acceptance
+criteria live in [the V2 plans](docs/v2/phase-8-quick-select-eq-overview.md),
+[Phase 9](docs/v2/phase-9-workspace-refactor-overview.md), and
+[Phase 10](docs/v2/phase-10-visual-identity-overview.md).
 
-```text
-CLI -> saved identity or discovery -> TCP adapter
-    -> AvrCommand -> CR-framed queries -> parsed fields -> human output
-
-Diagnostic HTTP information:
-
-CLI probe -> HTTP adapter -> AppCommand XML protocol -> raw/structured
-information output
-```
-
-### Persistent status
-
-```text
-application -> AvrSession request queue -> session actor -> TCP 23
-            <- correlated response / event channel
-            <- reconnect -> generation change -> fresh snapshot
-```
-
-## Boundaries
-
-The one-shot CLI is the supported Kubernetes-style user interface. The persistent session is a
-library capability; CLI control operations are deliberately not implied by it.
-HEOS remains a separate protocol and client boundary. JSON output, additional
-zones, and broader model compatibility require their own evidence and design.
-
-## Version 2 Planned Architecture
-
-Version 2 has eight defined milestones. These are planned boundaries, not
-current v1 capabilities.
-
-Phase 1 has reorganized the flat crate into domain, application, protocol,
-infrastructure, and presentation layers. Application policy depends on ports
-instead of concrete YAML, SSDP, or TCP implementations; the layered modules are exposed directly without legacy façade modules.
-
-Phase 2 adds a read-only GUI and a background receiver worker that owns the
-persistent session. Iced sends connect, disconnect, and refresh intents and
-receives immutable lifecycle and partial-state updates. Both CLI and GUI use a
-platform-native configuration file after a non-destructive one-time import of
-the legacy relative YAML file.
-
-Phase 3 adds typed main-zone controls and an execute-once transport path.
-Read-only queries may repeat after reconnect; state-changing commands never do.
-Each command is capability-gated, serialized, and followed by an authoritative
-query. Only live-validated X3800H controls and choice values are exposed.
-
-Phase 4 provides the application-owned `ReceiverController`, typed session
-factory, lifecycle coordination, bounded shutdown, and observability. Phase 5
-delivers the Iced GUI and integrates it with that controller. Phase 6 adds
-evidence-gated listening-mode groups to the GUI. Phase 7 adds read-only
-audio-signal and channel-context diagnostics through Telnet and AppCommand
-HTTP probes with evidence-preserving observations. Phase 8 adds Main Zone
-Quick Select presets and
-independent EQ/room-correction status. The existing CLI and canonical layered
-APIs remain supported.
-
-```text
-CLI presentation             Iced presentation
-          \                     /
-             ReceiverController
-            /    |       |     \
-      discovery config transport observability
-                         |
-                     AVR session
-```
-
-## Architecture TODO
-
-The following work is intentionally deferred. Each item should preserve the
-invariants above and add tests before becoming a user-facing capability.
-
-### Remaining work
-
-- Implement the Version 2 Iced GUI and configuration migration defined by the
-  Phase 2 design and Phase 5 plans.
-- Add Main Zone Quick Select recall and independent EQ/room-correction status
-  defined by the Phase 8 plans.
-- Add property/fuzz tests for CR framing, malformed UTF-8, oversized frames,
-  response correlation, and configuration parsing.
-- Define a capability registry keyed by model and firmware evidence instead of
-  expanding a single placeholder record.
-
-### After the Version 2 roadmap
-
-- Implement HEOS as a separate async client with JSON envelope parsing,
-  player identity, event registration, and reconnect refresh.
-- Decide whether JSON output belongs in a versioned CLI contract.
-- Add observability hooks for timeouts, reconnects, dropped events, and
-  receiver-reported errors without leaking credentials or sensitive network
-  data.
-- Document compatibility and support policy for additional receiver models.
-
-## Documentation structure
-
-Project plans and milestone records live under `docs/`:
-
-- `docs/`: user guides; `docs/v1/`: Version 1 phase plans and architecture notes,
-  and release notes.
-- `docs/v2/`: Version 2 layered-architecture, GUI, control, and lifecycle
-  stabilization plans plus GUI guidance.
-- `docs/archive/`: retired or superseded documentation; it is not active scope.
-
-Active phase files use `phase-<number>-<topic>.md`; phase directories are not
-used. Root-level documents are limited to repository orientation, contribution
-rules, and architecture.
+Future HEOS, JSON contracts, additional zones, and broader-model support need
+their own evidence and design.

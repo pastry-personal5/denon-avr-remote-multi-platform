@@ -2,20 +2,14 @@
 
 ## Repository map
 
-The canonical public API is organized under `src/domain`, `src/application`, `src/protocol`, and `src/infrastructure`. Legacy v1 façades have been removed.
-
-- `src/lib.rs`: public library API.
-- `src/bin/denon-avr-remote/main.rs`: CLI composition, presentation, and command dispatch.
+- `src/lib.rs`: public Rust library API.
+- `src/domain`, `src/application`, `src/protocol`, `src/infrastructure`: the
+  canonical layers; keep dependencies directed inward.
+- `src/gui.rs` and `src/bin/`: desktop GUI and CLI presentation/composition.
 - `tests/`: end-to-end and CLI tests.
-- `docs/archive/`: retired or superseded documentation.
-- `docs/`: user guides; `docs/v1/` and `docs/v2/`: release-scoped plans and architecture.
-- `ARCHITECTURE.md`: current design, invariants, and architecture TODOs.
+- `docs/v1/` and `docs/v2/`: active phase plans; `docs/archive/`: retired material.
 
-All project-plan documents belong under `docs/` and its scope-specific
-subdirectories. Retired or superseded documentation may be preserved under
-`docs/archive/`; archive files are not active phase documentation. Keep the
-root README focused on orientation and usage.
-
-See [`docs/development.md`](docs/development.md) for development commands and
-[`docs/contributing.md`](docs/contributing.md) for contribution and engineering
-rules.
+Keep plans under `docs/`, keep the root README to orientation and usage, and
+do not treat archived material as active guidance. See
+[`docs/development.md`](docs/development.md) for commands and
+[`docs/contributing.md`](docs/contributing.md) for engineering rules.
