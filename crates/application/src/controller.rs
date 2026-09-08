@@ -534,24 +534,13 @@ impl<F: SessionFactory> State<F> {
             }
         }
 
-        // Main Zone status is useful on its own. Publish it before the
-        // optional audio-context probes below; unsupported or slow SD/DC/CV
-        // queries must not leave the GUI displaying an old/unknown power
-        // state while the core status is already authoritative.
-        if self.snapshot.resource_version() != before {
-            Self::emit(
-                events,
-                ReceiverEvent::ResourceVersionChanged(self.snapshot.resource_version()),
-            )
-            .await;
-        }
-        Self::emit(events, ReceiverEvent::Snapshot(self.snapshot.clone())).await;
-
-        let context = {
-            let s = self.session.as_mut().ok_or_else(stopped)?;
-            s.query_audio_context().await
-        };
-        self.snapshot.set_audio_context(context);
+        // The five Main Zone fields form the status contract. Complete this
+        // refresh once they have been queried: supplemental audio-context
+        // probes are not part of connection or dashboard readiness. In
+        // particular, some receivers do not answer every diagnostic family
+        // (for example, `DC?`), so waiting for them here can strand a GUI in
+        // its initial "connecting"/unknown-power state after power was
+        // already confirmed.
         if self.snapshot.resource_version() != before {
             Self::emit(
                 events,

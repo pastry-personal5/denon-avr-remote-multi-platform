@@ -1,12 +1,29 @@
 use std::sync::Arc;
 
+mod logging;
+
 fn main() -> iced::Result {
+    // Keep the guard alive until Iced exits so the non-blocking log worker can
+    // flush every queued event before the process terminates.
+    let _logging = match logging::initialize() {
+        Ok(guard) => {
+            tracing::info!(
+                log_directory = %guard.directory().display(),
+                "desktop logging initialized"
+            );
+            Some(guard)
+        }
+        Err(error) => {
+            eprintln!("Unable to initialize desktop logging: {error}");
+            None
+        }
+    };
     let services = denon_avr_gui_lib::GuiServices {
         factory: Arc::new(denon_avr_infrastructure::AvrSessionFactory::default()),
         configuration: Arc::new(denon_avr_infrastructure::YamlConfigRepository::default()),
         discovery: Arc::new(denon_avr_infrastructure::SsdpDiscoveryAdapter),
     };
-    iced::application(
+    let result = iced::application(
         move || denon_avr_gui_lib::boot_with_services(services.clone()),
         denon_avr_gui_lib::update,
         denon_avr_gui_lib::view,
@@ -19,5 +36,7 @@ fn main() -> iced::Result {
         ..Default::default()
     })
     .title("Denon AVR Remote")
-    .run()
+    .run();
+    tracing::info!(result = ?result, "desktop application stopped");
+    result
 }

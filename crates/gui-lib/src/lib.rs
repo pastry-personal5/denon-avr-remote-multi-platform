@@ -92,7 +92,11 @@ impl ControllerBridge {
         let (event_sender, event_rx) = mpsc::channel(32);
         let events = Arc::new(Mutex::new(event_rx));
         tokio::spawn(async move {
-            let handle = ReceiverController::spawn(factory, config);
+            let handle = ReceiverController::spawn_with_observability(
+                factory,
+                config,
+                Arc::new(TracingObservability),
+            );
             run_bridge(handle, &mut command_rx, event_sender).await;
         });
         Self {
@@ -154,6 +158,7 @@ async fn run_bridge(
             // Poll for a new command request
             Some(command) = commands.recv() => {
                 let is_shutdown = matches!(&command, BridgeCommand::Shutdown(_));
+                tracing::debug!(command = bridge_command_name(&command), "processing GUI command");
                 let (request_id, result) = match command {
                     BridgeCommand::Select(id, selection) => {
                         let selected = handle.select(selection).await;
@@ -226,6 +231,7 @@ async fn run_bridge(
                     })
                     .await;
                 if is_shutdown {
+                    tracing::info!("controller bridge stopped");
                     break;
                 }
             }
@@ -250,6 +256,48 @@ async fn run_bridge(
                         event: controller_event,
                     })
                     .await;
+            }
+        }
+    }
+}
+
+fn bridge_command_name(command: &BridgeCommand) -> &'static str {
+    match command {
+        BridgeCommand::Select(..) => "select",
+        BridgeCommand::Connect(..) => "connect",
+        BridgeCommand::Refresh(..) => "refresh",
+        BridgeCommand::Disconnect(..) => "disconnect",
+        BridgeCommand::Control(..) => "control",
+        BridgeCommand::RefreshPhase8(..) => "refresh_phase8",
+        BridgeCommand::RecallQuickSelect(..) => "recall_quick_select",
+        BridgeCommand::Shutdown(..) => "shutdown",
+    }
+}
+
+/// Adapts application-owned, redacted diagnostics to the desktop's centralized
+/// tracing subscriber without making the application layer depend on logging.
+struct TracingObservability;
+
+impl denon_avr_application::Observability for TracingObservability {
+    fn record(&self, diagnostic: denon_avr_application::Diagnostic) {
+        match diagnostic {
+            denon_avr_application::Diagnostic::ConnectionGeneration(generation) => {
+                tracing::info!(generation, "receiver connection established");
+            }
+            denon_avr_application::Diagnostic::ReconnectAttempt { attempt } => {
+                tracing::warn!(attempt, "receiver reconnecting");
+            }
+            denon_avr_application::Diagnostic::Timeout { context } => {
+                tracing::warn!(%context, "receiver operation timed out");
+            }
+            denon_avr_application::Diagnostic::MalformedFrame { context } => {
+                tracing::warn!(%context, "receiver returned a malformed frame");
+            }
+            denon_avr_application::Diagnostic::QueuePressure { queued } => {
+                tracing::warn!(queued, "receiver command queue under pressure");
+            }
+            denon_avr_application::Diagnostic::Shutdown => {
+                tracing::info!("receiver controller shut down");
             }
         }
     }
@@ -358,6 +406,7 @@ impl Gui {
     }
     fn announce(&mut self, message: impl Into<String>) {
         let message = message.into();
+        tracing::info!(message = %message, "GUI feedback");
         self.announcement = message.clone();
         if self.messages.back() != Some(&message) {
             if self.messages.len() == design::MAX_SESSION_MESSAGES {

@@ -14,6 +14,6 @@ The CLI reads receivers, capabilities, and Main Zone status; validated models
 also support `set power|input|volume|mute|surround`. Receiver-backed commands
 accept `--host HOST` or `--receiver N`.
 
-See the [CLI guide](docs/cli-user-guide.md), [development guide](docs/development.md),
+See the [CLI guide](docs/cli-user-guide.md), [desktop guide](docs/desktop-user-guide.md), [development guide](docs/development.md),
 [contributing guide](docs/contributing.md), [architecture](ARCHITECTURE.md),
 and [V2 roadmap](docs/v2/phase-10-visual-identity-overview.md).

@@ -8,7 +8,7 @@ use denon_avr_domain::{
     MainZoneField, MainZoneValue, MuteState, PowerState, ReceiverEndpoint, ReceiverIdentity,
     SurroundMode, Volume,
 };
-use denon_avr_gui_lib::{boot_with_services, update, GuiServices, Message};
+use denon_avr_gui_lib::{boot_with_services, update, ControllerBridge, Gui, GuiServices, Message};
 use iced::futures::StreamExt;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -22,6 +22,7 @@ struct Calls {
     discoveries: AtomicUsize,
     connections: AtomicUsize,
     audio_context_queries: AtomicUsize,
+    core_refreshes: AtomicUsize,
     closes: AtomicUsize,
     discovery_timeouts: Mutex<Vec<Duration>>,
     saved_configurations: Mutex<Vec<ConfiguredReceivers>>,
@@ -126,9 +127,10 @@ impl ReceiverSession for FakeSession {
             .lock()
             .expect("queried fields lock")
             .push(field);
+        let calls = Arc::clone(&self.calls);
         Box::pin(async move {
             tokio::task::yield_now().await;
-            Ok(match field {
+            let value = match field {
                 MainZoneField::Power => MainZoneValue::Power(PowerState::On),
                 MainZoneField::Input => MainZoneValue::Input(Input::new("CD").unwrap()),
                 MainZoneField::Volume => MainZoneValue::Volume(Volume::from_parts("50", -300)),
@@ -136,7 +138,12 @@ impl ReceiverSession for FakeSession {
                 MainZoneField::SurroundMode => {
                     MainZoneValue::SurroundMode(SurroundMode::new("STEREO").unwrap())
                 }
-            })
+            };
+            if field == MainZoneField::SurroundMode {
+                calls.core_refreshes.fetch_add(1, Ordering::SeqCst);
+                calls.refresh_finished.notify_one();
+            }
+            Ok(value)
         })
     }
 
@@ -236,7 +243,7 @@ async fn gui_drives_async_configuration_discovery_and_session_apis() {
         Message::CommandFinished(Ok(()))
     ));
 
-    wait_for(&calls.audio_context_queries, &calls.refresh_finished).await;
+    wait_for(&calls.core_refreshes, &calls.refresh_finished).await;
 
     assert_eq!(calls.discoveries.load(Ordering::SeqCst), 1);
     assert_eq!(calls.configuration_saves.load(Ordering::SeqCst), 1);
@@ -252,6 +259,7 @@ async fn gui_drives_async_configuration_discovery_and_session_apis() {
         *calls.queried_fields.lock().expect("queried fields lock"),
         MainZoneField::ALL
     );
+    assert_eq!(calls.audio_context_queries.load(Ordering::SeqCst), 0);
     assert_eq!(
         calls
             .connected_identities
@@ -325,12 +333,60 @@ async fn manual_setup_persists_before_connecting() {
         task_message(connect_task).await,
         Message::CommandFinished(Ok(()))
     ));
-    wait_for(&calls.audio_context_queries, &calls.refresh_finished).await;
+    wait_for(&calls.core_refreshes, &calls.refresh_finished).await;
+    assert_eq!(calls.audio_context_queries.load(Ordering::SeqCst), 0);
     assert_eq!(
         calls.connected_identities.lock().expect("identity lock")[0].host,
         "receiver.example"
     );
     assert_eq!(gui.configured, saved_config);
+
+    let shutdown_task = update(&mut gui, Message::Shutdown);
+    assert!(matches!(
+        task_message(shutdown_task).await,
+        Message::CommandFinished(Ok(()))
+    ));
+    wait_for(&calls.closes, &calls.close_finished).await;
+}
+
+#[tokio::test]
+async fn saved_receiver_startup_connects_and_refreshes_only_core_status() {
+    let calls = Arc::new(Calls::default());
+    let bridge = ControllerBridge::new(FakeFactory {
+        calls: Arc::clone(&calls),
+    });
+    let mut gui = Gui::new(bridge);
+    let identity = ReceiverIdentity {
+        host: "192.168.0.8".into(),
+        model: Some("Denon AVC-X3800H".into()),
+        friendly_name: Some("Denon AVC-X3800H".into()),
+    };
+    let config = ConfiguredReceivers {
+        current: Some("Denon AVC-X3800H".into()),
+        receivers: [("Denon AVC-X3800H".into(), identity.clone())].into(),
+    };
+
+    let startup_task = update(&mut gui, Message::ConfigLoaded(Ok(config)));
+    assert!(matches!(
+        task_message(startup_task).await,
+        Message::CommandFinished(Ok(()))
+    ));
+    wait_for(&calls.core_refreshes, &calls.refresh_finished).await;
+
+    assert_eq!(calls.connections.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        calls
+            .connected_identities
+            .lock()
+            .expect("identity lock")
+            .as_slice(),
+        &[identity]
+    );
+    assert_eq!(
+        *calls.queried_fields.lock().expect("queried fields lock"),
+        MainZoneField::ALL
+    );
+    assert_eq!(calls.audio_context_queries.load(Ordering::SeqCst), 0);
 
     let shutdown_task = update(&mut gui, Message::Shutdown);
     assert!(matches!(
