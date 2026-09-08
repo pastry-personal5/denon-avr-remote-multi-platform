@@ -3,7 +3,11 @@
 use crate::application::{
     ControlGateway, OperationError, OperationErrorKind, SessionEvent, StatusGateway,
 };
-use crate::domain::{MainZoneControl, MainZoneEvent, MainZoneField, MainZoneValue};
+use crate::domain::{
+    AudioContextSnapshot, Confidence, MainZoneControl, MainZoneEvent, MainZoneField, MainZoneValue,
+    Observed, RawObservation, SurroundMode,
+};
+use crate::domain::{FieldError, FieldErrorKind};
 use crate::protocol::avr::{
     encode_control, get_command_family, parse_main_zone_event, parse_main_zone_response,
     query_command, response_matches, AvrCommand,
@@ -85,6 +89,111 @@ impl SyncAvrClient {
             }
             self.events.push_back(session_event(&line));
         }
+    }
+
+    /// Collects only the documented, read-only diagnostic queries. Each query
+    /// is independent so one unsupported or malformed response cannot erase
+    /// the other observations.
+    pub fn query_audio_context(&mut self) -> AudioContextSnapshot {
+        let mut snapshot = AudioContextSnapshot::default();
+        for command in ["SI?", "SD?", "DC?", "MS?", "CV?"] {
+            let started = Instant::now();
+            let result = self.request_raw(command);
+            let elapsed_millis = started.elapsed().as_millis();
+            let raw = match &result {
+                Ok(response) => RawObservation {
+                    response: Some(response.clone()),
+                    error: None,
+                    elapsed_millis,
+                },
+                Err(error) => RawObservation {
+                    response: None,
+                    error: Some(error.to_string()),
+                    elapsed_millis,
+                },
+            };
+            snapshot.record_raw(command, raw);
+            match (command, result) {
+                ("SI?", Ok(value)) => {
+                    if let Some(value) = value.strip_prefix("SI").filter(|v| !v.is_empty()) {
+                        snapshot.input_selection =
+                            Observed::known(value.to_owned(), "SI?", Confidence::Observed);
+                    } else {
+                        snapshot.input_selection = Observed::malformed("SI?");
+                    }
+                }
+                ("SD?", Ok(value)) => {
+                    if let Some(value) = value.strip_prefix("SD").filter(|v| !v.is_empty()) {
+                        snapshot.input_mode =
+                            Observed::known(value.to_owned(), "SD?", Confidence::Observed);
+                    } else {
+                        snapshot.input_mode = Observed::malformed("SD?");
+                    }
+                }
+                ("DC?", Ok(value)) => {
+                    if let Some(value) = value.strip_prefix("DC").filter(|v| !v.is_empty()) {
+                        snapshot.digital_mode =
+                            Observed::known(value.to_owned(), "DC?", Confidence::Observed);
+                    } else {
+                        snapshot.digital_mode = Observed::malformed("DC?");
+                    }
+                }
+                ("MS?", Ok(value)) => {
+                    if let Some(value) = value.strip_prefix("MS").filter(|v| !v.is_empty()) {
+                        if let Ok(mode) = SurroundMode::new(value) {
+                            snapshot.current_mode =
+                                Observed::known(mode, "MS?", Confidence::Observed);
+                        } else {
+                            snapshot.current_mode = Observed::malformed("MS?");
+                        }
+                    } else {
+                        snapshot.current_mode = Observed::malformed("MS?");
+                    }
+                }
+                ("CV?", Ok(value)) => {
+                    if let Some(value) = value.strip_prefix("CV").filter(|v| !v.is_empty()) {
+                        snapshot.channel_volume =
+                            Observed::known(value.to_owned(), "CV?", Confidence::Observed);
+                    } else {
+                        snapshot.channel_volume = Observed::malformed("CV?");
+                    }
+                }
+                ("DC?", Err(error)) => {
+                    snapshot.digital_mode = Observed::unavailable(
+                        FieldError {
+                            kind: FieldErrorKind::Unavailable,
+                            message: error.to_string(),
+                        },
+                        "DC?",
+                    );
+                }
+                (_, Err(error)) => {
+                    let field = FieldError {
+                        kind: match error.kind {
+                            OperationErrorKind::Timeout => FieldErrorKind::Timeout,
+                            OperationErrorKind::Disconnected => FieldErrorKind::Disconnected,
+                            _ => FieldErrorKind::Unavailable,
+                        },
+                        message: error.to_string(),
+                    };
+                    match command {
+                        "SI?" => {
+                            snapshot.input_selection = Observed::unavailable(field.clone(), command)
+                        }
+                        "SD?" => {
+                            snapshot.digital_mode = Observed::unavailable(field.clone(), command)
+                        }
+                        "MS?" => {
+                            snapshot.current_mode = Observed::unavailable(field.clone(), command)
+                        }
+                        "CV?" => snapshot.channel_volume = Observed::unavailable(field, command),
+                        _ => {}
+                    }
+                }
+                _ => {}
+            }
+        }
+        snapshot
     }
 
     /// Dispatch one already-validated command without waiting for a reply.

@@ -17,7 +17,10 @@ impl Model {
     }
 }
 
-use super::{Input, MainZoneControl, MuteState, PowerState, SurroundMode, VolumeLevel};
+use super::AudioContextSnapshot;
+use super::{
+    Input, ListeningModeGroup, MainZoneControl, MuteState, PowerState, SurroundMode, VolumeLevel,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ModelCapabilities {
@@ -50,7 +53,29 @@ const X3800H_INPUTS: &[&str] = &[
     "AUX6",
     "AUX7",
 ];
-const X3800H_SURROUND_MODES: &[&str] = &["DIRECT", "PURE DIRECT", "STEREO", "MULTI CH IN"];
+const X3800H_SURROUND_MODES: &[&str] = &[
+    "DIRECT",
+    "PURE DIRECT",
+    "STEREO",
+    "MULTI CH IN",
+    "DOLBY SURROUND",
+    "MULTI CH STEREO",
+    "MONO MOVIE",
+    "ROCK ARENA",
+    "JAZZ CLUB",
+    "MATRIX",
+    "VIDEO GAME",
+];
+const X3800H_MOVIE_MODES: &[&str] = &["STEREO", "DOLBY SURROUND", "MULTI CH STEREO", "MONO MOVIE"];
+const X3800H_MUSIC_MODES: &[&str] = &[
+    "STEREO",
+    "DOLBY SURROUND",
+    "MULTI CH STEREO",
+    "ROCK ARENA",
+    "JAZZ CLUB",
+    "MATRIX",
+];
+const X3800H_GAME_MODES: &[&str] = &["STEREO", "DOLBY SURROUND", "VIDEO GAME"];
 
 impl ModelCapabilities {
     pub const fn for_model(model: Model) -> Self {
@@ -82,6 +107,43 @@ impl ModelCapabilities {
             }
             MainZoneControl::Input(value) => self.inputs.contains(&value.as_str()),
             MainZoneControl::SurroundMode(value) => self.surround_modes.contains(&value.as_str()),
+            MainZoneControl::ListeningModeGroup(_) => self.model == Model::AvrX3800h,
+        }
+    }
+
+    pub fn listening_modes(&self, group: ListeningModeGroup) -> &'static [&'static str] {
+        if !self.writable {
+            return &[];
+        }
+        match group {
+            ListeningModeGroup::Movie => X3800H_MOVIE_MODES,
+            ListeningModeGroup::Music => X3800H_MUSIC_MODES,
+            ListeningModeGroup::Game => X3800H_GAME_MODES,
+        }
+    }
+
+    pub fn listening_mode(
+        &self,
+        group: ListeningModeGroup,
+        value: &str,
+    ) -> Result<SurroundMode, &'static str> {
+        if !self.listening_modes(group).contains(&value) {
+            return Err("listening mode is not supported in this group or context");
+        }
+        SurroundMode::new(value.to_owned())
+    }
+
+    /// Individual choices require validated signal and speaker context. The
+    /// documented TCP status queries do not provide those maps.
+    pub fn listening_modes_for_context(
+        &self,
+        group: ListeningModeGroup,
+        context: &AudioContextSnapshot,
+    ) -> &'static [&'static str] {
+        if context.channel_maps_are_validated() {
+            self.listening_modes(group)
+        } else {
+            &[]
         }
     }
 
@@ -120,5 +182,16 @@ mod tests {
         assert_eq!(Model::from_reported("Denon AVR-X3800H"), Model::AvrX3800h);
         assert_eq!(Model::from_reported("AVC X3800H"), Model::AvrX3800h);
         assert_eq!(Model::from_reported("unknown"), Model::Unknown);
+    }
+
+    #[test]
+    fn individual_modes_stay_disabled_without_validated_maps() {
+        let capabilities = ModelCapabilities::for_model(Model::AvrX3800h);
+        assert!(capabilities
+            .listening_modes_for_context(
+                ListeningModeGroup::Movie,
+                &crate::domain::AudioContextSnapshot::default(),
+            )
+            .is_empty());
     }
 }

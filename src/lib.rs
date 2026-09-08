@@ -9,7 +9,9 @@ pub mod gui;
 pub mod infrastructure;
 pub mod protocol;
 
-pub use application::{query_main_zone_status, query_main_zone_status_async};
+pub use application::{
+    query_audio_context_async, query_main_zone_status, query_main_zone_status_async,
+};
 pub use application::{ControllerConfig, ReceiverCommand, ReceiverController, ReceiverEvent};
 
 pub use application::ports::{
@@ -18,7 +20,10 @@ pub use application::ports::{
     ReceiverDiscovery, SessionEvent, StatusGateway,
 };
 pub use domain::{
-    ConfiguredReceivers, ConnectionState, DiscoveredReceiver, FieldError, FieldErrorKind,
-    FieldStatus, Input, MainZoneControl, MainZoneField, MainZoneSnapshot, MainZoneValue, MuteState,
-    PowerState, ReceiverEndpoint, SurroundMode, Volume, VolumeLevel,
+    AudioContextField, AudioContextSnapshot, AudioContextValue, Confidence, ConfiguredReceivers,
+    ConfiguredSpeakerLayout, ConnectionState, DiscoveredReceiver, FieldError, FieldErrorKind,
+    FieldStatus, Input, InputChannelLayout, ListeningModeGroup, MainZoneControl, MainZoneField,
+    MainZoneSnapshot, MainZoneValue, MuteState, Observation, Observed, OutputChannelLayout,
+    PowerState, Provenance, RawObservation, ReceiverEndpoint, SampleRate, SignalCodec, SignalFlags,
+    SignalFormat, SurroundMode, Volume, VolumeLevel,
 };

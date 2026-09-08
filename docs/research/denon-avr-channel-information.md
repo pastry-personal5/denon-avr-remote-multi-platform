@@ -84,12 +84,19 @@ not as the actual input or output channel map.
 ## Other interfaces
 
 The X3800H provides IP control, RS-232 control, web control, and app control as
-product features. [4] The web-control/manual documentation exposes receiver
-settings and status pages, but Denon does not present a stable, documented
-cross-model HTTP schema for live input/output channel maps. Reverse-engineered
-XML/AppCommand endpoints found in community projects may expose additional
-status fields on some models and firmware versions, but they must be treated
-as model-specific and probed defensively.
+product features. [4] Denon's web-control documentation directs a browser to
+the receiver address and requires Network Control to be enabled for standby
+access. Denon's exposed-services reference identifies TCP 80 for HTTP, TCP 443
+for HTTPS, and TCP 8080 for the AVR Remote app interface. [5][6] These official
+sources document the transports but do not publish a stable, cross-model
+AppCommand XML schema for live input/output channel maps.
+
+A live AVR-X3800H probe on firmware `6000-1060-0071-9831` successfully posted
+read-only `GetAudioInfo`, `GetInputSignal`, and `GetActiveSpeaker` queries to
+`/goform/AppCommand0300.xml` on TCP 8080. The HTTP/1.0 response reported PCM,
+48 kHz, and Multi Ch Stereo. `control="2"` selected `FL`/`FR` for the input and
+`FL`/`C`/`FR`/`SL`/`SR` for active speakers. This is useful model-specific
+evidence, not an official Denon schema guarantee.
 
 The Denon Remote app and the receiver’s on-screen `Information` page are useful
 for human verification. They should not be assumed to define a supported
@@ -156,4 +163,5 @@ input connector, and the exact response lines:
 2. [Denon AVR-X3800H remote control: INFO status display](https://manuals.denon.com/avrx3800h/na/en/GFNFSYaubbfivv.php)
 3. [Denon AVR control protocol reference PDF](https://downloads.denon.com/documentmaster/us/avr-2308ciserialprotocol_ver540.pdf)
 4. [Denon AVR-X3800H product specifications](https://www.denon.com/en-us/product/av-receivers/avr-x3800h/300609-01-00-101.html)
-
+5. [Denon AVR-X3800H web control](https://manuals.denon.com/AVRX3800H/NA/EN/RQIFSYzprtydut.php)
+6. [Denon exposed network interfaces and services](https://manuals.denon.com/EUsecurity/EU/EN/index.php)

@@ -1,8 +1,8 @@
 //! Application ports for infrastructure abstraction.
 
 use crate::domain::{
-    ConfiguredReceivers, ConnectionState, DiscoveredReceiver, MainZoneEvent, MainZoneField,
-    MainZoneValue,
+    AudioContextSnapshot, ConfiguredReceivers, ConnectionState, DiscoveredReceiver, MainZoneEvent,
+    MainZoneField, MainZoneValue,
 };
 use std::fmt;
 use std::future::Future;
@@ -114,4 +114,5 @@ pub trait AsyncStatusGateway: Send {
     ) -> BoxFuture<'_, Result<MainZoneValue, OperationError>>;
     fn connection_generation(&self) -> u64;
     fn next_event(&mut self) -> BoxFuture<'_, Result<SessionEvent, OperationError>>;
+    fn query_audio_context(&mut self) -> BoxFuture<'_, AudioContextSnapshot>;
 }

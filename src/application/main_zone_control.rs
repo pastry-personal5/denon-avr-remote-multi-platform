@@ -43,7 +43,7 @@ pub fn dispatch_main_zone_control(
     }
     if preflight
         .value(control_field(&control))
-        .is_some_and(|value| control_matches(&control, &value))
+        .is_some_and(|value| control_matches(&control, &value, capabilities))
     {
         return ControlOutcome::NoOp(preflight);
     }
@@ -79,7 +79,7 @@ pub fn execute_main_zone_control(
             "the selected receiver does not support this validated control".into(),
         );
     }
-    if matches!(preflight.value(control_field(&control)), Some(ref value) if control_matches(&control, value))
+    if matches!(preflight.value(control_field(&control)), Some(ref value) if control_matches(&control, value, capabilities))
     {
         return ControlOutcome::NoOp(preflight);
     }
@@ -95,7 +95,7 @@ pub fn execute_main_zone_control(
     let confirmed = crate::application::main_zone_status::query_main_zone_status(status);
     if confirmed
         .value(control_field(&control))
-        .is_some_and(|value| control_matches(&control, &value))
+        .is_some_and(|value| control_matches(&control, &value, capabilities))
     {
         ControlOutcome::Confirmed(confirmed)
     } else {
@@ -130,7 +130,7 @@ pub async fn execute_main_zone_control_async(
             "the selected receiver does not support this validated control".into(),
         );
     }
-    if matches!(preflight.value(control_field(&control)), Some(ref value) if control_matches(&control, value))
+    if matches!(preflight.value(control_field(&control)), Some(ref value) if control_matches(&control, value, capabilities))
     {
         return ControlOutcome::NoOp(preflight);
     }
@@ -147,7 +147,7 @@ pub async fn execute_main_zone_control_async(
         crate::application::main_zone_status::query_main_zone_status_async(status).await;
     if confirmed
         .value(control_field(&control))
-        .is_some_and(|value| control_matches(&control, &value))
+        .is_some_and(|value| control_matches(&control, &value, capabilities))
     {
         ControlOutcome::Confirmed(confirmed)
     } else {
@@ -166,10 +166,15 @@ fn control_field(control: &MainZoneControl) -> crate::domain::MainZoneField {
         MainZoneControl::Volume(_) => crate::domain::MainZoneField::Volume,
         MainZoneControl::Mute(_) => crate::domain::MainZoneField::Mute,
         MainZoneControl::SurroundMode(_) => crate::domain::MainZoneField::SurroundMode,
+        MainZoneControl::ListeningModeGroup(_) => crate::domain::MainZoneField::SurroundMode,
     }
 }
 
-fn control_matches(control: &MainZoneControl, value: &crate::domain::MainZoneValue) -> bool {
+fn control_matches(
+    control: &MainZoneControl,
+    value: &crate::domain::MainZoneValue,
+    capabilities: &ModelCapabilities,
+) -> bool {
     match (control, value) {
         (MainZoneControl::Power(expected), crate::domain::MainZoneValue::Power(actual)) => {
             expected == actual
@@ -187,6 +192,12 @@ fn control_matches(control: &MainZoneControl, value: &crate::domain::MainZoneVal
             MainZoneControl::SurroundMode(expected),
             crate::domain::MainZoneValue::SurroundMode(actual),
         ) => expected == actual,
+        (
+            MainZoneControl::ListeningModeGroup(group),
+            crate::domain::MainZoneValue::SurroundMode(actual),
+        ) => capabilities
+            .listening_modes(*group)
+            .contains(&actual.as_str()),
         _ => false,
     }
 }

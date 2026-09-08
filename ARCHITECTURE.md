@@ -33,7 +33,8 @@ presentation layer.
 ### Domain and protocol
 
 `src/domain/` owns receiver identity, capability, and main-zone value types.
-`src/protocol/` owns transport-independent AVR and HEOS protocol primitives.
+`src/protocol/` owns transport-independent AVR, HEOS, and AppCommand XML
+protocol primitives.
 These modules remain usable without a network connection or async runtime.
 
 `src/domain/capabilities.rs` records model facts and validation state. A command
@@ -46,6 +47,9 @@ appearing in reference documentation is not, by itself, an enabled capability.
 - `src/infrastructure/config_yaml.rs` loads and saves the user’s receiver
   identity without credentials.
 - `src/infrastructure/tcp_avr.rs` contains the bounded synchronous TCP adapter.
+- `src/infrastructure/app_command_http.rs` contains the bounded synchronous HTTP
+  adapter for typed, read-only AppCommand requests. It opens one connection per
+  exchange because receiver HTTP/1.0 responses may close the connection.
 - `src/infrastructure/avr_session.rs` owns one Tokio TCP connection,
   serialized request writes, bounded CR framing, unsolicited-event routing,
   structured errors, reconnect backoff, and connection-generation tracking.
@@ -74,6 +78,10 @@ independent dependency resolution, or reuse by another package.
 8. Capabilities are evidence-bound and model-specific.
 9. Tests use deterministic fakes or local servers; live hardware tests document
    model, firmware, settings, commands, responses, and date.
+10. Undocumented AppCommand operations remain typed read-only probes until
+    model/firmware evidence supports a domain interpretation.
+11. Read-only AppCommand query types reject state-changing operation names;
+    future setters require a separate execute-once application boundary.
 
 ## Data flows
 
@@ -82,6 +90,11 @@ independent dependency resolution, or reuse by another package.
 ```text
 CLI -> saved identity or discovery -> TCP adapter
     -> AvrCommand -> CR-framed queries -> parsed fields -> human output
+
+Diagnostic HTTP information:
+
+CLI probe -> HTTP adapter -> AppCommand XML protocol -> raw/structured
+information output
 ```
 
 ### Persistent status
@@ -122,8 +135,10 @@ query. Only live-validated X3800H controls and choice values are exposed.
 Phase 4 provides the application-owned `ReceiverController`, typed session
 factory, lifecycle coordination, bounded shutdown, and observability. Phase 5
 delivers the Iced GUI and integrates it with that controller. Phase 6 adds
-evidence-gated listening-mode groups to the GUI. Phase 7 remains reserved for
-future roadmap work. Phase 8 adds Main Zone Quick Select presets and
+evidence-gated listening-mode groups to the GUI. Phase 7 adds read-only
+audio-signal and channel-context diagnostics through Telnet and AppCommand
+HTTP probes with evidence-preserving observations. Phase 8 adds Main Zone
+Quick Select presets and
 independent EQ/room-correction status. The existing CLI and canonical layered
 APIs remain supported.
 
@@ -146,8 +161,6 @@ invariants above and add tests before becoming a user-facing capability.
 
 - Implement the Version 2 Iced GUI and configuration migration defined by the
   Phase 2 design and Phase 5 plans.
-- Add grouped listening-mode capabilities and context filtering defined by the
-  Phase 6 plans.
 - Add Main Zone Quick Select recall and independent EQ/room-correction status
   defined by the Phase 8 plans.
 - Add property/fuzz tests for CR framing, malformed UTF-8, oversized frames,

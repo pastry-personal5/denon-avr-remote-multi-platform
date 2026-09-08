@@ -6,8 +6,9 @@ use crate::application::{
     SessionEvent,
 };
 use crate::domain::{
-    ConnectionState, FieldError, FieldErrorKind, MainZoneEvent, MainZoneField, MainZoneSnapshot,
-    MainZoneValue, StateAuthority,
+    AudioContextSnapshot, Confidence, ConnectionState, FieldError, FieldErrorKind, MainZoneEvent,
+    MainZoneField, MainZoneSnapshot, MainZoneValue, Observed, RawObservation, StateAuthority,
+    SurroundMode,
 };
 use crate::protocol::avr::AvrCommand;
 use crate::protocol::{
@@ -265,6 +266,95 @@ impl AsyncStatusGateway for AvrSession {
             }
         })
     }
+
+    fn query_audio_context(&mut self) -> BoxFuture<'_, AudioContextSnapshot> {
+        Box::pin(async move {
+            let mut snapshot = AudioContextSnapshot::default();
+            for command in ["SI?", "SD?", "DC?", "MS?", "CV?"] {
+                let started = std::time::Instant::now();
+                let result = self.request_query(command).await;
+                snapshot.record_raw(
+                    command,
+                    RawObservation {
+                        response: result.as_ref().ok().cloned(),
+                        error: result.as_ref().err().map(ToString::to_string),
+                        elapsed_millis: started.elapsed().as_millis(),
+                    },
+                );
+                match (command, result) {
+                    ("SI?", Ok(value)) => {
+                        if let Some(value) = value.strip_prefix("SI").filter(|v| !v.is_empty()) {
+                            snapshot.input_selection =
+                                Observed::known(value.to_owned(), "SI?", Confidence::Observed);
+                        } else {
+                            snapshot.input_selection = Observed::malformed("SI?");
+                        }
+                    }
+                    ("SD?", Ok(value)) => {
+                        if let Some(value) = value.strip_prefix("SD").filter(|v| !v.is_empty()) {
+                            snapshot.input_mode =
+                                Observed::known(value.to_owned(), "SD?", Confidence::Observed);
+                        } else {
+                            snapshot.input_mode = Observed::malformed("SD?");
+                        }
+                    }
+                    ("DC?", Ok(value)) => {
+                        if let Some(value) = value.strip_prefix("DC").filter(|v| !v.is_empty()) {
+                            snapshot.digital_mode =
+                                Observed::known(value.to_owned(), "DC?", Confidence::Observed);
+                        } else {
+                            snapshot.digital_mode = Observed::malformed("DC?");
+                        }
+                    }
+                    ("MS?", Ok(value)) => {
+                        if let Some(value) = value.strip_prefix("MS").filter(|v| !v.is_empty()) {
+                            if let Ok(value) = SurroundMode::new(value) {
+                                snapshot.current_mode =
+                                    Observed::known(value, "MS?", Confidence::Observed);
+                            } else {
+                                snapshot.current_mode = Observed::malformed("MS?");
+                            }
+                        } else {
+                            snapshot.current_mode = Observed::malformed("MS?");
+                        }
+                    }
+                    ("CV?", Ok(value)) => {
+                        if let Some(value) = value.strip_prefix("CV").filter(|v| !v.is_empty()) {
+                            snapshot.channel_volume =
+                                Observed::known(value.to_owned(), "CV?", Confidence::Observed);
+                        } else {
+                            snapshot.channel_volume = Observed::malformed("CV?");
+                        }
+                    }
+                    (_, Err(error)) => {
+                        let field = FieldError {
+                            kind: FieldErrorKind::Unavailable,
+                            message: error.to_string(),
+                        };
+                        match command {
+                            "SD?" => {
+                                snapshot.input_mode = Observed::unavailable(field.clone(), "SD?")
+                            }
+                            "DC?" => {
+                                snapshot.digital_mode = Observed::unavailable(field.clone(), "DC?")
+                            }
+                            "MS?" => {
+                                snapshot.current_mode = Observed::unavailable(field.clone(), "MS?")
+                            }
+                            "CV?" => {
+                                snapshot.channel_volume =
+                                    Observed::unavailable(field.clone(), "CV?")
+                            }
+                            "SI?" => snapshot.input_selection = Observed::unavailable(field, "SI?"),
+                            _ => {}
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            snapshot
+        })
+    }
 }
 
 impl AsyncControlGateway for AvrSession {
@@ -314,6 +404,10 @@ impl ReceiverSession for AvrSession {
 
     fn close(&mut self) -> BoxFuture<'_, Result<(), OperationError>> {
         Box::pin(async { Ok(()) })
+    }
+
+    fn query_audio_context(&mut self) -> BoxFuture<'_, AudioContextSnapshot> {
+        <Self as AsyncStatusGateway>::query_audio_context(self)
     }
 }
 

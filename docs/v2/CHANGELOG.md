@@ -13,6 +13,12 @@ and this project adheres to Semantic Versioning.
 - Completed Version 2 Phase 5 with the Iced 0.14 desktop GUI, typed
   controller bridge, receiver setup/discovery flows, Main Zone dashboard,
   diagnostics routes, capability-gated controls, and stale-event protection.
+- Completed Version 2 Phase 6 with remembered listening-mode groups, validated
+  X3800H mode metadata, audio-context query primitives, and GUI group controls.
+- Completed Version 2 Phase 7 with read-only X3800H Telnet and AppCommand HTTP
+  diagnostic probes, a typed read-only AppCommand protocol, a bounded HTTP
+  adapter, and evidence-preserving audio-context observations in the session
+  snapshot.
 - Completed the Version 2 Phase 1 clean layered architecture refactoring.
 - Added the Version 2 Phase 5 GUI, Phase 6 listening-mode-group, and Phase 8
   Quick Select/EQ Status plans.

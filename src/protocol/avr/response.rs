@@ -2,8 +2,35 @@
 
 use super::command::AvrProtocolError;
 use crate::domain::{
-    Input, MainZoneEvent, MainZoneField, MainZoneValue, MuteState, PowerState, SurroundMode, Volume,
+    AudioContextField, AudioContextValue, Input, MainZoneEvent, MainZoneField, MainZoneValue,
+    MuteState, PowerState, SurroundMode, Volume,
 };
+
+/// CV is a channel trim/configuration response, never an active channel map.
+pub fn parse_channel_volume_response(response: &str) -> Result<String, AvrProtocolError> {
+    response
+        .strip_prefix("CV")
+        .filter(|v| !v.is_empty())
+        .map(str::to_owned)
+        .ok_or(AvrProtocolError::MalformedResponse("invalid CV response"))
+}
+
+pub fn parse_audio_context_response(
+    field: AudioContextField,
+    response: &str,
+) -> Result<AudioContextValue, AvrProtocolError> {
+    let prefix = match field {
+        AudioContextField::InputMode => "SD",
+        AudioContextField::DigitalMode => "DC",
+    };
+    response
+        .strip_prefix(prefix)
+        .filter(|value| !value.is_empty())
+        .and_then(|value| AudioContextValue::new(value).ok())
+        .ok_or(AvrProtocolError::MalformedResponse(
+            "invalid audio context response",
+        ))
+}
 
 pub fn get_command_family(command: &str) -> &str {
     command
@@ -114,5 +141,26 @@ mod tests {
         assert!(response_matches("MV", "MV805"));
         assert!(!response_matches("MV", "MV80.5"));
         assert!(!response_matches("MV", "MVMAX 615"));
+    }
+
+    #[test]
+    fn parses_audio_context_query_responses() {
+        assert_eq!(
+            parse_audio_context_response(crate::domain::AudioContextField::InputMode, "SDHDMI")
+                .unwrap()
+                .as_str(),
+            "HDMI"
+        );
+        assert_eq!(
+            parse_audio_context_response(crate::domain::AudioContextField::DigitalMode, "DCAUTO")
+                .unwrap()
+                .as_str(),
+            "AUTO"
+        );
+        assert!(parse_audio_context_response(
+            crate::domain::AudioContextField::DigitalMode,
+            "MSSTEREO"
+        )
+        .is_err());
     }
 }

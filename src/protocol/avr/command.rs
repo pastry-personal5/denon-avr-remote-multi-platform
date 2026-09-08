@@ -42,6 +42,22 @@ pub fn query_command(field: MainZoneField) -> AvrCommand {
     AvrCommand(command.into())
 }
 
+/// Read-only context queries used to determine which listening modes are valid.
+/// `SD?` reports the source input mode and `DC?` reports the digital decoder mode.
+pub fn audio_context_query_commands() -> [AvrCommand; 5] {
+    [
+        AvrCommand("SI?".into()),
+        AvrCommand("SD?".into()),
+        AvrCommand("DC?".into()),
+        AvrCommand("MS?".into()),
+        AvrCommand("CV?".into()),
+    ]
+}
+
+pub fn is_read_only_audio_context_query(command: &str) -> bool {
+    matches!(command, "SI?" | "SD?" | "DC?" | "MS?" | "CV?")
+}
+
 pub fn encode_volume(db_tenths: i16) -> Result<AvrCommand, AvrProtocolError> {
     if db_tenths % 5 != 0 {
         return Err(AvrProtocolError::InvalidVolume(
@@ -86,6 +102,9 @@ pub fn encode_control(control: &MainZoneControl) -> Result<AvrCommand, AvrProtoc
         MainZoneControl::Mute(MuteState::On) => AvrCommand::new("MUON"),
         MainZoneControl::Mute(MuteState::Off) => AvrCommand::new("MUOFF"),
         MainZoneControl::SurroundMode(value) => AvrCommand::new(format!("MS{}", value.as_str())),
+        MainZoneControl::ListeningModeGroup(value) => {
+            AvrCommand::new(format!("MS{}", value.command_suffix()))
+        }
     }
 }
 
@@ -227,5 +246,44 @@ mod tests {
         assert_eq!(query_command(MainZoneField::Volume).as_str(), "MV?");
         assert_eq!(query_command(MainZoneField::Mute).as_str(), "MU?");
         assert_eq!(query_command(MainZoneField::SurroundMode).as_str(), "MS?");
+    }
+
+    #[test]
+    fn encodes_remembered_listening_mode_groups_and_context_queries() {
+        use crate::domain::ListeningModeGroup;
+        assert_eq!(
+            encode_control(&MainZoneControl::ListeningModeGroup(
+                ListeningModeGroup::Movie
+            ))
+            .unwrap()
+            .as_str(),
+            "MSMOVIE"
+        );
+        assert_eq!(
+            encode_control(&MainZoneControl::ListeningModeGroup(
+                ListeningModeGroup::Music
+            ))
+            .unwrap()
+            .as_str(),
+            "MSMUSIC"
+        );
+        assert_eq!(
+            encode_control(&MainZoneControl::ListeningModeGroup(
+                ListeningModeGroup::Game
+            ))
+            .unwrap()
+            .as_str(),
+            "MSGAME"
+        );
+        let queries = audio_context_query_commands();
+        assert_eq!(queries[0].as_str(), "SI?");
+        assert_eq!(queries[1].as_str(), "SD?");
+        assert_eq!(queries[2].as_str(), "DC?");
+        assert_eq!(queries[3].as_str(), "MS?");
+        assert_eq!(queries[4].as_str(), "CV?");
+        assert!(queries
+            .iter()
+            .all(|query| is_read_only_audio_context_query(query.as_str())));
+        assert!(!is_read_only_audio_context_query("PWON"));
     }
 }

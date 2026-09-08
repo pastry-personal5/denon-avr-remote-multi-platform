@@ -3,7 +3,16 @@
 use crate::application::ports::{
     AsyncStatusGateway, OperationError, OperationErrorKind, StatusGateway,
 };
-use crate::domain::{FieldError, FieldErrorKind, MainZoneField, MainZoneSnapshot, StateAuthority};
+use crate::domain::{
+    AudioContextSnapshot, FieldError, FieldErrorKind, MainZoneField, MainZoneSnapshot,
+    StateAuthority,
+};
+
+pub async fn query_audio_context_async(
+    gateway: &mut impl AsyncStatusGateway,
+) -> AudioContextSnapshot {
+    gateway.query_audio_context().await
+}
 
 pub fn query_main_zone_status(gateway: &mut impl StatusGateway) -> MainZoneSnapshot {
     let generation = gateway.connection_generation();

@@ -1,5 +1,6 @@
 //! Main zone domain types and state management.
 
+use super::AudioContextSnapshot;
 use std::fmt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,6 +76,66 @@ impl SurroundMode {
 }
 
 impl fmt::Display for SurroundMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ListeningModeGroup {
+    Movie,
+    Music,
+    Game,
+}
+
+impl ListeningModeGroup {
+    pub const ALL: [Self; 3] = [Self::Movie, Self::Music, Self::Game];
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Movie => "Movie",
+            Self::Music => "Music",
+            Self::Game => "Game",
+        }
+    }
+    pub const fn command_suffix(self) -> &'static str {
+        match self {
+            Self::Movie => "MOVIE",
+            Self::Music => "MUSIC",
+            Self::Game => "GAME",
+        }
+    }
+}
+
+impl fmt::Display for ListeningModeGroup {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AudioContextField {
+    InputMode,
+    DigitalMode,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AudioContextValue(String);
+
+impl AudioContextValue {
+    pub fn new(value: impl Into<String>) -> Result<Self, &'static str> {
+        let value = value.into();
+        if value.trim().is_empty() {
+            Err("audio context value must not be empty")
+        } else {
+            Ok(Self(value))
+        }
+    }
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for AudioContextValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0)
     }
@@ -214,6 +275,7 @@ pub enum MainZoneControl {
     Volume(VolumeLevel),
     Mute(MuteState),
     SurroundMode(SurroundMode),
+    ListeningModeGroup(ListeningModeGroup),
 }
 
 impl fmt::Display for MainZoneValue {
@@ -281,6 +343,7 @@ fn not_queried() -> FieldError {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MainZoneSnapshot {
+    pub audio_context: AudioContextSnapshot,
     pub power: FieldStatus<PowerState>,
     pub input: FieldStatus<Input>,
     pub volume: FieldStatus<Volume>,
@@ -294,6 +357,7 @@ pub struct MainZoneSnapshot {
 impl Default for MainZoneSnapshot {
     fn default() -> Self {
         Self {
+            audio_context: AudioContextSnapshot::default(),
             power: FieldStatus::Unavailable(not_queried()),
             input: FieldStatus::Unavailable(not_queried()),
             volume: FieldStatus::Unavailable(not_queried()),
@@ -314,7 +378,23 @@ impl MainZoneSnapshot {
         self.resource_version = version;
     }
 
+    pub fn invalidate_audio_context(&mut self) {
+        self.audio_context.invalidate();
+        self.resource_version = self.resource_version.saturating_add(1);
+    }
+
+    pub fn set_audio_context(&mut self, context: AudioContextSnapshot) {
+        if self.audio_context != context {
+            self.resource_version = self.resource_version.saturating_add(1);
+        }
+        self.audio_context = context;
+    }
+
     pub fn set_value(&mut self, value: MainZoneValue, authority: StateAuthority) {
+        let invalidates_audio_context = matches!(
+            &value,
+            MainZoneValue::Input(_) | MainZoneValue::SurroundMode(_)
+        );
         let field = match &value {
             MainZoneValue::Power(_) => MainZoneField::Power,
             MainZoneValue::Input(_) => MainZoneField::Input,
@@ -331,6 +411,9 @@ impl MainZoneSnapshot {
             MainZoneValue::Volume(value) => self.volume = FieldStatus::Value(value),
             MainZoneValue::Mute(value) => self.mute = FieldStatus::Value(value),
             MainZoneValue::SurroundMode(value) => self.surround_mode = FieldStatus::Value(value),
+        }
+        if invalidates_audio_context && !self.audio_context.invalidated {
+            self.invalidate_audio_context();
         }
         self.freshness = Freshness::Live;
         self.authority = authority;

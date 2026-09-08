@@ -10,7 +10,8 @@ use crate::application::{
     SessionFactory,
 };
 use crate::domain::{
-    ConfiguredReceivers, MainZoneControl, MainZoneSnapshot, Model, ModelCapabilities, PowerState,
+    ConfiguredReceivers, ListeningModeGroup, MainZoneControl, MainZoneSnapshot, Model,
+    ModelCapabilities, PowerState,
 };
 use crate::infrastructure::{AvrSessionFactory, SsdpDiscoveryAdapter, YamlConfigRepository};
 use iced::futures::SinkExt;
@@ -199,8 +200,10 @@ pub enum Message {
     PowerOff,
     Mute,
     Unmute,
+    SelectListeningModeGroup(ListeningModeGroup),
+    SelectSurroundMode(String),
     Shutdown,
-    Bridge(BridgeEvent),
+    Bridge(Box<BridgeEvent>),
 }
 
 pub struct Gui {
@@ -313,6 +316,16 @@ impl Gui {
             Message::PowerOff => self.control(MainZoneControl::Power(PowerState::Standby)),
             Message::Mute => self.control(MainZoneControl::Mute(crate::domain::MuteState::On)),
             Message::Unmute => self.control(MainZoneControl::Mute(crate::domain::MuteState::Off)),
+            Message::SelectListeningModeGroup(group) => {
+                self.control(MainZoneControl::ListeningModeGroup(group))
+            }
+            Message::SelectSurroundMode(value) => match crate::domain::SurroundMode::new(value) {
+                Ok(mode) => self.control(MainZoneControl::SurroundMode(mode)),
+                Err(error) => {
+                    self.announcement = error.into();
+                    Task::none()
+                }
+            },
             Message::Discover => {
                 self.announcement = "Searching for receivers…".into();
                 Task::perform(
@@ -359,6 +372,7 @@ impl Gui {
                 self.command(BridgeCommand::Shutdown(id))
             }
             Message::Bridge(event) => {
+                let event = *event;
                 if event.request_id < self.request_id
                     || (event.generation != 0
                         && self.generation != 0
@@ -489,6 +503,26 @@ impl Gui {
                 "Read-only: this receiver model is not validated for controls."
             )]
         };
+        let group_controls = if writable {
+            ListeningModeGroup::ALL
+                .into_iter()
+                .fold(row![].spacing(8), |row, group| {
+                    row.push(
+                        button(group.as_str()).on_press(Message::SelectListeningModeGroup(group)),
+                    )
+                })
+        } else {
+            row![text("Mode groups unavailable for this receiver.")]
+        };
+        let mode_controls = if writable {
+            // Context is intentionally not guessed from the selected source;
+            // until SD?/DC? context is available, individual choices remain disabled.
+            row![text(
+                "Listening-mode choices unavailable: validated signal and speaker context is not available."
+            )]
+        } else {
+            row![text("Listening modes unavailable for this receiver.")]
+        };
         column![
             text("Dashboard").size(32),
             text(format!(
@@ -503,6 +537,9 @@ impl Gui {
             row![value("Mute", mute), controls],
             text("Sound mode").size(22),
             value("Mode", surround),
+            text("Mode group").size(18),
+            group_controls,
+            mode_controls,
         ]
         .spacing(14)
     }
@@ -573,7 +610,9 @@ pub fn view(gui: &Gui) -> Element<'_, Message> {
     gui.view()
 }
 pub fn subscription(gui: &Gui) -> Subscription<Message> {
-    gui.bridge.subscription().map(Message::Bridge)
+    gui.bridge
+        .subscription()
+        .map(|event| Message::Bridge(Box::new(event)))
 }
 
 pub fn run() -> iced::Result {
@@ -593,13 +632,13 @@ mod tests {
         let bridge = ControllerBridge::new(AvrSessionFactory::default());
         let mut gui = Gui::new(bridge);
         gui.request_id = 4;
-        let _ = gui.update(Message::Bridge(BridgeEvent {
+        let _ = gui.update(Message::Bridge(Box::new(BridgeEvent {
             request_id: 3,
             generation: 0,
             event: ReceiverEvent::Lifecycle(crate::application::Lifecycle::Connected {
                 generation: 1,
             }),
-        }));
+        })));
         assert_eq!(gui.lifecycle, crate::application::Lifecycle::NoReceiver);
     }
 }

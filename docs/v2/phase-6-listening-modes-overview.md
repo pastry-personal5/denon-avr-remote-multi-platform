@@ -1,5 +1,7 @@
 # Version 2 - Phase 6 Overview
 
+**Status: Complete — 2026-09-08**
+
 Phase 6 adds grouped listening-mode selection to the Phase 5 GUI using the
 typed Main Zone control and capability boundaries established in Phases 3-5.
 
@@ -19,10 +21,13 @@ The initial AVC/AVR-X3800H candidate mapping is:
 | --- | --- |
 | Movie | Stereo, Dolby Surround, Multi Ch Stereo, Mono Movie |
 | Music | Stereo, Dolby Surround, Multi Ch Stereo, Rock Arena, Jazz Club, Matrix |
-| Game | Stereo, Dolby Surround |
+| Game | Stereo, Dolby Surround, Video Game |
 
 The receiver's exact spelling `Multi Ch Stereo` is used. Shared modes are
-defined once and may appear in more than one group.
+defined once and may appear in more than one group. Selecting Movie, Music,
+or Game is itself a receiver control: the receiver recalls the last mode
+saved for that group. The GUI must preserve and display that recalled mode;
+it must not synthesize a replacement mode.
 
 Denon documents that available modes vary with input signal format, channel
 count, speaker configuration, and headphone use. The GUI must therefore not
@@ -48,7 +53,8 @@ HEOS modes, and additional zones are out of scope.
 - Shared modes do not create duplicate protocol definitions.
 - Unsupported context, stale state, disconnected sessions, and pending
   operations disable selection with an explanatory status.
-- A selected mode is encoded as a typed `MS<MODE>` command and is never
-  automatically replayed or silently replaced by another mode.
+- Selecting a group uses the typed group control and recalls the receiver's
+  remembered mode; selecting an individual mode uses a typed `MS<MODE>`
+  command. Neither operation is automatically replayed or silently replaced.
 - The GUI distinguishes confirmed, rejected, unsupported, transport-failure,
   and unconfirmed outcomes.

@@ -2,8 +2,9 @@
 
 use super::ports::{BoxFuture, OperationError, OperationErrorKind};
 use crate::domain::{
-    ConnectionState, DiscoveredReceiver, MainZoneControl, MainZoneEvent, MainZoneField,
-    MainZoneSnapshot, MainZoneValue, Model, ModelCapabilities, ReceiverIdentity, StateAuthority,
+    AudioContextSnapshot, ConnectionState, DiscoveredReceiver, MainZoneControl, MainZoneEvent,
+    MainZoneField, MainZoneSnapshot, MainZoneValue, Model, ModelCapabilities, ReceiverIdentity,
+    StateAuthority,
 };
 use std::sync::Arc;
 use std::time::Duration;
@@ -19,6 +20,7 @@ pub trait ReceiverSession: Send {
         &mut self,
         control: MainZoneControl,
     ) -> BoxFuture<'_, Result<(), OperationError>>;
+    fn query_audio_context(&mut self) -> BoxFuture<'_, AudioContextSnapshot>;
     fn next_event(&mut self) -> BoxFuture<'_, Result<SessionEvent, OperationError>>;
     fn close(&mut self) -> BoxFuture<'_, Result<(), OperationError>>;
 }
@@ -367,6 +369,11 @@ impl<F: SessionFactory> State<F> {
                 }
             }
         }
+        let context = {
+            let s = self.session.as_mut().ok_or_else(stopped)?;
+            s.query_audio_context().await
+        };
+        self.snapshot.set_audio_context(context);
         if self.snapshot.resource_version() != before {
             Self::emit(
                 events,
@@ -383,18 +390,23 @@ impl<F: SessionFactory> State<F> {
         expected: Option<u64>,
         events: &mpsc::Sender<ReceiverEvent>,
     ) -> ControlResult {
-        if let Some(selection) = &self.selection {
-            let model = selection
-                .identity()
-                .model
-                .as_deref()
-                .map(Model::from_reported)
-                .unwrap_or(Model::Unknown);
-            if !ModelCapabilities::for_model(model).supports_control(&control) {
-                return ControlResult::Unsupported(
-                    "selected receiver does not have validated support for this control".into(),
-                );
-            }
+        let capabilities = self
+            .selection
+            .as_ref()
+            .map(|selection| {
+                let model = selection
+                    .identity()
+                    .model
+                    .as_deref()
+                    .map(Model::from_reported)
+                    .unwrap_or(Model::Unknown);
+                ModelCapabilities::for_model(model)
+            })
+            .unwrap_or_else(|| ModelCapabilities::for_model(Model::Unknown));
+        if self.selection.is_some() && !capabilities.supports_control(&control) {
+            return ControlResult::Unsupported(
+                "selected receiver does not have validated support for this control".into(),
+            );
         }
         if self.session.is_none() {
             if let Err(e) = self.connect(events).await {
@@ -413,7 +425,7 @@ impl<F: SessionFactory> State<F> {
         if self
             .snapshot
             .value(field)
-            .is_some_and(|v| control_matches(&control, &v))
+            .is_some_and(|v| control_matches(&control, &v, &capabilities))
         {
             return ControlResult::NoOp {
                 snapshot: self.snapshot.clone(),
@@ -439,7 +451,7 @@ impl<F: SessionFactory> State<F> {
                 if self
                     .snapshot
                     .value(field)
-                    .is_some_and(|v| control_matches(&control, &v)) =>
+                    .is_some_and(|v| control_matches(&control, &v, &capabilities)) =>
             {
                 ControlResult::Confirmed {
                     snapshot: self.snapshot.clone(),
@@ -489,9 +501,14 @@ fn control_field(c: &MainZoneControl) -> MainZoneField {
         MainZoneControl::Volume(_) => MainZoneField::Volume,
         MainZoneControl::Mute(_) => MainZoneField::Mute,
         MainZoneControl::SurroundMode(_) => MainZoneField::SurroundMode,
+        MainZoneControl::ListeningModeGroup(_) => MainZoneField::SurroundMode,
     }
 }
-fn control_matches(c: &MainZoneControl, v: &MainZoneValue) -> bool {
+fn control_matches(
+    c: &MainZoneControl,
+    v: &MainZoneValue,
+    capabilities: &ModelCapabilities,
+) -> bool {
     match (c, v) {
         (MainZoneControl::Power(a), MainZoneValue::Power(b)) => a == b,
         (MainZoneControl::Input(a), MainZoneValue::Input(b)) => a == b,
@@ -500,6 +517,11 @@ fn control_matches(c: &MainZoneControl, v: &MainZoneValue) -> bool {
         }
         (MainZoneControl::Mute(a), MainZoneValue::Mute(b)) => a == b,
         (MainZoneControl::SurroundMode(a), MainZoneValue::SurroundMode(b)) => a == b,
+        (MainZoneControl::ListeningModeGroup(group), MainZoneValue::SurroundMode(actual)) => {
+            capabilities
+                .listening_modes(*group)
+                .contains(&actual.as_str())
+        }
         _ => false,
     }
 }

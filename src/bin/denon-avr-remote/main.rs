@@ -463,6 +463,10 @@ fn control_matches(
             MainZoneControl::SurroundMode(a),
             denon_avr_remote::domain::MainZoneValue::SurroundMode(b),
         ) => a == b,
+        (
+            MainZoneControl::ListeningModeGroup(_),
+            denon_avr_remote::domain::MainZoneValue::SurroundMode(_),
+        ) => true,
         _ => false,
     }
 }
