@@ -773,7 +773,20 @@ impl Gui {
                     self.volume_command_pending = false;
                     self.volume_command_request_id = None;
                 }
-                if event.request_id < self.request_id
+                // Supplemental receiver reads run after the core status reply.
+                // A core snapshot can immediately start a newer source-catalog
+                // request, while the Quick Select-name event from the earlier
+                // refresh is still in transit. Those observations are tagged
+                // with their connection generation and must not be discarded
+                // merely because an unrelated GUI request has a newer ID.
+                let supplemental_state = matches!(
+                    &event.event,
+                    ReceiverEvent::QuickSelect(_)
+                        | ReceiverEvent::QuickSelectNames(_)
+                        | ReceiverEvent::EqStatus(_)
+                        | ReceiverEvent::SourceCatalog(_)
+                );
+                if (event.request_id < self.request_id && !supplemental_state)
                     || (event.generation != 0
                         && self.generation != 0
                         && event.generation < self.generation)
@@ -1484,11 +1497,15 @@ impl Gui {
             ListeningModeGroup::ALL
                 .into_iter()
                 .fold(row![].spacing(12), |row, group| {
-                    row.push(components::quiet_action(
-                        format!("{}  {}", mode_icon(group), group.as_str()),
-                        Message::SelectListeningModeGroup(group),
-                    ))
+                    row.push(
+                        components::quiet_action(
+                            format!("{}  {}", mode_icon(group), group.as_str()),
+                            Message::SelectListeningModeGroup(group),
+                        )
+                        .width(Length::Fill),
+                    )
                 })
+                .width(Length::Fill)
         } else {
             row![text("Mode groups unavailable for this receiver.")]
         };
@@ -1504,6 +1521,7 @@ impl Gui {
                     Message::Mute
                 },
             )
+            .width(Length::Fill)
             .into()
         } else {
             text("Controls unavailable: receiver model is not validated for writes.")
@@ -1631,6 +1649,7 @@ impl Gui {
             .spacing(16),
             volume_controls,
             row![mute_controls, group_controls]
+                .width(Length::Fill)
                 .spacing(14)
                 .align_y(iced::Alignment::Center),
             quick_select_bar(
