@@ -150,9 +150,23 @@ pub struct Volume {
 /// A receiver-independent volume level for user interfaces.
 ///
 /// Values are stored in half-level steps: `0` represents 0.0 and `1000`
-/// represents 100.0. Protocol-specific volume codes never cross this boundary.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct VolumeLevel(u16);
+/// represents 100.0. Values decoded from the receiver also retain their exact
+/// native code so that an unchanged level can be sent back without rounding.
+#[derive(Debug, Clone, Copy)]
+pub struct VolumeLevel {
+    tenths: u16,
+    /// The exact AVR code when this level originated from a receiver status
+    /// response. The normalized 0–100 scale cannot encode every AVR half-step.
+    native_code: Option<u16>,
+}
+
+impl PartialEq for VolumeLevel {
+    fn eq(&self, other: &Self) -> bool {
+        self.tenths == other.tenths
+    }
+}
+
+impl Eq for VolumeLevel {}
 
 impl VolumeLevel {
     pub const MIN: u16 = 0;
@@ -162,7 +176,10 @@ impl VolumeLevel {
         if tenths > Self::MAX || !tenths.is_multiple_of(5) {
             return Err("volume level must be between 0.0 and 100.0 in 0.5 steps");
         }
-        Ok(Self(tenths))
+        Ok(Self {
+            tenths,
+            native_code: None,
+        })
     }
 
     pub fn from_native_code(code: u16) -> Result<Self, &'static str> {
@@ -170,20 +187,25 @@ impl VolumeLevel {
             return Err("native volume code is outside the supported range");
         }
         let level = ((u32::from(code) * u32::from(Self::MAX) + 492) / 985) as u16;
-        Self::new((level / 5) * 5)
+        Ok(Self {
+            tenths: (level / 5) * 5,
+            native_code: Some(code),
+        })
     }
 
     pub fn tenths(self) -> u16 {
-        self.0
+        self.tenths
     }
 
     pub fn as_f32(self) -> f32 {
-        self.0 as f32 / 10.0
+        self.tenths as f32 / 10.0
     }
 
     pub fn to_native_code(self) -> u16 {
-        let raw = (u32::from(self.0) * 985 + 500) / 1000;
-        (((raw + 2) / 5) * 5) as u16
+        self.native_code.unwrap_or_else(|| {
+            let raw = (u32::from(self.tenths) * 985 + 500) / 1000;
+            (((raw + 2) / 5) * 5) as u16
+        })
     }
 }
 
@@ -553,6 +575,10 @@ mod tests {
         assert_eq!(maximum.to_native_code(), 985);
         assert_eq!(VolumeLevel::from_native_code(0).unwrap(), minimum);
         assert_eq!(VolumeLevel::from_native_code(985).unwrap(), maximum);
+        assert_eq!(
+            VolumeLevel::from_native_code(245).unwrap().to_native_code(),
+            245
+        );
         assert!(VolumeLevel::new(501).is_err());
     }
 }

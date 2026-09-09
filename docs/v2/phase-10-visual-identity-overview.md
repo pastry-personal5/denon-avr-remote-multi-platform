@@ -20,9 +20,13 @@ control outcomes. Require a minimum application window size of 1400 × 880 and
 use the wide desktop composition, visible focus, semantic feedback, and
 motion/contrast accommodations supported by Iced.
 
-Phase 10 adds no receiver capability, workflow, light mode, theme picker,
+Phase 10 adds no speculative receiver capability, light mode, theme picker,
 appearance persistence, vendor branding, third-party visual assets, HEOS,
-additional zones, web/mobile client, or cloud service.
+additional zones, web/mobile client, or cloud service. The planned
+[source-catalog extension](phase-10-source-catalog-overview.md) is the narrow
+exception: it reads the receiver's own renamed and hidden-source settings and
+uses them consistently in the desktop presentation. Any desktop mutation of
+those settings remains evidence-gated.
 
 ## Deliverables
 

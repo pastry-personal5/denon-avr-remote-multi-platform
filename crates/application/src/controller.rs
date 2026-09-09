@@ -791,9 +791,10 @@ fn control_matches(
     match (c, v) {
         (MainZoneControl::Power(a), MainZoneValue::Power(b)) => a == b,
         (MainZoneControl::Input(a), MainZoneValue::Input(b)) => a == b,
-        (MainZoneControl::Volume(a), MainZoneValue::Volume(b)) => {
-            b.level().ok().as_ref() == Some(a)
-        }
+        (MainZoneControl::Volume(a), MainZoneValue::Volume(b)) => b
+            .level()
+            .ok()
+            .is_some_and(|actual| actual.to_native_code() == a.to_native_code()),
         (MainZoneControl::Mute(a), MainZoneValue::Mute(b)) => a == b,
         (MainZoneControl::SurroundMode(a), MainZoneValue::SurroundMode(b)) => a == b,
         (MainZoneControl::ListeningModeGroup(group), MainZoneValue::SurroundMode(actual)) => {

@@ -108,7 +108,8 @@ impl From<AvrSessionError> for OperationError {
 
 struct Request {
     command: AvrCommand,
-    response: oneshot::Sender<Result<String, AvrSessionError>>,
+    response: Option<oneshot::Sender<Result<String, AvrSessionError>>>,
+    dispatched: Option<oneshot::Sender<Result<(), AvrSessionError>>>,
 }
 
 pub struct AvrSession {
@@ -183,7 +184,29 @@ impl AvrSession {
             .map_err(|error| AvrSessionError::InvalidCommand(error.to_string()))?;
         let (response, result) = oneshot::channel();
         self.requests
-            .send(Request { command, response })
+            .send(Request {
+                command,
+                response: Some(response),
+                dispatched: None,
+            })
+            .await
+            .map_err(|_| AvrSessionError::SessionStopped)?;
+        result.await.map_err(|_| AvrSessionError::SessionStopped)?
+    }
+
+    /// Serialize a state-changing command onto the AVR session without
+    /// requiring an echo response. The controller confirms its outcome with
+    /// a subsequent authoritative status query.
+    pub async fn dispatch(&self, command: impl Into<String>) -> Result<(), AvrSessionError> {
+        let command = AvrCommand::new(command.into())
+            .map_err(|error| AvrSessionError::InvalidCommand(error.to_string()))?;
+        let (dispatched, result) = oneshot::channel();
+        self.requests
+            .send(Request {
+                command,
+                response: None,
+                dispatched: Some(dispatched),
+            })
             .await
             .map_err(|_| AvrSessionError::SessionStopped)?;
         result.await.map_err(|_| AvrSessionError::SessionStopped)?
@@ -375,9 +398,8 @@ impl AsyncControlGateway for AvrSession {
                     error.to_string(),
                 )
             })?;
-            self.request(command.as_str())
+            self.dispatch(command.as_str())
                 .await
-                .map(|_| ())
                 .map_err(OperationError::from)
         })
     }
@@ -513,7 +535,7 @@ async fn run_session(
         return;
     }
     loop {
-        let request = match next_request(
+        let mut request = match next_request(
             &mut reader,
             &mut requests,
             &events,
@@ -557,7 +579,12 @@ async fn run_session(
         });
         if let Err(error) = write_result {
             let message = error.to_string();
-            let _ = request.response.send(Err(error));
+            if let Some(response) = request.response.take() {
+                let _ = response.send(Err(error.clone()));
+            }
+            if let Some(dispatched) = request.dispatched.take() {
+                let _ = dispatched.send(Err(error));
+            }
             invalidate_snapshot(&snapshot);
             if !publish_event(&events, AvrSessionEvent::Disconnected(message)).await {
                 return;
@@ -575,6 +602,14 @@ async fn run_session(
             continue;
         }
 
+        if let Some(dispatched) = request.dispatched.take() {
+            let _ = dispatched.send(Ok(()));
+            continue;
+        }
+        let Some(response_sender) = request.response.take() else {
+            continue;
+        };
+
         let result = read_response(
             &mut reader,
             family,
@@ -587,13 +622,13 @@ async fn run_session(
         match result {
             Ok(response) => {
                 apply_response(&snapshot, family, &response);
-                let _ = request.response.send(Ok(response));
+                let _ = response_sender.send(Ok(response));
             }
             Err(error @ AvrSessionError::Timeout(_))
             | Err(error @ AvrSessionError::Disconnected(_))
             | Err(error @ AvrSessionError::MalformedFrame(_)) => {
                 let message = error.to_string();
-                let _ = request.response.send(Err(error));
+                let _ = response_sender.send(Err(error));
                 invalidate_snapshot(&snapshot);
                 if !publish_event(&events, AvrSessionEvent::Disconnected(message)).await {
                     return;
@@ -610,7 +645,7 @@ async fn run_session(
                 }
             }
             Err(error) => {
-                let _ = request.response.send(Err(error));
+                let _ = response_sender.send(Err(error));
             }
         }
     }
@@ -969,6 +1004,31 @@ mod tests {
             session.next_event().await,
             Some(AvrSessionEvent::Line("MVMAX 615".to_owned()))
         );
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn dispatches_control_without_waiting_for_an_echo() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut reader = BufReader::new(stream);
+            let mut command = Vec::new();
+            reader.read_until(b'\r', &mut command).await.unwrap();
+            assert_eq!(command, b"SIGAME\r");
+        });
+        let mut session = AvrSession::connect_addr(address, AvrSessionConfig::default())
+            .await
+            .unwrap();
+
+        <AvrSession as AsyncControlGateway>::execute_once(
+            &mut session,
+            denon_avr_domain::MainZoneControl::Input(denon_avr_domain::Input::new("GAME").unwrap()),
+        )
+        .await
+        .unwrap();
+
         server.await.unwrap();
     }
 

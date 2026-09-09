@@ -10,6 +10,10 @@ and this project adheres to Semantic Versioning.
 
 ### Added
 
+- Added the Phase 10 source-catalog plan for receiver-authored source labels
+  and hidden-source filtering, with X3800H protocol validation as a gate for
+  any desktop-side edits.
+
 - Implemented Phase 9 as a virtual Cargo workspace with explicit role-based
   packages, desktop-owned GUI composition, and a dedicated diagnostics package.
 

@@ -6,14 +6,16 @@
 
 use std::env;
 use std::fs;
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use time::OffsetDateTime;
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
 const LOG_FILE_NAME: &str = "denon-avr-remote.log";
 const MAX_ROTATED_LOG_FILES: usize = 14;
+const MAX_TOTAL_LOG_BYTES: u64 = 500 * 1024;
 
 pub struct LoggingGuard {
     _worker_guard: WorkerGuard,
@@ -26,7 +28,8 @@ impl LoggingGuard {
     }
 }
 
-/// Configures daily file rotation and keeps the newest fourteen rotated files.
+/// Configures daily file rotation while retaining at most fourteen files and
+/// 500 KiB in total.
 ///
 /// `RUST_LOG` controls filtering when set; otherwise the desktop records
 /// `info` and higher events. The returned guard must outlive the application.
@@ -36,10 +39,8 @@ pub fn initialize() -> Result<LoggingGuard, Box<dyn std::error::Error>> {
 
 fn initialize_at(directory: PathBuf) -> Result<LoggingGuard, Box<dyn std::error::Error>> {
     fs::create_dir_all(&directory)?;
-    prune_rotated_logs(&directory)?;
-
-    let appender = tracing_appender::rolling::daily(&directory, LOG_FILE_NAME);
-    let (writer, worker_guard) = tracing_appender::non_blocking(appender);
+    let (writer, worker_guard) =
+        tracing_appender::non_blocking(CappedDailyWriter::new(directory.clone())?);
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
     tracing_subscriber::registry()
@@ -58,6 +59,84 @@ fn initialize_at(directory: PathBuf) -> Result<LoggingGuard, Box<dyn std::error:
         _worker_guard: worker_guard,
         directory,
     })
+}
+
+/// A serial writer used behind `tracing_appender`'s non-blocking worker.
+/// Keeping quota enforcement here means a busy day cannot exceed the on-disk
+/// budget before the next daily rotation.
+struct CappedDailyWriter {
+    directory: PathBuf,
+    file_name: String,
+    file: fs::File,
+}
+
+impl CappedDailyWriter {
+    fn new(directory: PathBuf) -> io::Result<Self> {
+        let file_name = dated_log_file_name();
+        let active_path = directory.join(&file_name);
+        if active_path
+            .metadata()
+            .is_ok_and(|metadata| metadata.len() > MAX_TOTAL_LOG_BYTES)
+        {
+            // A log from a previous version may already exceed the newly
+            // introduced quota. Start a fresh current-day file so the limit
+            // takes effect immediately rather than waiting for tomorrow.
+            fs::remove_file(&active_path)?;
+        }
+        let file = open_log_file(&directory, &file_name)?;
+        let writer = Self {
+            directory,
+            file_name,
+            file,
+        };
+        writer.enforce_budget(0)?;
+        Ok(writer)
+    }
+
+    fn rotate_if_needed(&mut self) -> io::Result<()> {
+        let file_name = dated_log_file_name();
+        if file_name != self.file_name {
+            self.file = open_log_file(&self.directory, &file_name)?;
+            self.file_name = file_name;
+        }
+        Ok(())
+    }
+
+    fn enforce_budget(&self, incoming_bytes: usize) -> io::Result<bool> {
+        prune_logs(
+            &self.directory,
+            Some(&self.file_name),
+            incoming_bytes as u64,
+        )
+    }
+}
+
+impl Write for CappedDailyWriter {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        self.rotate_if_needed()?;
+        if !self.enforce_budget(buffer.len())? {
+            // `Write` callers expect a successful full write. Deliberately
+            // discard this low-value diagnostic record once the fixed quota is
+            // exhausted rather than expanding the local log footprint.
+            return Ok(buffer.len());
+        }
+        self.file.write(buffer)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.file.flush()
+    }
+}
+
+fn dated_log_file_name() -> String {
+    format!("{LOG_FILE_NAME}.{}", OffsetDateTime::now_utc().date())
+}
+
+fn open_log_file(directory: &Path, file_name: &str) -> io::Result<fs::File> {
+    fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(directory.join(file_name))
 }
 
 #[cfg(target_os = "windows")]
@@ -101,7 +180,13 @@ fn home_directory() -> Option<PathBuf> {
     env_path("HOME")
 }
 
-fn prune_rotated_logs(directory: &Path) -> io::Result<()> {
+/// Deletes oldest files until both retention limits can accommodate an
+/// incoming record. The active file is never removed during a write.
+fn prune_logs(
+    directory: &Path,
+    active_file_name: Option<&str>,
+    incoming_bytes: u64,
+) -> io::Result<bool> {
     let mut logs = fs::read_dir(directory)?
         .filter_map(Result::ok)
         .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
@@ -113,11 +198,27 @@ fn prune_rotated_logs(directory: &Path) -> io::Result<()> {
         })
         .collect::<Vec<_>>();
     logs.sort_by_key(|entry| entry.file_name());
-    let remove_count = logs.len().saturating_sub(MAX_ROTATED_LOG_FILES);
-    for entry in logs.into_iter().take(remove_count) {
-        fs::remove_file(entry.path())?;
+
+    let mut total_bytes = logs
+        .iter()
+        .map(|entry| entry.metadata().map(|metadata| metadata.len()))
+        .collect::<io::Result<Vec<_>>>()?
+        .into_iter()
+        .sum::<u64>();
+    let mut retained_count = logs.len();
+    for entry in logs {
+        let is_active = active_file_name.is_some_and(|active| entry.file_name() == active);
+        let size = entry.metadata()?.len();
+        if !is_active
+            && (retained_count > MAX_ROTATED_LOG_FILES
+                || total_bytes.saturating_add(incoming_bytes) > MAX_TOTAL_LOG_BYTES)
+        {
+            fs::remove_file(entry.path())?;
+            retained_count -= 1;
+            total_bytes = total_bytes.saturating_sub(size);
+        }
     }
-    Ok(())
+    Ok(total_bytes.saturating_add(incoming_bytes) <= MAX_TOTAL_LOG_BYTES)
 }
 
 #[cfg(test)]
@@ -140,7 +241,7 @@ mod tests {
             .unwrap();
         }
 
-        prune_rotated_logs(&directory).unwrap();
+        assert!(prune_logs(&directory, None, 0).unwrap());
 
         let mut names = fs::read_dir(&directory)
             .unwrap()
@@ -156,6 +257,45 @@ mod tests {
             names.last().unwrap(),
             &format!("{LOG_FILE_NAME}.2026-01-16")
         );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn pruning_removes_old_files_to_make_room_for_new_records() {
+        let directory = env::temp_dir().join(format!(
+            "denon-avr-remote-size-logging-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir_all(&directory).unwrap();
+        let old_file = directory.join(format!("{LOG_FILE_NAME}.2026-01-01"));
+        let active_name = format!("{LOG_FILE_NAME}.2026-01-02");
+        let active_file = directory.join(&active_name);
+        fs::write(&old_file, vec![0; 300 * 1024]).unwrap();
+        fs::write(&active_file, vec![0; 300 * 1024]).unwrap();
+
+        assert!(prune_logs(&directory, Some(&active_name), 200 * 1024).unwrap());
+        assert!(!old_file.exists());
+        assert!(active_file.exists());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn quota_rejects_a_record_when_the_active_file_is_full() {
+        let directory = env::temp_dir().join(format!(
+            "denon-avr-remote-full-logging-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir_all(&directory).unwrap();
+        let active_name = format!("{LOG_FILE_NAME}.2026-01-01");
+        fs::write(
+            directory.join(&active_name),
+            vec![0; MAX_TOTAL_LOG_BYTES as usize],
+        )
+        .unwrap();
+
+        assert!(!prune_logs(&directory, Some(&active_name), 1).unwrap());
         fs::remove_dir_all(directory).unwrap();
     }
 

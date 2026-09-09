@@ -33,6 +33,23 @@ pub fn quiet_action<'a>(
         .on_press(message)
 }
 
+/// A compact stateful action with a leading icon and a stable text label.
+pub fn toggle_action<'a>(
+    icon: &'a str,
+    label: &'a str,
+    active: bool,
+    message: Message,
+) -> iced::widget::Button<'a, Message> {
+    button(row![text(icon).size(16), text(label)].spacing(8))
+        .padding([10, 16])
+        .style(if active {
+            design::primary
+        } else {
+            design::secondary
+        })
+        .on_press(message)
+}
+
 pub fn quiet_icon_action<'a>(icon: &'a str, message: Message) -> iced::widget::Button<'a, Message> {
     button(text(icon).size(18))
         .padding([7, 10])

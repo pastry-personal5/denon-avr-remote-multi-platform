@@ -9,9 +9,11 @@ make run-gui
 ## Logs
 
 The desktop client writes structured lifecycle, diagnostic, and visible
-feedback messages to a file. It rotates the file daily and retains the newest
-14 daily files. Set `RUST_LOG` (for example, `RUST_LOG=debug`) before launch to
-include more detail.
+feedback messages to a file. It rotates the file daily, retains at most 14
+daily files, and keeps their combined size at or below 500 KiB. When the quota
+is reached, older rotated files are removed first; extra entries are skipped if
+the current day's file alone fills the quota. Set `RUST_LOG` (for example,
+`RUST_LOG=debug`) before launch to include more detail.
 
 The log directory is platform-specific:
 
