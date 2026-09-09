@@ -2,7 +2,7 @@
 
 CARGO ?= cargo
 
-.PHONY: help format format-check check test build run run-gui run-release run-diagnostics run-diagnostics-http visual-baselines clippy boundary clean
+.PHONY: help format format-check check test build run run-gui run-release run-diagnostics run-diagnostics-http capture-visual-baselines visual-baselines clippy boundary clean
 
 help: ## Show available developer commands
 	@echo "Available targets:"
@@ -41,6 +41,9 @@ run-diagnostics-http: ## Run the HTTP diagnostics probe (use ARGS="...")
 
 visual-baselines: ## Compare native GUI captures (use PLATFORM=macos|windows|linux CAPTURES=DIR)
 	tools/check-visual-baselines.sh "$(PLATFORM)" "$(CAPTURES)"
+
+capture-visual-baselines: ## Capture every deterministic GUI baseline (use CAPTURES=DIR)
+	tools/capture-visual-baselines.sh "$(CAPTURES)"
 
 run-release: ## Run the CLI with release optimizations (use ARGS="...")
 	$(CARGO) run --release -p denon-avr-cli --bin denon-avr-remote -- $(ARGS)

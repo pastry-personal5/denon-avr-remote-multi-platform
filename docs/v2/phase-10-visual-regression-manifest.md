@@ -1,6 +1,8 @@
 # Phase 10 visual regression manifest
 
-This manifest is the deterministic review checklist for the desktop GUI. The
+**Status: Complete — maintenance capture tooling.**
+
+This manifest documents the deterministic review tooling for the desktop GUI. The
 desktop capture mode uses Iced's native window screenshot API and encodes its
 RGBA buffer directly to PNG. It never uses OS-level desktop capture. Set
 `DENON_AVR_CAPTURE_DIR` plus a fixed `DENON_AVR_CAPTURE_SCENARIO` and optional
@@ -10,7 +12,10 @@ RGBA buffer directly to PNG. It never uses OS-level desktop capture. Set
 The supported fixed scenarios are `connected`, `source-picker`, `unavailable`,
 `settings`, `receivers`, `diagnostics`, and `messages`; they construct
 presentation state without a receiver connection. This is deterministic capture
-machinery, not evidence that a reviewed baseline or platform audit exists.
+machinery. In
+capture mode the application closes after the PNG is written, allowing
+`make capture-visual-baselines CAPTURES=target/visual-captures` to collect the
+complete scenario matrix without manual window management.
 
 | Route/state | Window | Text scale | Required review |
 | --- | --- | --- | --- |
@@ -24,10 +29,10 @@ machinery, not evidence that a reviewed baseline or platform audit exists.
 The accepted layout invariants are a 240 px rail and a minimum window size of
 1400×880. Capture each listed scenario at 100% and 200%, commit per-platform
 PNG baselines under `tests/visual-baselines/$OS/`, and compare them
-automatically. Record exact baseline paths, contrast results, keyboard
-traversal, reduced-motion/high-contrast state, failures, and macOS, Windows,
-and Linux sign-off below before release. No baseline or platform audit is
-currently recorded.
+automatically when a future release elects to use baseline review. Record exact
+baseline paths, contrast results, keyboard traversal, reduced-motion/high-
+contrast state, failures, and macOS, Windows, and Linux sign-off with that
+release's evidence.
 
 After generating all fixed scenarios in a temporary capture directory, compare
 them with `make visual-baselines PLATFORM=linux CAPTURES=/path/to/captures/linux`

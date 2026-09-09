@@ -381,6 +381,7 @@ pub enum Message {
     CaptureVisual,
     ScreenshotCaptured(iced::window::Screenshot),
     ScreenshotWritten(Result<PathBuf, String>),
+    Keyboard(iced::keyboard::Event),
     Bridge(Box<BridgeEvent>),
 }
 
@@ -675,11 +676,26 @@ impl Gui {
             }
             Message::ScreenshotWritten(Ok(path)) => {
                 self.announce(format!("Wrote native PNG capture to {}.", path.display()));
-                Task::none()
+                if self.capture_scenario.is_some() {
+                    close_latest_window()
+                } else {
+                    Task::none()
+                }
             }
             Message::ScreenshotWritten(Err(error)) => {
                 self.announce(format!("Could not write native PNG capture: {error}"));
                 Task::none()
+            }
+            Message::Keyboard(event) => {
+                #[cfg(target_os = "macos")]
+                if is_close_window_shortcut(&event) {
+                    return close_latest_window();
+                }
+                match tab_direction(&event) {
+                    Some(TabDirection::Forward) => iced::widget::operation::focus_next(),
+                    Some(TabDirection::Backward) => iced::widget::operation::focus_previous(),
+                    None => Task::none(),
+                }
             }
             Message::AddressChanged(value) => {
                 self.address = value;
@@ -1975,6 +1991,13 @@ fn capture_window() -> Task<Message> {
     })
 }
 
+fn close_latest_window() -> Task<Message> {
+    iced::window::latest().then(|id| match id {
+        Some(id) => iced::window::close(id),
+        None => Task::none(),
+    })
+}
+
 pub fn update(gui: &mut Gui, message: Message) -> Task<Message> {
     gui.update(message)
 }
@@ -1988,9 +2011,50 @@ pub fn view(gui: &Gui) -> Element<'_, Message> {
     gui.view()
 }
 pub fn subscription(gui: &Gui) -> Subscription<Message> {
-    gui.bridge
-        .subscription()
-        .map(|event| Message::Bridge(Box::new(event)))
+    Subscription::batch([
+        gui.bridge
+            .subscription()
+            .map(|event| Message::Bridge(Box::new(event))),
+        iced::keyboard::listen().map(Message::Keyboard),
+    ])
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TabDirection {
+    Forward,
+    Backward,
+}
+
+fn tab_direction(event: &iced::keyboard::Event) -> Option<TabDirection> {
+    match event {
+        iced::keyboard::Event::KeyPressed { key, modifiers, .. }
+            if *key == iced::keyboard::Key::Named(iced::keyboard::key::Named::Tab) =>
+        {
+            Some(if modifiers.shift() {
+                TabDirection::Backward
+            } else {
+                TabDirection::Forward
+            })
+        }
+        _ => None,
+    }
+}
+
+/// Command-W is the standard macOS command for closing the active window.
+/// Use the physical key as a Latin fallback so it also works with non-Latin
+/// keyboard layouts.
+#[cfg(target_os = "macos")]
+fn is_close_window_shortcut(event: &iced::keyboard::Event) -> bool {
+    matches!(
+        event,
+        iced::keyboard::Event::KeyPressed {
+            key,
+            physical_key,
+            modifiers,
+            ..
+        } if modifiers.command()
+            && matches!(key.to_latin(*physical_key), Some('w' | 'W'))
+    )
 }
 
 struct NoopDiscovery;
@@ -2069,6 +2133,42 @@ mod tests {
         assert_eq!(gui.route, Route::Diagnostics);
         gui.configure_capture_scenario("messages").unwrap();
         assert!(gui.messages.len() >= 3);
+    }
+
+    #[test]
+    fn tab_keys_have_explicit_forward_and_backward_focus_directions() {
+        let event = |modifiers| iced::keyboard::Event::KeyPressed {
+            key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Tab),
+            modified_key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Tab),
+            physical_key: iced::keyboard::key::Physical::Code(iced::keyboard::key::Code::Tab),
+            location: iced::keyboard::Location::Standard,
+            modifiers,
+            text: None,
+            repeat: false,
+        };
+        assert_eq!(
+            tab_direction(&event(iced::keyboard::Modifiers::NONE)),
+            Some(TabDirection::Forward)
+        );
+        assert_eq!(
+            tab_direction(&event(iced::keyboard::Modifiers::SHIFT)),
+            Some(TabDirection::Backward)
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn command_w_is_the_mac_window_close_shortcut() {
+        let event = iced::keyboard::Event::KeyPressed {
+            key: iced::keyboard::Key::Character("w".into()),
+            modified_key: iced::keyboard::Key::Character("w".into()),
+            physical_key: iced::keyboard::key::Physical::Code(iced::keyboard::key::Code::KeyW),
+            location: iced::keyboard::Location::Standard,
+            modifiers: iced::keyboard::Modifiers::LOGO,
+            text: Some("w".into()),
+            repeat: false,
+        };
+        assert!(is_close_window_shortcut(&event));
     }
     #[tokio::test]
     async fn stale_bridge_results_are_ignored() {

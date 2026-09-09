@@ -23,9 +23,8 @@ make run-diagnostics ARGS="HOST TIMEOUT-MS MODEL FIRMWARE"
 cargo run -p denon-avr-diagnostics --bin source-catalog-probe -- \
   http://HOST:8080/goform/AppCommand.xml TIMEOUT-MS MODEL FIRMWARE SCENARIO
                       # diagnostic-only candidate source-catalog read; no writes
-DENON_AVR_CAPTURE_DIR=target/visual-captures \
-DENON_AVR_CAPTURE_SCENARIO=connected DENON_AVR_CAPTURE_SCALE=100 \
-  make run-gui       # native deterministic visual capture; repeats at scale 200
+make capture-visual-baselines CAPTURES=target/visual-captures
+                      # captures every deterministic scenario at 100% and 200%, then exits
 make visual-baselines PLATFORM=linux CAPTURES=target/visual-captures/linux
                       # compare all captured PNGs to committed Linux baselines
 ```

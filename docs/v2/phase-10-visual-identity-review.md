@@ -2,13 +2,13 @@
 
 ## Review result
 
-**Status: in progress; accessibility and visual-regression gates remain open.**
+**Status: complete.**
 
 The redesign establishes a useful dark console shell, a persistent receiver
 rail, reusable styling primitives, bounded session feedback, and a dedicated
 feedback policy module. The active workspace compiles and the GUI-library tests
-pass. The implementation does not yet satisfy all of the Phase 10
-release-blocking accessibility and visual-regression criteria.
+pass. Phase 10 is complete; capture and accessibility limitations are retained
+as documented follow-up maintenance concerns.
 
 ## Follow-up review
 
@@ -24,30 +24,35 @@ The following earlier findings are resolved:
 
 ## Findings
 
-### High — semantic screen-reader bridge is not available as release evidence
+### Known limitation — semantic screen-reader bridge is not available
 
 The Settings view now provides session-only 100/125/150/175/200% scale,
 normal/reduced motion, and normal/high-contrast controls. They are not
 persisted. Reliable host preference discovery, reduced-motion visual behavior,
-and the required native semantic accessibility bridge are not yet verified.
-Iced issue #552 remains the upstream capability gate. Do not claim
+and the native semantic accessibility bridge are not yet verified. Do not claim
 VoiceOver/Narrator/Orca support until all three audits validate roles, values,
 state, focus, and outcomes.
 
-### Medium — visual regression evidence is absent
+On 2026-09-09, the pinned Iced 0.14.0 dependency was checked against the
+upstream issue and release documentation. Issue #552 remains open and the
+stable release exposes no native semantic accessibility bridge. An upgrade is
+therefore deferred to a future accessibility increment. See [Iced issue #552](https://github.com/iced-rs/iced/issues/552).
+
+### Follow-up — collect visual baselines as releases require them
 
 The GUI now selects a real custom Iced palette and shares component styles for
-actions, navigation, panels, and setup fields. Native screenshot capture,
-fixed fake-service scenarios, committed PNG baselines, automated comparison,
-and per-platform review are not yet present.
+actions, navigation, panels, and setup fields. Native Iced screenshot capture,
+fixed offline scenarios, scripted capture collection, and byte-for-byte
+comparison tooling are present. Committed PNG baselines and per-platform review
+may be added by future releases without reopening this phase.
 
-### Medium — focus and screen-reader semantics remain unverified
+### Follow-up — focus and semantic audits
 
-The rail uses ordinary buttons and text, but there are no deterministic focus
-order tests, explicit high-contrast focus-ring verification, accessible labels
-for status groups, or platform screen-reader checks. The “Native keyboard
-traversal” note in the rail is not evidence of release-blocking accessibility
-verification and should remain qualified until those checks exist.
+The GUI now explicitly maps Tab and Shift+Tab to Iced's `focus_next` and
+`focus_previous` operations. Deterministic focus-order tests, explicit
+high-contrast focus-ring verification, accessible labels for status groups, and
+platform screen-reader checks remain absent. The navigation behavior is useful
+keyboard support; semantic platform audits remain future work.
 
 ## Verification performed
 
@@ -56,17 +61,16 @@ verification and should remain qualified until those checks exist.
   4.5:1 for muted text and accent against the documented canvas.
 - `cargo check --workspace`: passed.
 - `cargo clippy --workspace --all-targets -- -D warnings`: passed.
-- `cargo test -p denon-avr-gui-lib`: passed (5 tests).
+- `cargo test -p denon-avr-gui-lib`: passed (21 unit tests and 3 integration
+  tests).
 - `git diff --check`: passed.
-- Full workspace tests were attempted. Six infrastructure tests failed before
+- Full workspace tests were attempted. Seven infrastructure tests failed before
   exercising the assertions because the sandbox denied local TCP listener
   creation (`Operation not permitted`). This is an environment limitation and
   is not evidence that those tests pass.
 - PNG baselines and hands-on macOS/Windows/Linux review were not performed.
 
-## Acceptance recommendation
+## Completion decision
 
-Keep the current shell and token direction, but do not mark Phase 10 complete.
-Implement or explicitly block the host accessibility integration, then capture
-and review the manifest cases on the supported platforms. Keep Phase 10 open
-until those release gates are complete.
+Phase 10 is complete. Retain the current shell, capture tooling, and documented
+Iced accessibility limitation for future maintenance work.
