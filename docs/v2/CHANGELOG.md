@@ -8,6 +8,24 @@ and this project adheres to Semantic Versioning.
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-09-09
+
+### Added
+
+- Released the workspace-based Rust packages and Iced desktop application.
+- Added the Main Zone dashboard, capability-gated controls, diagnostics, and
+  optional Quick Select/EQ and read-only source-catalog surfaces.
+
+### Fixed
+
+- Prevented continuous unsolicited receiver events from starving status refresh
+  commands and made rediscovery tolerant of old-session close failures.
+- Kept the volume control visible while a volume command is pending.
+- Defined the dashboard power button as a Main Zone (Zone 1) toggle only.
+
+See the [Version 2.0.0 release notes](RELEASE_NOTES.md) for scope and
+compatibility details.
+
 ### Added
 
 - Added the Phase 10 source-catalog plan for receiver-authored source labels

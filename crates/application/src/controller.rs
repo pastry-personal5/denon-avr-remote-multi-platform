@@ -2,11 +2,11 @@
 
 use super::ports::{BoxFuture, OperationError, OperationErrorKind};
 use denon_avr_domain::{
-    AudioContextSnapshot, ConnectionState, DiscoveredReceiver, EqStatus, MainZoneControl,
-    MainZoneEvent, MainZoneField, MainZoneSnapshot, MainZoneValue, Model, ModelCapabilities,
-    QuickSelectEqCapabilities, QuickSelectRecallConfirmation, QuickSelectRecallOutcome,
-    QuickSelectSlot, QuickSelectSnapshot, ReceiverIdentity, SourceCatalog,
-    SourceCatalogCapabilities, SourceCatalogObservation, StateAuthority,
+    AudioContextSnapshot, ConnectionState, DiscoveredReceiver, EqStatus, HttpInformationSnapshot,
+    MainZoneControl, MainZoneEvent, MainZoneField, MainZoneSnapshot, MainZoneValue, Model,
+    ModelCapabilities, QuickSelectEqCapabilities, QuickSelectRecallConfirmation,
+    QuickSelectRecallOutcome, QuickSelectSlot, QuickSelectSnapshot, ReceiverIdentity,
+    SourceCatalog, SourceCatalogCapabilities, SourceCatalogObservation, StateAuthority,
 };
 use std::sync::Arc;
 use std::time::Duration;
@@ -56,6 +56,17 @@ pub trait ReceiverSession: Send {
                 OperationErrorKind::Unsupported,
                 "source catalog",
                 "source catalog protocol is not validated",
+            ))
+        })
+    }
+    fn refresh_http_information(
+        &mut self,
+    ) -> BoxFuture<'_, Result<HttpInformationSnapshot, OperationError>> {
+        Box::pin(async {
+            Err(OperationError::new(
+                OperationErrorKind::Unsupported,
+                "HTTP information",
+                "receiver has no validated HTTP information capability",
             ))
         })
     }
@@ -110,6 +121,7 @@ pub enum ReceiverCommand {
     },
     RefreshQuickSelectEq,
     RefreshSourceCatalog,
+    RefreshHttpInformation,
     RecallQuickSelect {
         slot: QuickSelectSlot,
         expected_version: Option<u64>,
@@ -310,20 +322,34 @@ impl ReceiverController {
                 source_catalog: SourceCatalog::default(),
                 source_catalog_observation: None,
             };
-            while let Some(envelope) = rx.recv().await {
-                let stop = matches!(envelope.command, ReceiverCommand::Shutdown);
-                let result = state.handle(envelope.command, &events).await;
-                if stop {
-                    let _ = envelope.reply.send(result);
-                    break;
+            let mut information_interval = tokio::time::interval(Duration::from_secs(30));
+            information_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            // The first automatic read follows an authoritative status refresh,
+            // not controller startup.
+            information_interval.tick().await;
+            loop {
+                tokio::select! {
+                    envelope = rx.recv() => {
+                        let Some(envelope) = envelope else { break; };
+                        let stop = matches!(envelope.command, ReceiverCommand::Shutdown);
+                        let result = state.handle(envelope.command, &events).await;
+                        if stop {
+                            let _ = envelope.reply.send(result);
+                            break;
+                        }
+                        // Consume connection/session notifications before releasing the
+                        // command reply. A receiver can report a reconnect while a
+                        // refresh is in flight; replying first lets the GUI render a
+                        // confirmed power value and then immediately overwrite it with
+                        // the invalidated snapshot emitted by the reconnect drain.
+                        state.drain_session_events(&events).await;
+                        let _ = envelope.reply.send(result);
+                    }
+                    _ = information_interval.tick() => {
+                        let _ = state.refresh_http_information(&events).await;
+                        state.drain_session_events(&events).await;
+                    }
                 }
-                // Consume connection/session notifications before releasing the
-                // command reply. A receiver can report a reconnect while a
-                // refresh is in flight; replying first lets the GUI render a
-                // confirmed power value and then immediately overwrite it with
-                // the invalidated snapshot emitted by the reconnect drain.
-                state.drain_session_events(&events).await;
-                let _ = envelope.reply.send(result);
             }
             let _ = events
                 .send(ReceiverEvent::Lifecycle(Lifecycle::Stopped))
@@ -388,6 +414,10 @@ impl<F: SessionFactory> State<F> {
             }
             ReceiverCommand::Refresh => {
                 self.refresh(events).await?;
+                // The GUI uses Refresh for the initial saved-receiver load.
+                // Publish core status first, then begin the supplemental
+                // read-only HTTP pass.
+                self.refresh_http_information(events).await.ok();
                 Ok(Some(ReceiverEvent::Snapshot(self.snapshot.clone())))
             }
             ReceiverCommand::RefreshQuickSelectEq => {
@@ -403,6 +433,10 @@ impl<F: SessionFactory> State<F> {
                         .clone()
                         .expect("successful source catalog refresh records an observation"),
                 ))))
+            }
+            ReceiverCommand::RefreshHttpInformation => {
+                self.refresh_http_information(events).await?;
+                Ok(Some(ReceiverEvent::Snapshot(self.snapshot.clone())))
             }
             ReceiverCommand::RecallQuickSelect {
                 slot,
@@ -454,6 +488,7 @@ impl<F: SessionFactory> State<F> {
                 self.generation += 1;
                 self.invalidate_quick_select_eq();
                 self.invalidate_source_catalog();
+                self.snapshot.invalidate_http_information(self.generation);
                 self.lifecycle = Lifecycle::Connected {
                     generation: self.generation,
                 };
@@ -467,6 +502,7 @@ impl<F: SessionFactory> State<F> {
                 self.snapshot.invalidate();
                 self.invalidate_quick_select_eq();
                 self.invalidate_source_catalog();
+                self.snapshot.invalidate_http_information(self.generation);
                 Self::emit(events, ReceiverEvent::Lifecycle(Lifecycle::Disconnected)).await;
                 Self::emit(events, ReceiverEvent::Snapshot(self.snapshot.clone())).await;
                 Err(e)
@@ -477,6 +513,7 @@ impl<F: SessionFactory> State<F> {
         self.snapshot.invalidate();
         self.invalidate_quick_select_eq();
         self.invalidate_source_catalog();
+        self.snapshot.invalidate_http_information(self.generation);
         if let Some(mut s) = self.session.take() {
             tokio::time::timeout(self.config.close_timeout, s.close())
                 .await
@@ -527,6 +564,7 @@ impl<F: SessionFactory> State<F> {
                     self.snapshot.invalidate();
                     self.invalidate_quick_select_eq();
                     self.invalidate_source_catalog();
+                    self.snapshot.invalidate_http_information(self.generation);
                     Self::emit(events, ReceiverEvent::Lifecycle(self.lifecycle.clone())).await;
                     Self::emit(events, ReceiverEvent::Snapshot(self.snapshot.clone())).await;
                 }
@@ -542,6 +580,7 @@ impl<F: SessionFactory> State<F> {
                                 context: format!("refreshing after reconnect: {error}"),
                             });
                         }
+                        let _ = self.refresh_http_information(events).await;
                     }
                 }
                 Ok(SessionEvent::Connection(ConnectionState::Disconnected)) => {
@@ -549,12 +588,24 @@ impl<F: SessionFactory> State<F> {
                     self.snapshot.invalidate();
                     self.invalidate_quick_select_eq();
                     self.invalidate_source_catalog();
+                    self.snapshot.invalidate_http_information(self.generation);
                     Self::emit(events, ReceiverEvent::Lifecycle(self.lifecycle.clone())).await;
                     Self::emit(events, ReceiverEvent::Snapshot(self.snapshot.clone())).await;
                 }
                 Ok(SessionEvent::MainZone(event)) => {
+                    let refresh_information = matches!(
+                        event,
+                        MainZoneEvent::Changed(MainZoneValue::Input(_))
+                            | MainZoneEvent::Changed(MainZoneValue::SurroundMode(_))
+                            | MainZoneEvent::Changed(MainZoneValue::Power(
+                                denon_avr_domain::PowerState::On
+                            ))
+                    );
                     self.snapshot.apply_event(event);
                     Self::emit(events, ReceiverEvent::Snapshot(self.snapshot.clone())).await;
+                    if refresh_information {
+                        let _ = self.refresh_http_information(events).await;
+                    }
                 }
                 Err(error) => {
                     self.observability.record(Diagnostic::Timeout {
@@ -564,6 +615,7 @@ impl<F: SessionFactory> State<F> {
                     self.snapshot.invalidate();
                     self.invalidate_quick_select_eq();
                     self.invalidate_source_catalog();
+                    self.snapshot.invalidate_http_information(self.generation);
                     Self::emit(events, ReceiverEvent::Lifecycle(self.lifecycle.clone())).await;
                     Self::emit(events, ReceiverEvent::Snapshot(self.snapshot.clone())).await;
                     return;
@@ -622,6 +674,50 @@ impl<F: SessionFactory> State<F> {
         // command. Main Zone status (especially PWON) must be published even
         // when the receiver's optional HTTP endpoint is unavailable.
         Ok(())
+    }
+    async fn refresh_http_information(
+        &mut self,
+        events: &mpsc::Sender<ReceiverEvent>,
+    ) -> Result<(), OperationError> {
+        if !self.should_read_http_information() {
+            return Ok(());
+        }
+        if self.session.is_none()
+            || self.snapshot.power.value() != Some(&denon_avr_domain::PowerState::On)
+        {
+            self.snapshot.invalidate_http_information(self.generation);
+            return Ok(());
+        }
+        let previous = self.snapshot.http_information.clone();
+        let result = self
+            .session
+            .as_mut()
+            .ok_or_else(stopped)?
+            .refresh_http_information()
+            .await;
+        match result {
+            Ok(mut information) => {
+                information.generation = self.generation;
+                self.snapshot.set_http_information(information);
+                Self::emit(events, ReceiverEvent::Snapshot(self.snapshot.clone())).await;
+                Ok(())
+            }
+            Err(error) => {
+                // Keep last useful information for this connection. HTTP is an
+                // enhancement, never a reason to invalidate Telnet status.
+                let mut information = previous;
+                information.generation = self.generation;
+                information.freshness = if information.observed_at.is_some() {
+                    denon_avr_domain::Freshness::Partial
+                } else {
+                    denon_avr_domain::Freshness::Unknown
+                };
+                information.error = Some(error.to_string());
+                self.snapshot.set_http_information(information);
+                Self::emit(events, ReceiverEvent::Snapshot(self.snapshot.clone())).await;
+                Err(error)
+            }
+        }
     }
     async fn refresh_source_catalog(
         &mut self,
@@ -807,6 +903,10 @@ impl<F: SessionFactory> State<F> {
             .with_validated_quick_select_eq(self.validated_quick_select_eq.unwrap_or_default())
             .with_validated_source_catalog(self.validated_source_catalog.unwrap_or_default())
     }
+    fn should_read_http_information(&self) -> bool {
+        self.capabilities().http_information_read
+            || matches!(self.selection, Some(ReceiverSelection::Saved { .. }))
+    }
     async fn control(
         &mut self,
         control: MainZoneControl,
@@ -876,6 +976,9 @@ impl<F: SessionFactory> State<F> {
                     .value(field)
                     .is_some_and(|v| control_matches(&control, &v, &capabilities)) =>
             {
+                if information_may_have_changed(&control) {
+                    let _ = self.refresh_http_information(events).await;
+                }
                 ControlResult::Confirmed {
                     snapshot: self.snapshot.clone(),
                 }
@@ -928,6 +1031,15 @@ fn catalog_error_evidence(error: &OperationError) -> denon_avr_domain::CatalogRe
         _ => denon_avr_domain::CatalogResponseEvidence::Unsupported,
     }
 }
+fn information_may_have_changed(control: &MainZoneControl) -> bool {
+    matches!(
+        control,
+        MainZoneControl::Input(_)
+            | MainZoneControl::SurroundMode(_)
+            | MainZoneControl::Power(denon_avr_domain::PowerState::On)
+    )
+}
+
 fn control_field(c: &MainZoneControl) -> MainZoneField {
     match c {
         MainZoneControl::Power(_) => MainZoneField::Power,

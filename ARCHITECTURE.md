@@ -42,7 +42,8 @@ status. Phase 9 replaced the former package with an enforced Cargo workspace;
 Phase 10 applies the desktop visual identity. Detailed scope and acceptance
 criteria live in [the V2 plans](docs/v2/phase-8-quick-select-eq-overview.md),
 [Phase 9](docs/v2/phase-9-workspace-refactor-overview.md), and
-[Phase 10](docs/v2/phase-10-visual-identity-overview.md).
+[Phase 10](docs/v2/phase-10-visual-identity-overview.md). The active Version
+3 work is [Phase 1: X3800H HTTP probe reliability](docs/v3/phase-1-x3800h-http-info-probe-overview.md).
 
 Future HEOS, JSON contracts, additional zones, and broader-model support need
 their own evidence and design.

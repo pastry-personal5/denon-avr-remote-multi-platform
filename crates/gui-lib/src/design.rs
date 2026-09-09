@@ -15,9 +15,9 @@ pub const WARNING: Color = ACCENT;
 pub const ERROR: Color = Color::from_rgb(0.882, 0.431, 0.404);
 pub const HIGH_CONTRAST_BORDER: Color = Color::from_rgb(0.92, 0.94, 0.97);
 
-pub const RAIL: f32 = 240.0;
-pub const MIN_WIDTH: f32 = 1400.0;
-pub const MIN_HEIGHT: f32 = 880.0;
+pub const RAIL: f32 = 180.0;
+pub const MIN_WIDTH: f32 = 1100.0;
+pub const MIN_HEIGHT: f32 = 760.0;
 pub const MAX_SESSION_MESSAGES: usize = 100;
 
 pub fn theme(high_contrast: bool) -> Theme {

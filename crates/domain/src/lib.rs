@@ -6,6 +6,7 @@
 pub mod audio_context;
 pub mod capabilities;
 pub mod eq_status;
+pub mod http_information;
 pub mod main_zone;
 pub mod quick_select;
 pub mod receiver;
@@ -20,6 +21,10 @@ pub use capabilities::{
     Model, ModelCapabilities, QuickSelectEqCapabilities, SourceCatalogCapabilities,
 };
 pub use eq_status::{EqEvidence, EqFeature, EqState, EqStatus};
+pub use http_information::{
+    AudioInformation, AudysseyInformation, ChannelSlot, ChannelSlotState, HttpInformationSnapshot,
+    VideoInformation,
+};
 pub use main_zone::{
     AudioContextField, AudioContextValue, ConnectionState, FieldError, FieldErrorKind, FieldStatus,
     Freshness, Input, ListeningModeGroup, MainZoneControl, MainZoneEvent, MainZoneField,

@@ -10,7 +10,9 @@ use quick_xml::events::Event;
 use quick_xml::Reader;
 use std::collections::BTreeMap;
 
-pub const SOURCE_CATALOG_REQUEST_XML: &str = "<?xml version=\"1.0\" encoding=\"utf-8\"?><tx><cmd id=\"1\">GetRenameSource</cmd><cmd id=\"1\">GetDeletedSource</cmd></tx>";
+// X3800H AppCommand firmware requires line-delimited elements. Keep this
+// read-only request in the same accepted wire shape as the information batch.
+pub const SOURCE_CATALOG_REQUEST_XML: &str = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<tx>\n<cmd id=\"1\">GetRenameSource</cmd>\n<cmd id=\"1\">GetDeletedSource</cmd>\n</tx>";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParsedSourceCatalog {

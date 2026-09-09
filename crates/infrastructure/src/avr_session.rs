@@ -7,9 +7,9 @@ use denon_avr_application::{
 };
 use denon_avr_domain::{
     AudioContextSnapshot, Confidence, ConnectionState, EqEvidence, EqFeature, EqState, EqStatus,
-    FieldError, FieldErrorKind, Freshness, MainZoneEvent, MainZoneField, MainZoneSnapshot,
-    MainZoneValue, Observed, QuickSelectRecallConfirmation, QuickSelectSlot, RawObservation,
-    StateAuthority, SurroundMode,
+    FieldError, FieldErrorKind, Freshness, HttpInformationSnapshot, MainZoneEvent, MainZoneField,
+    MainZoneSnapshot, MainZoneValue, Observed, QuickSelectRecallConfirmation, QuickSelectSlot,
+    RawObservation, StateAuthority, SurroundMode,
 };
 use denon_avr_protocol::avr::AvrCommand;
 use denon_avr_protocol::avr::{eq_status_query, parse_eq_status, quick_select_command};
@@ -49,7 +49,7 @@ impl Default for AvrSessionConfig {
             reconnect_attempts: 3,
             reconnect_delay: Duration::from_millis(250),
             max_line_length: DEFAULT_MAX_LINE_LENGTH,
-            app_command_port: 80,
+            app_command_port: 8080,
         }
     }
 }
@@ -474,6 +474,34 @@ impl ReceiverSession for AvrSession {
 
     fn query_audio_context(&mut self) -> BoxFuture<'_, AudioContextSnapshot> {
         <Self as AsyncStatusGateway>::query_audio_context(self)
+    }
+
+    fn refresh_http_information(
+        &mut self,
+    ) -> BoxFuture<'_, Result<HttpInformationSnapshot, OperationError>> {
+        let host = self.source_catalog_host.clone();
+        let timeout = self.source_catalog_timeout;
+        let generation = self.generation.load(Ordering::SeqCst);
+        Box::pin(async move {
+            tokio::task::spawn_blocking(move || {
+                crate::HttpInformationHttpClient::new(host, timeout)?.read(generation)
+            })
+            .await
+            .map_err(|error| {
+                OperationError::new(
+                    OperationErrorKind::Stopped,
+                    "HTTP information",
+                    error.to_string(),
+                )
+            })?
+            .map_err(|error| {
+                OperationError::new(
+                    OperationErrorKind::Connection,
+                    "HTTP information",
+                    error.to_string(),
+                )
+            })
+        })
     }
 
     fn recall_quick_select(

@@ -104,7 +104,12 @@ impl SourceCatalog {
     }
 
     pub fn entry(&self, id: &str) -> Option<&SourceEntry> {
-        self.entries.iter().find(|entry| entry.id.as_str() == id)
+        // AVR source identifiers are canonicalized by the control layer, but
+        // AppCommand replies may use different ASCII casing. Labels and hide
+        // state must still join to the selectable canonical input.
+        self.entries
+            .iter()
+            .find(|entry| entry.id.as_str().eq_ignore_ascii_case(id))
     }
 
     pub fn selectable_entries<'a>(
@@ -113,7 +118,9 @@ impl SourceCatalog {
     ) -> impl Iterator<Item = &'a SourceEntry> {
         self.entries.iter().filter(move |entry| {
             entry.visibility == SourceVisibility::Shown
-                && validated_inputs.contains(&entry.id.as_str())
+                && validated_inputs
+                    .iter()
+                    .any(|input| input.eq_ignore_ascii_case(entry.id.as_str()))
         })
     }
 }
@@ -145,6 +152,24 @@ mod tests {
                 .map(|entry| entry.id.as_str())
                 .collect::<Vec<_>>(),
             vec!["GAME"]
+        );
+    }
+
+    #[test]
+    fn catalog_entries_join_canonical_inputs_case_insensitively() {
+        let catalog = SourceCatalog {
+            entries: vec![SourceEntry {
+                id: SourceId::new("game").unwrap(),
+                display_name: Some("Console".into()),
+                visibility: SourceVisibility::Shown,
+            }],
+            ..SourceCatalog::default()
+        };
+        assert_eq!(
+            catalog
+                .entry("GAME")
+                .and_then(|entry| entry.display_name.as_deref()),
+            Some("Console")
         );
     }
 }

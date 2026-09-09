@@ -110,28 +110,56 @@ impl AppCommandRequest {
         .expect("built-in request is valid")
     }
 
+    pub fn video_info() -> Self {
+        Self::new(vec![AppCommandQuery::new(
+            "GetVideoInfo",
+            ["videooutput", "hdmisigin", "hdmisigout"],
+        )
+        .expect("built-in query is valid")])
+        .expect("built-in request is valid")
+    }
+
+    pub fn audyssey_info() -> Self {
+        Self::new(vec![AppCommandQuery::new(
+            "GetAudyssyInfo",
+            ["eqname", "eqvalue", "dynamiceq", "dynamicvol"],
+        )
+        .expect("built-in query is valid")])
+        .expect("built-in request is valid")
+    }
+
     pub fn queries(&self) -> &[AppCommandQuery] {
         &self.queries
     }
 
     pub fn to_xml(&self) -> Result<String, AppCommandProtocolError> {
+        // AVR-X3800H firmware 6000-1060-0071-9831 accepts the documented
+        // AppCommand structure only when its elements are line-delimited.
+        // Compact, otherwise equivalent XML receives an empty rx response.
+        // Keep this transport-facing wire shape stable rather than relying on
+        // a receiver XML parser to normalize insignificant whitespace.
         let mut writer = Writer::new(Vec::new());
         writer
             .write_event(Event::Decl(BytesDecl::new("1.0", Some("utf-8"), None)))
             .map_err(xml_error)?;
+        write_line_break(&mut writer)?;
         writer
             .write_event(Event::Start(BytesStart::new("tx")))
             .map_err(xml_error)?;
+        write_line_break(&mut writer)?;
         for query in &self.queries {
             let mut command = BytesStart::new("cmd");
             command.push_attribute(("id", QUERY_ID));
             writer
                 .write_event(Event::Start(command))
                 .map_err(xml_error)?;
+            write_line_break(&mut writer)?;
             write_text_element(&mut writer, "name", query.name())?;
+            write_line_break(&mut writer)?;
             writer
                 .write_event(Event::Start(BytesStart::new("list")))
                 .map_err(xml_error)?;
+            write_line_break(&mut writer)?;
             for parameter in query.parameters() {
                 let mut element = BytesStart::new("param");
                 element.push_attribute(("name", parameter.as_str()));
@@ -141,13 +169,16 @@ impl AppCommandRequest {
                 writer
                     .write_event(Event::End(BytesEnd::new("param")))
                     .map_err(xml_error)?;
+                write_line_break(&mut writer)?;
             }
             writer
                 .write_event(Event::End(BytesEnd::new("list")))
                 .map_err(xml_error)?;
+            write_line_break(&mut writer)?;
             writer
                 .write_event(Event::End(BytesEnd::new("cmd")))
                 .map_err(xml_error)?;
+            write_line_break(&mut writer)?;
         }
         writer
             .write_event(Event::End(BytesEnd::new("tx")))
@@ -409,6 +440,12 @@ fn write_text_element(
         .map_err(xml_error)
 }
 
+fn write_line_break(writer: &mut Writer<Vec<u8>>) -> Result<(), AppCommandProtocolError> {
+    writer
+        .write_event(Event::Text(BytesText::new("\n")))
+        .map_err(xml_error)
+}
+
 fn decoded_text(
     reader: &mut Reader<&[u8]>,
     end: quick_xml::name::QName<'_>,
@@ -466,6 +503,8 @@ mod tests {
         assert!(xml.contains("<name>GetVideoInfo</name>"));
         assert!(xml.contains("<name>GetAudyssyInfo</name>"));
         assert!(xml.contains("<param name=\"inputsigall\"></param>"));
+        assert!(xml.contains("\n<tx>\n"));
+        assert!(xml.contains("\n<cmd id=\"3\">\n"));
         assert!(!xml.contains("Set"));
     }
 

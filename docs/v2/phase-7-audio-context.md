@@ -41,12 +41,13 @@ x3800h-http-info-probe <receiver-host> <timeout-ms> <model> <firmware> [port]
 It sends the five-command read-only request used by independent Denon
 captures: `GetInputSignal`, `GetActiveSpeaker`, `GetVideoInfo`,
 `GetAudioInfo`, and `GetAudyssyInfo`. It prints the exact request XML, raw
-XML response, and each returned parameter's `name`, `control`, and value. If
-the receiver returns an empty `<rx/>`, it automatically retries
-`GetInputSignal` and `GetActiveSpeaker` as separate requests; this detects
-receivers that reject batched AppCommand queries.
-The fallback also probes `GetAudioInfo` separately, so an unsupported channel
-query cannot hide otherwise working audio-format information.
+XML response, and every returned parameter with its attributes and value. The
+Version 3 Phase 1 reliability behavior retains valid partial batch results and
+retries each missing requested command separately. A valid empty `<rx/>` also
+records a `0301` endpoint-compatibility attempt before those standard
+`0300` retries. See the active [V3 Phase 1 probe plan](../v3/phase-1-x3800h-http-info-probe-overview.md)
+for the exit policy, line-oriented evidence format, validation rules, and
+manual capture checklist.
 The `control` attribute is deliberately retained as raw evidence; its meaning
 must be correlated with front-panel indicators before it is used as a channel
 map. The HTTP request contains no state-changing operation. XML construction

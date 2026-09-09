@@ -37,6 +37,7 @@ pub struct ModelCapabilities {
     pub quick_select_recall: bool,
     pub eq_status: bool,
     pub source_catalog_read: bool,
+    pub http_information_read: bool,
 }
 
 /// Capabilities may be enabled only after model/firmware-specific Quick
@@ -108,7 +109,12 @@ impl ModelCapabilities {
             // Do not inherit the Main Zone control capability here.
             quick_select_recall: false,
             eq_status: false,
-            source_catalog_read: false,
+            // Source labels and visibility are receiver-owned presentation
+            // facts. The X3800H profile reads them without enabling any
+            // source rename or hide/write operation.
+            source_catalog_read: matches!(model, Model::AvrX3800h),
+            // Validated Phase 1 observations apply only to X3800H-family models.
+            http_information_read: matches!(model, Model::AvrX3800h),
         }
     }
 
@@ -128,7 +134,7 @@ impl ModelCapabilities {
         capabilities: SourceCatalogCapabilities,
     ) -> Self {
         if matches!(self.model, Model::AvrX3800h) {
-            self.source_catalog_read = capabilities.source_catalog_read;
+            self.source_catalog_read |= capabilities.source_catalog_read;
         }
         self
     }
@@ -262,6 +268,18 @@ mod tests {
             });
         assert!(!capabilities.quick_select_recall);
         assert!(!capabilities.eq_status);
+    }
+
+    #[test]
+    fn http_information_is_gated_to_validated_x3800h_models() {
+        assert!(ModelCapabilities::for_model(Model::AvrX3800h).http_information_read);
+        assert!(!ModelCapabilities::for_model(Model::Unknown).http_information_read);
+    }
+
+    #[test]
+    fn source_catalog_read_is_available_only_for_x3800h_models() {
+        assert!(ModelCapabilities::for_model(Model::AvrX3800h).source_catalog_read);
+        assert!(!ModelCapabilities::for_model(Model::Unknown).source_catalog_read);
     }
 }
 

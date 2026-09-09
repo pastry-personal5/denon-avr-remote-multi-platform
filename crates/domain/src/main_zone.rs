@@ -1,6 +1,6 @@
 //! Main zone domain types and state management.
 
-use super::AudioContextSnapshot;
+use super::{AudioContextSnapshot, HttpInformationSnapshot};
 use std::fmt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -369,6 +369,9 @@ fn not_queried() -> FieldError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MainZoneSnapshot {
     pub audio_context: AudioContextSnapshot,
+    /// Read-only, model-gated AppCommand information. This is deliberately
+    /// separate from core Telnet status so an HTTP failure cannot invalidate it.
+    pub http_information: HttpInformationSnapshot,
     pub power: FieldStatus<PowerState>,
     pub input: FieldStatus<Input>,
     pub volume: FieldStatus<Volume>,
@@ -383,6 +386,7 @@ impl Default for MainZoneSnapshot {
     fn default() -> Self {
         Self {
             audio_context: AudioContextSnapshot::default(),
+            http_information: HttpInformationSnapshot::default(),
             power: FieldStatus::Unavailable(not_queried()),
             input: FieldStatus::Unavailable(not_queried()),
             volume: FieldStatus::Unavailable(not_queried()),
@@ -400,12 +404,25 @@ impl MainZoneSnapshot {
         let version = self.resource_version.saturating_add(1);
         *self = Self::default();
         self.freshness = Freshness::Invalidated;
+        self.http_information.invalidate(0);
         self.resource_version = version;
     }
 
     pub fn invalidate_audio_context(&mut self) {
         self.audio_context.invalidate();
         self.resource_version = self.resource_version.saturating_add(1);
+    }
+
+    pub fn invalidate_http_information(&mut self, generation: u64) {
+        self.http_information.invalidate(generation);
+        self.resource_version = self.resource_version.saturating_add(1);
+    }
+
+    pub fn set_http_information(&mut self, information: HttpInformationSnapshot) {
+        if self.http_information != information {
+            self.resource_version = self.resource_version.saturating_add(1);
+        }
+        self.http_information = information;
     }
 
     pub fn set_audio_context(&mut self, context: AudioContextSnapshot) {
@@ -439,6 +456,9 @@ impl MainZoneSnapshot {
         }
         if invalidates_audio_context && !self.audio_context.invalidated {
             self.invalidate_audio_context();
+        }
+        if matches!(self.power, FieldStatus::Value(PowerState::Standby)) {
+            self.http_information.invalidate(0);
         }
         self.freshness = Freshness::Live;
         self.authority = authority;

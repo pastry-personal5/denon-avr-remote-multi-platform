@@ -6,6 +6,7 @@
 pub mod app_command;
 pub mod avr;
 pub mod heos;
+pub mod http_information;
 pub mod source_catalog;
 
 pub use app_command::{

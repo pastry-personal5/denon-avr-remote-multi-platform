@@ -20,6 +20,8 @@ make run ARGS="help"
 make run-gui          # run the native Iced desktop GUI
 make run-diagnostics ARGS="HOST TIMEOUT-MS MODEL FIRMWARE"
                       # run the read-only Telnet diagnostics probe
+make run-diagnostics-http ARGS="HOST TIMEOUT-MS MODEL FIRMWARE [PORT]"
+                      # run the read-only HTTP AppCommand evidence probe
 cargo run -p denon-avr-diagnostics --bin source-catalog-probe -- \
   http://HOST:8080/goform/AppCommand.xml TIMEOUT-MS MODEL FIRMWARE SCENARIO
                       # diagnostic-only candidate source-catalog read; no writes
@@ -37,7 +39,7 @@ Contribution rules and engineering invariants are maintained in the
 
 ## Documentation
 
-Active version documentation is under `docs/v1/` and `docs/v2/`. Put retired
+Active version documentation is under `docs/v1/`, `docs/v2/`, and `docs/v3/`. Put retired
 material under `docs/archive/`. Phase directories are not used; phase numbers belong in filenames. Keep the root `README.md` concise and link to detailed guides from there.
 
 Before submitting documentation changes, check links and run:
