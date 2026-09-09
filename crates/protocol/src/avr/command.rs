@@ -159,6 +159,17 @@ mod tests {
             panic!("expected volume");
         };
         assert_eq!(volume.db_tenths(), -5);
+        let parsed_volume = |response| {
+            let MainZoneValue::Volume(volume) =
+                parse_main_zone_response(MainZoneField::Volume, response).unwrap()
+            else {
+                panic!("expected volume");
+            };
+            volume.db_tenths()
+        };
+        assert_eq!(parsed_volume("MV800"), 0);
+        assert_eq!(parsed_volume("MV980"), 180);
+        assert_eq!(parsed_volume("MV80"), 0);
     }
 
     #[test]

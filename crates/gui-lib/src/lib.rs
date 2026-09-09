@@ -1141,7 +1141,7 @@ impl Gui {
     }
 
     fn volume_is_interactive(&self) -> bool {
-        self.selected_capabilities().writable
+        self.selection.is_some()
             && self.snapshot.volume.value().is_some()
             && !self.volume_command_pending
     }
@@ -1191,7 +1191,11 @@ impl Gui {
         }
         let rail = container(
             column![
-                text("MAIN ZONE").size(12).color(design::MUTED),
+                text("MAIN ZONE")
+                    .width(Length::Fill)
+                    .align_x(iced::Alignment::Center)
+                    .size(12)
+                    .color(design::MUTED),
                 components::nav(
                     "Dashboard",
                     Route::Dashboard,
@@ -1209,11 +1213,6 @@ impl Gui {
                     Route::Diagnostics,
                     self.route == Route::Diagnostics
                 ),
-                space().height(Length::Fill),
-                text("Wide console").size(12).color(design::MUTED),
-                text("Native keyboard traversal")
-                    .size(12)
-                    .color(design::MUTED),
             ]
             .spacing(14)
             .padding(20),
@@ -1259,42 +1258,39 @@ impl Gui {
         };
         let messages: Element<'_, Message> = if self.messages_collapsed {
             container(
-                row![
-                    text("Message history collapsed")
-                        .size(13)
-                        .color(design::MUTED),
-                    components::quiet_action("Expand", Message::ToggleMessages)
-                ]
-                .spacing(12)
-                .align_y(iced::Alignment::Center),
+                components::message_icon_action("⌄", Message::ToggleMessages)
+                    .width(Length::Shrink)
+                    .padding([2, 6]),
             )
             .width(Length::Fill)
+            .style(design::panel)
             .into()
         } else {
             let items = self
                 .messages
                 .iter()
+                .rev()
+                .take(3)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
                 .fold(column![].spacing(5), |column, message| {
-                    column.push(text(message).size(13))
+                    column.push(text(message).size(12))
                 });
             container(
-                column![
-                    row![
-                        text("Session messages").size(16),
-                        space().width(Length::Fill),
-                        components::quiet_icon_action("⌫", Message::ClearMessages),
-                        components::quiet_icon_action("⌃", Message::ToggleMessages)
-                    ]
-                    .spacing(12),
+                row![
                     scrollable(items)
                         .width(Length::Fill)
-                        .height(Length::Fixed(112.0))
-                        .anchor_bottom()
+                        .height(Length::Fixed(54.0))
+                        .anchor_bottom(),
+                    components::message_icon_action("⌫", Message::ClearMessages),
+                    components::message_icon_action("⌃", Message::ToggleMessages)
                 ]
-                .spacing(10)
-                .padding(14),
+                .spacing(6)
+                .align_y(iced::Alignment::Center),
             )
             .width(Length::Fill)
+            .padding(6)
             .style(design::panel)
             .into()
         };
@@ -1520,44 +1516,41 @@ impl Gui {
         // receiver confirms the command, but replacing the slider with a
         // transient status label makes an ordinary adjustment look like the
         // control disappeared.
-        let volume_controls: Element<'_, Message> =
-            if writable && self.snapshot.volume.value().is_some() {
-                column![
-                    container(volume_slider(self.volume_slider, self.volume_value,))
-                        .width(Length::Fill)
-                        .padding([8, 0]),
-                    row![
-                        text("-80.0 dB").size(12).color(design::MUTED),
-                        space().width(Length::Fill),
-                        text("+18.5 dB").size(12).color(design::MUTED),
+        let volume_controls: Element<'_, Message> = if self.snapshot.volume.value().is_some() {
+            container(
+                row![
+                    column![
+                        container(volume_slider(self.volume_slider, self.volume_value,))
+                            .width(Length::Fill),
+                        row![
+                            text("-80.0 dB").size(11).color(design::MUTED),
+                            space().width(Length::Fill),
+                            text("+18.5 dB").size(11).color(design::MUTED),
+                        ]
+                        .width(Length::Fill),
                     ]
+                    .spacing(2)
                     .width(Length::Fill),
                     row![
-                        row![
-                            components::quiet_action("≪", Message::AdjustVolume(-10.0)),
-                            components::quiet_action("−", Message::AdjustVolume(-0.5)),
-                        ]
-                        .spacing(8),
-                        space().width(Length::Fill),
-                        row![
-                            components::quiet_action("+", Message::AdjustVolume(0.5)),
-                            components::quiet_action("≫", Message::AdjustVolume(10.0)),
-                        ]
-                        .spacing(8),
+                        components::quiet_action("≪", Message::AdjustVolume(-10.0)),
+                        components::quiet_action("−", Message::AdjustVolume(-0.5)),
+                        components::quiet_action("+", Message::AdjustVolume(0.5)),
+                        components::quiet_action("≫", Message::AdjustVolume(10.0)),
                     ]
-                    .width(Length::Fill),
+                    .spacing(4),
                 ]
                 .spacing(8)
-                .into()
-            } else {
-                text(if !writable {
-                    "Volume controls are unavailable: receiver model is not validated for writes."
-                } else {
-                    "Volume controls are unavailable until the receiver reports its current volume."
-                })
+                .align_y(iced::Alignment::Center)
+                .padding([4, 0]),
+            )
+            .width(Length::Fill)
+            .height(Length::Fixed(90.0))
+            .into()
+        } else {
+            text("Volume controls are unavailable until the receiver reports its current volume.")
                 .color(design::MUTED)
                 .into()
-            };
+        };
         column![
             header,
             dashboard_context_line(&input, self.source_catalog.clone()),
@@ -1576,7 +1569,7 @@ impl Gui {
                     ]
                     .height(Length::Fill)
                 )
-                .width(Length::Fixed(280.0))
+                .width(Length::Fill)
                 .height(Length::Fixed(190.0))
                 .style(design::panel),
                 container(
@@ -1593,20 +1586,18 @@ impl Gui {
                     ]
                     .height(Length::Fill)
                 )
-                .width(Length::Fixed(250.0))
+                .width(Length::Fill)
                 .height(Length::Fixed(190.0))
                 .style(design::panel),
                 container(information_card(
-                    "AUDIO",
+                    "AUDYSSEY",
                     &[
-                        ("Input", &information.audio.input_mode),
-                        ("Output", &information.audio.output),
-                        ("Signal", &information.audio.signal),
-                        ("Sound", &information.audio.sound),
-                        ("Rate", &information.audio.sample_rate),
+                        ("MultEQ", &information.audyssey.multeq),
+                        ("Dynamic EQ", &information.audyssey.dynamic_eq),
+                        ("Dynamic Volume", &information.audyssey.dynamic_volume),
                     ]
                 ))
-                .width(Length::Fixed(230.0))
+                .width(Length::Fill)
                 .height(Length::Fixed(190.0))
                 .style(design::panel)
             ]
@@ -1620,18 +1611,20 @@ impl Gui {
                         ("HDMI out", &information.video.hdmi_output)
                     ]
                 ))
-                .width(Length::Fixed(360.0))
+                .width(Length::Fill)
                 .height(Length::Fixed(125.0))
                 .style(design::panel),
                 container(information_card(
-                    "AUDYSSEY",
+                    "AUDIO",
                     &[
-                        ("MultEQ", &information.audyssey.multeq),
-                        ("Dynamic EQ", &information.audyssey.dynamic_eq),
-                        ("Dynamic Volume", &information.audyssey.dynamic_volume)
+                        ("Input", &information.audio.input_mode),
+                        ("Output", &information.audio.output),
+                        ("Signal", &information.audio.signal),
+                        ("Sound", &information.audio.sound),
+                        ("Rate", &information.audio.sample_rate),
                     ]
                 ))
-                .width(Length::Fixed(360.0))
+                .width(Length::Fill)
                 .height(Length::Fixed(125.0))
                 .style(design::panel),
             ]
@@ -1647,7 +1640,7 @@ impl Gui {
                 self.source_catalog.clone(),
             ),
         ]
-        .spacing(18)
+        .spacing(10)
     }
 
     fn receivers(&self) -> iced::widget::Column<'_, Message> {

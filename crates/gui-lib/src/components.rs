@@ -3,7 +3,7 @@
 
 use crate::{design, Message, Route};
 use iced::widget::{button, column, container, row, text};
-use iced::{Element, Length, Theme};
+use iced::{Alignment, Element, Length, Theme};
 
 pub fn panel<'a>(title: &'a str, body: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
     container(
@@ -57,8 +57,20 @@ pub fn quiet_icon_action<'a>(icon: &'a str, message: Message) -> iced::widget::B
         .on_press(message)
 }
 
+pub fn message_icon_action<'a>(
+    icon: &'a str,
+    message: Message,
+) -> iced::widget::Button<'a, Message> {
+    button(text(icon).size(11))
+        .padding([1, 3])
+        .style(design::message_icon)
+        .on_press(message)
+}
+
 pub fn nav<'a>(label: &'a str, route: Route, active: bool) -> iced::widget::Button<'a, Message> {
-    let button = button(text(label)).width(Length::Fill).padding([11, 14]);
+    let button = button(text(label).width(Length::Fill).align_x(Alignment::Center))
+        .width(Length::Fill)
+        .padding([11, 14]);
     if active {
         button
             .style(design::primary)

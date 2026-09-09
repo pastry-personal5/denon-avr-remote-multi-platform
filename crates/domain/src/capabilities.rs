@@ -154,12 +154,16 @@ impl ModelCapabilities {
     }
 
     pub fn supports_control(&self, control: &MainZoneControl) -> bool {
-        if !self.writable {
+        if !self.writable && !matches!(control, MainZoneControl::Volume(_)) {
             return false;
         }
         match control {
             MainZoneControl::Power(PowerState::On | PowerState::Standby)
             | MainZoneControl::Mute(MuteState::On | MuteState::Off) => true,
+            // Main Zone volume uses the stable MV protocol across Denon AVR
+            // models. A confirmed volume snapshot is enough evidence to
+            // expose this bounded control even when the broader model write
+            // profile has not been validated yet.
             MainZoneControl::Volume(level) => {
                 let code = level.to_native_code();
                 code >= self.native_volume_min && code <= self.native_volume_max
@@ -260,6 +264,13 @@ mod tests {
         assert!(capabilities.writable);
         assert!(!capabilities.quick_select_recall);
         assert!(!capabilities.eq_status);
+    }
+
+    #[test]
+    fn unknown_models_can_use_bounded_main_zone_volume() {
+        let capabilities = ModelCapabilities::for_model(Model::Unknown);
+        let volume = VolumeLevel::from_native_code(500).unwrap();
+        assert!(capabilities.supports_control(&MainZoneControl::Volume(volume)));
     }
 
     #[test]

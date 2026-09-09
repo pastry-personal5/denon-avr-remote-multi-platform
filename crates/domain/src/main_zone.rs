@@ -232,8 +232,13 @@ impl Volume {
     }
 
     pub fn native_code(&self) -> u16 {
-        let base = self.code.trim_end_matches('5').parse::<u16>().unwrap_or(0);
-        base * 10 + u16::from(self.code.ends_with('5')) * 5
+        let code = self.code.trim();
+        let parsed = code.parse::<u16>().unwrap_or(0);
+        if code.len() == 2 {
+            parsed.saturating_mul(10)
+        } else {
+            parsed
+        }
     }
 
     pub fn level(&self) -> Result<VolumeLevel, &'static str> {
@@ -599,6 +604,8 @@ mod tests {
             VolumeLevel::from_native_code(245).unwrap().to_native_code(),
             245
         );
+        assert_eq!(Volume::from_parts("800", 0).native_code(), 800);
+        assert_eq!(Volume::from_parts("80", 0).native_code(), 800);
         assert!(VolumeLevel::new(501).is_err());
     }
 }

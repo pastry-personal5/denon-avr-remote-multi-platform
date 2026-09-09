@@ -100,20 +100,29 @@ fn parse_volume(response: &str) -> Result<Volume, AvrProtocolError> {
     if code == "---" {
         return Err(AvrProtocolError::Unavailable("volume is unavailable"));
     }
-    let half = code.ends_with('5');
-    let base_text = if half { &code[..code.len() - 1] } else { code };
-    let base = base_text
-        .parse::<i16>()
-        .map_err(|_| AvrProtocolError::InvalidVolume("volume code is not numeric"))?;
-    if !(0..=98).contains(&base) || (half && code.len() != 3) || (!half && code.len() != 2) {
+    // Denon receivers normally return a three-digit native code (`MV800`,
+    // `MV805`, ...), but some firmware uses the compact two-digit form for
+    // whole dB values (`MV80` == `MV800`). Normalize both forms before
+    // converting to the domain's tenths-of-a-dB representation.
+    if !matches!(code.len(), 2 | 3) {
         return Err(AvrProtocolError::InvalidVolume(
             "volume code is outside the supported format",
         ));
     }
-    Ok(Volume::from_parts(
-        code,
-        (base - 80) * 10 + i16::from(half) * 5,
-    ))
+    let parsed = code
+        .parse::<u16>()
+        .map_err(|_| AvrProtocolError::InvalidVolume("volume code is not numeric"))?;
+    let native_code = if code.len() == 2 {
+        parsed.saturating_mul(10)
+    } else {
+        parsed
+    };
+    if native_code > 985 || !native_code.is_multiple_of(5) {
+        return Err(AvrProtocolError::InvalidVolume(
+            "volume code is outside the supported format",
+        ));
+    }
+    Ok(Volume::from_parts(code, native_code as i16 - 800))
 }
 
 fn unexpected(field: MainZoneField, response: &str) -> AvrProtocolError {

@@ -14,6 +14,7 @@ pub const SUCCESS: Color = Color::from_rgb(0.345, 0.722, 0.553);
 pub const WARNING: Color = ACCENT;
 pub const ERROR: Color = Color::from_rgb(0.882, 0.431, 0.404);
 pub const HIGH_CONTRAST_BORDER: Color = Color::from_rgb(0.92, 0.94, 0.97);
+pub const MESSAGE_ICON: Color = Color::from_rgb(0.30, 0.32, 0.35);
 
 pub const RAIL: f32 = 180.0;
 pub const MIN_WIDTH: f32 = 1100.0;
@@ -122,6 +123,21 @@ pub fn secondary(theme: &Theme, status: button::Status) -> button::Style {
                 BORDER
             },
         },
+        ..Default::default()
+    }
+}
+
+pub fn message_icon(theme: &Theme, status: button::Status) -> button::Style {
+    button::Style {
+        background: None,
+        text_color: if matches!(status, button::Status::Hovered) {
+            MUTED
+        } else if high_contrast(theme) {
+            HIGH_CONTRAST_BORDER
+        } else {
+            MESSAGE_ICON
+        },
+        border: iced::Border::default(),
         ..Default::default()
     }
 }
