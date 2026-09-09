@@ -3,6 +3,6 @@ members = ["crates/domain", "crates/protocol", "crates/application", "crates/inf
 resolver = "2"
 
 [workspace.package]
-version = "1.0.0"
+version = "2.0.0"
 edition = "2021"
 license = "All Rights Reserved"

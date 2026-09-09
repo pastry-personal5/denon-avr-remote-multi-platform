@@ -653,7 +653,7 @@ checksum = "f27ae1dd37df86211c42e150270f82743308803d90a6f6e6651cd730d5e1732f"
 
 [[package]]
 name = "denon-avr-application"
-version = "1.0.0"
+version = "2.0.0"
 dependencies = [
  "denon-avr-domain",
  "tokio",
@@ -661,7 +661,7 @@ dependencies = [
 
 [[package]]
 name = "denon-avr-cli"
-version = "1.0.0"
+version = "2.0.0"
 dependencies = [
  "denon-avr-application",
  "denon-avr-domain",
@@ -671,7 +671,7 @@ dependencies = [
 
 [[package]]
 name = "denon-avr-desktop"
-version = "1.0.0"
+version = "2.0.0"
 dependencies = [
  "denon-avr-application",
  "denon-avr-domain",
@@ -686,7 +686,7 @@ dependencies = [
 
 [[package]]
 name = "denon-avr-diagnostics"
-version = "1.0.0"
+version = "2.0.0"
 dependencies = [
  "denon-avr-domain",
  "denon-avr-infrastructure",
@@ -695,11 +695,11 @@ dependencies = [
 
 [[package]]
 name = "denon-avr-domain"
-version = "1.0.0"
+version = "2.0.0"
 
 [[package]]
 name = "denon-avr-gui-lib"
-version = "1.0.0"
+version = "2.0.0"
 dependencies = [
  "crc32fast",
  "denon-avr-application",
@@ -714,7 +714,7 @@ dependencies = [
 
 [[package]]
 name = "denon-avr-infrastructure"
-version = "1.0.0"
+version = "2.0.0"
 dependencies = [
  "denon-avr-application",
  "denon-avr-domain",
@@ -728,7 +728,7 @@ dependencies = [
 
 [[package]]
 name = "denon-avr-protocol"
-version = "1.0.0"
+version = "2.0.0"
 dependencies = [
  "denon-avr-domain",
  "quick-xml",
