@@ -13,6 +13,9 @@ path = "src/http_info_probe.rs"
 [[bin]]
 name = "source-catalog-probe"
 path = "src/source_catalog_probe.rs"
+[[bin]]
+name = "quick-select-name-probe"
+path = "src/quick_select_name_probe.rs"
 [dependencies]
 denon-avr-domain = { path = "../../crates/domain" }
 denon-avr-infrastructure = { path = "../../crates/infrastructure" }

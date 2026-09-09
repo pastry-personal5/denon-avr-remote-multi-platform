@@ -4,9 +4,10 @@ use super::ports::{BoxFuture, OperationError, OperationErrorKind};
 use denon_avr_domain::{
     AudioContextSnapshot, ConnectionState, DiscoveredReceiver, EqStatus, HttpInformationSnapshot,
     MainZoneControl, MainZoneEvent, MainZoneField, MainZoneSnapshot, MainZoneValue, Model,
-    ModelCapabilities, QuickSelectEqCapabilities, QuickSelectRecallConfirmation,
-    QuickSelectRecallOutcome, QuickSelectSlot, QuickSelectSnapshot, ReceiverIdentity,
-    SourceCatalog, SourceCatalogCapabilities, SourceCatalogObservation, StateAuthority,
+    ModelCapabilities, QuickSelectEqCapabilities, QuickSelectNameObservation,
+    QuickSelectRecallConfirmation, QuickSelectRecallOutcome, QuickSelectSlot, QuickSelectSnapshot,
+    ReceiverIdentity, SourceCatalog, SourceCatalogCapabilities, SourceCatalogObservation,
+    StateAuthority,
 };
 use std::sync::Arc;
 use std::time::Duration;
@@ -56,6 +57,17 @@ pub trait ReceiverSession: Send {
                 OperationErrorKind::Unsupported,
                 "source catalog",
                 "source catalog protocol is not validated",
+            ))
+        })
+    }
+    fn refresh_quick_select_names(
+        &mut self,
+    ) -> BoxFuture<'_, Result<QuickSelectNameObservation, OperationError>> {
+        Box::pin(async {
+            Err(OperationError::new(
+                OperationErrorKind::Unsupported,
+                "Quick Select names",
+                "Quick Select name protocol is not validated",
             ))
         })
     }
@@ -121,6 +133,7 @@ pub enum ReceiverCommand {
     },
     RefreshQuickSelectEq,
     RefreshSourceCatalog,
+    RefreshQuickSelectNames,
     RefreshHttpInformation,
     RecallQuickSelect {
         slot: QuickSelectSlot,
@@ -177,6 +190,7 @@ pub enum ReceiverEvent {
     EqStatus(Box<EqStatus>),
     /// Catalog state plus the protocol/transport evidence that produced it.
     SourceCatalog(Box<SourceCatalogObservation>),
+    QuickSelectNames(Box<QuickSelectNameObservation>),
 }
 pub trait Observability: Send + Sync {
     fn record(&self, event: Diagnostic);
@@ -278,6 +292,9 @@ impl ControllerHandle {
     pub async fn refresh_source_catalog(&self) -> Result<CommandReply, OperationError> {
         self.send(ReceiverCommand::RefreshSourceCatalog).await
     }
+    pub async fn refresh_quick_select_names(&self) -> Result<CommandReply, OperationError> {
+        self.send(ReceiverCommand::RefreshQuickSelectNames).await
+    }
     pub async fn recall_quick_select(
         &self,
         slot: QuickSelectSlot,
@@ -321,6 +338,7 @@ impl ReceiverController {
                 validated_source_catalog,
                 source_catalog: SourceCatalog::default(),
                 source_catalog_observation: None,
+                quick_select_names_observation: None,
             };
             let mut information_interval = tokio::time::interval(Duration::from_secs(30));
             information_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -332,6 +350,7 @@ impl ReceiverController {
                     envelope = rx.recv() => {
                         let Some(envelope) = envelope else { break; };
                         let stop = matches!(envelope.command, ReceiverCommand::Shutdown);
+                        let refresh_supplemental = matches!(envelope.command, ReceiverCommand::Refresh);
                         let result = state.handle(envelope.command, &events).await;
                         if stop {
                             let _ = envelope.reply.send(result);
@@ -344,6 +363,13 @@ impl ReceiverController {
                         // the invalidated snapshot emitted by the reconnect drain.
                         state.drain_session_events(&events).await;
                         let _ = envelope.reply.send(result);
+                        // Core status is now published and the GUI can leave
+                        // its launch screen. Optional reads must not delay
+                        // that reply when an endpoint stalls or is unsupported.
+                        if refresh_supplemental {
+                            let _ = state.refresh_http_information(&events).await;
+                            let _ = state.refresh_quick_select_names(&events).await;
+                        }
                     }
                     _ = information_interval.tick() => {
                         let _ = state.refresh_http_information(&events).await;
@@ -380,6 +406,7 @@ struct State<F> {
     validated_source_catalog: Option<SourceCatalogCapabilities>,
     source_catalog: SourceCatalog,
     source_catalog_observation: Option<SourceCatalogObservation>,
+    quick_select_names_observation: Option<QuickSelectNameObservation>,
 }
 impl<F: SessionFactory> State<F> {
     async fn handle(
@@ -414,10 +441,11 @@ impl<F: SessionFactory> State<F> {
             }
             ReceiverCommand::Refresh => {
                 self.refresh(events).await?;
-                // The GUI uses Refresh for the initial saved-receiver load.
-                // Publish core status first, then begin the supplemental
-                // read-only HTTP pass.
-                self.refresh_http_information(events).await.ok();
+                // Keep startup/refresh bounded by the core Main Zone queries.
+                // HTTP information and Quick Select names are supplemental
+                // reads; awaiting either here would prevent the bridge from
+                // forwarding the Connected/core Snapshot events when an
+                // optional endpoint stalls or is unsupported.
                 Ok(Some(ReceiverEvent::Snapshot(self.snapshot.clone())))
             }
             ReceiverCommand::RefreshQuickSelectEq => {
@@ -432,6 +460,12 @@ impl<F: SessionFactory> State<F> {
                     self.source_catalog_observation
                         .clone()
                         .expect("successful source catalog refresh records an observation"),
+                ))))
+            }
+            ReceiverCommand::RefreshQuickSelectNames => {
+                self.refresh_quick_select_names(events).await?;
+                Ok(Some(ReceiverEvent::QuickSelect(Box::new(
+                    self.quick_select.clone(),
                 ))))
             }
             ReceiverCommand::RefreshHttpInformation => {
@@ -530,6 +564,7 @@ impl<F: SessionFactory> State<F> {
     fn invalidate_quick_select_eq(&mut self) {
         self.quick_select.invalidate();
         self.eq_status.invalidate();
+        self.quick_select_names_observation = None;
         self.quick_select.generation = self.generation;
         self.eq_status.generation = self.generation;
     }
@@ -581,6 +616,7 @@ impl<F: SessionFactory> State<F> {
                             });
                         }
                         let _ = self.refresh_http_information(events).await;
+                        let _ = self.refresh_quick_select_names(events).await;
                     }
                 }
                 Ok(SessionEvent::Connection(ConnectionState::Disconnected)) => {
@@ -842,6 +878,57 @@ impl<F: SessionFactory> State<F> {
             }
         }
         Ok(())
+    }
+    async fn refresh_quick_select_names(
+        &mut self,
+        events: &mpsc::Sender<ReceiverEvent>,
+    ) -> Result<(), OperationError> {
+        if !self.capabilities().quick_select_names {
+            return Err(OperationError::new(
+                OperationErrorKind::Unsupported,
+                "Quick Select names",
+                "selected receiver has no validated Quick Select name capability",
+            ));
+        }
+        if self.session.is_none() {
+            self.connect(events).await?;
+        }
+        let previous = self.quick_select_names_observation.clone();
+        let result = self
+            .session
+            .as_mut()
+            .ok_or_else(stopped)?
+            .refresh_quick_select_names()
+            .await;
+        match result {
+            Ok(mut observation) => {
+                observation.generation = self.generation;
+                self.quick_select_names_observation = Some(observation.clone());
+                self.quick_select.generation = self.generation;
+                for (index, name) in observation.names.clone().into_iter().enumerate() {
+                    if let Some(name) = name {
+                        let slot = QuickSelectSlot::new(index as u8 + 1)
+                            .expect("Quick Select name response has four slots");
+                        self.quick_select.set_name(slot, name);
+                    }
+                }
+                Self::emit(
+                    events,
+                    ReceiverEvent::QuickSelectNames(Box::new(observation)),
+                )
+                .await;
+                Self::emit(
+                    events,
+                    ReceiverEvent::QuickSelect(Box::new(self.quick_select.clone())),
+                )
+                .await;
+                Ok(())
+            }
+            Err(error) => {
+                self.quick_select_names_observation = previous;
+                Err(error)
+            }
+        }
     }
     async fn recall_quick_select(
         &mut self,
@@ -1500,6 +1587,7 @@ mod tests {
         let config = ControllerConfig {
             validated_quick_select_eq: Some(QuickSelectEqCapabilities {
                 quick_select_recall: true,
+                quick_select_names: true,
                 eq_status: true,
             }),
             ..ControllerConfig::default()
@@ -1523,6 +1611,7 @@ mod tests {
         let config = ControllerConfig {
             validated_quick_select_eq: Some(QuickSelectEqCapabilities {
                 quick_select_recall: true,
+                quick_select_names: true,
                 eq_status: true,
             }),
             ..ControllerConfig::default()
@@ -1547,6 +1636,7 @@ mod tests {
         let config = ControllerConfig {
             validated_quick_select_eq: Some(QuickSelectEqCapabilities {
                 quick_select_recall: false,
+                quick_select_names: false,
                 eq_status: true,
             }),
             ..ControllerConfig::default()
@@ -1566,6 +1656,7 @@ mod tests {
         let config = ControllerConfig {
             validated_quick_select_eq: Some(QuickSelectEqCapabilities {
                 quick_select_recall: true,
+                quick_select_names: true,
                 eq_status: false,
             }),
             ..ControllerConfig::default()

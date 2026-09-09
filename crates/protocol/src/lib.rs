@@ -7,6 +7,7 @@ pub mod app_command;
 pub mod avr;
 pub mod heos;
 pub mod http_information;
+pub mod quick_select_name;
 pub mod source_catalog;
 
 pub use app_command::{
@@ -21,3 +22,6 @@ pub use avr::{
 };
 pub use avr::{eq_status_query, parse_eq_status, quick_select_command};
 pub use heos::{parse_heos_line, HeosCommand, HeosLine, HeosProtocolError};
+pub use quick_select_name::{
+    parse_quick_select_names, ParsedQuickSelectNames, QuickSelectNameProtocolError,
+};

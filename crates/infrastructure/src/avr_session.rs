@@ -8,8 +8,8 @@ use denon_avr_application::{
 use denon_avr_domain::{
     AudioContextSnapshot, Confidence, ConnectionState, EqEvidence, EqFeature, EqState, EqStatus,
     FieldError, FieldErrorKind, Freshness, HttpInformationSnapshot, MainZoneEvent, MainZoneField,
-    MainZoneSnapshot, MainZoneValue, Observed, QuickSelectRecallConfirmation, QuickSelectSlot,
-    RawObservation, StateAuthority, SurroundMode,
+    MainZoneSnapshot, MainZoneValue, Observed, QuickSelectNameObservation,
+    QuickSelectRecallConfirmation, QuickSelectSlot, RawObservation, StateAuthority, SurroundMode,
 };
 use denon_avr_protocol::avr::AvrCommand;
 use denon_avr_protocol::avr::{eq_status_query, parse_eq_status, quick_select_command};
@@ -425,6 +425,40 @@ impl SourceCatalogReader for AvrSession {
     }
 }
 
+impl AvrSession {
+    pub fn refresh_quick_select_names(
+        &mut self,
+    ) -> BoxFuture<'_, Result<QuickSelectNameObservation, OperationError>> {
+        let endpoint = denon_avr_domain::ReceiverEndpoint {
+            host: self.source_catalog_host.clone(),
+            port: self.source_catalog_port,
+        };
+        let timeout = self.source_catalog_timeout;
+        let generation = self.connection_generation();
+        Box::pin(async move {
+            tokio::task::spawn_blocking(move || {
+                crate::QuickSelectNamesHttpClient::new(endpoint, timeout)
+                    .and_then(|client| client.read(generation))
+            })
+            .await
+            .map_err(|error| {
+                OperationError::new(
+                    OperationErrorKind::Stopped,
+                    "Quick Select names",
+                    error.to_string(),
+                )
+            })?
+            .map_err(|error| {
+                OperationError::new(
+                    OperationErrorKind::Connection,
+                    "Quick Select names",
+                    error.to_string(),
+                )
+            })
+        })
+    }
+}
+
 impl ReceiverSession for AvrSession {
     fn query_field(
         &mut self,
@@ -514,6 +548,12 @@ impl ReceiverSession for AvrSession {
                 .map(|_| QuickSelectRecallConfirmation::Dispatched)
                 .map_err(OperationError::from)
         })
+    }
+
+    fn refresh_quick_select_names(
+        &mut self,
+    ) -> BoxFuture<'_, Result<denon_avr_domain::QuickSelectNameObservation, OperationError>> {
+        self.refresh_quick_select_names()
     }
 
     fn query_eq_status(&mut self) -> BoxFuture<'_, Result<EqStatus, OperationError>> {

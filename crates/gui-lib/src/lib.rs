@@ -631,6 +631,10 @@ impl Gui {
                     });
                     "Saved receiver selected; connecting…".into()
                 } else {
+                    // Configuration loading is complete and there is no
+                    // receiver to connect. Show the receiver setup UI rather
+                    // than leaving the startup animation active forever.
+                    self.launch_ready = true;
                     "Connect a receiver to see its status.".into()
                 };
                 self.announce(message);
@@ -642,6 +646,9 @@ impl Gui {
                 }
             }
             Message::ConfigLoaded(Err(error)) => {
+                // A configuration error must still leave the app usable so
+                // the user can add a receiver manually.
+                self.launch_ready = true;
                 self.announce(format!("Configuration unavailable: {error}"));
                 Task::none()
             }
@@ -806,6 +813,7 @@ impl Gui {
                             self.status_confirmed_generation = None;
                         }
                         self.lifecycle = lifecycle;
+                        self.complete_launch_if_ready();
                     }
                     ReceiverEvent::Snapshot(snapshot) => {
                         // Replace the stale "connecting for confirmed status…" message
@@ -845,6 +853,11 @@ impl Gui {
                         {
                             self.source_catalog = observation.catalog;
                             self.announce("Source list refreshed.");
+                        }
+                    }
+                    ReceiverEvent::QuickSelectNames(observation) => {
+                        if observation.generation == self.generation || self.generation == 0 {
+                            self.announce("Quick Select names refreshed.");
                         }
                     }
                     ReceiverEvent::QuickSelectRecall(outcome) => {
@@ -1164,18 +1177,12 @@ impl Gui {
             self.lifecycle,
             denon_avr_application::Lifecycle::Connected { .. }
         );
-        let status_ready = self.snapshot.power.value().is_some();
-        let information = &self.snapshot.http_information;
-        let information_required =
-            saved_receiver || self.selected_capabilities().http_information_read;
-        // `Invalidated` is the connection-reset placeholder, not evidence
-        // that the startup HTTP pass has completed. While Main Zone is on,
-        // wait for either a real observation or a bounded read failure.
-        let information_ready = !information_required
-            || self.snapshot.power.value() == Some(&PowerState::Standby)
-            || information.observed_at.is_some()
-            || information.error.is_some();
-        self.launch_ready |= saved_receiver && connected && status_ready && information_ready;
+        // Connection establishment is sufficient to open the dashboard. Core
+        // status and HTTP/Quick Select reads are supplemental: a receiver can
+        // accept the session while an individual query is delayed,
+        // unsupported, or still timing out. Keeping those reads out of the
+        // launch gate prevents the saved-receiver screen from waiting forever.
+        self.launch_ready |= saved_receiver && connected;
     }
 
     pub fn view(&self) -> Element<'_, Message> {
@@ -1476,6 +1483,7 @@ impl Gui {
             .map(ToString::to_string)
             .unwrap_or_else(|| "Unavailable".into());
         let quick_select_supported = capabilities.quick_select_recall;
+        let quick_select_names_supported = capabilities.quick_select_names;
         let group_controls = if writable {
             ListeningModeGroup::ALL
                 .into_iter()
@@ -1635,6 +1643,7 @@ impl Gui {
             quick_select_bar(
                 &self.quick_select,
                 quick_select_supported,
+                quick_select_names_supported,
                 self.source_catalog.clone(),
             ),
         ]
@@ -2271,27 +2280,33 @@ fn mode_icon(group: ListeningModeGroup) -> &'static str {
 
 fn quick_select_bar<'a>(
     snapshot: &QuickSelectSnapshot,
-    supported: bool,
+    recall_supported: bool,
+    names_supported: bool,
     catalog: SourceCatalog,
 ) -> Element<'a, Message> {
-    let content: Element<'a, Message> = if supported {
+    let content: Element<'a, Message> = if recall_supported || names_supported {
         container(
             QuickSelectSlot::ALL
                 .into_iter()
                 .fold(row![].spacing(8), |row, slot| {
-                    row.push(
-                        button(text(quick_select_slot_label(snapshot, slot, &catalog)).size(12))
-                            .padding([7, 10])
-                            .style(design::secondary)
-                            .on_press(Message::RecallQuickSelect(slot)),
-                    )
+                    let label = text(quick_select_slot_label(snapshot, slot, &catalog)).size(12);
+                    if recall_supported {
+                        row.push(
+                            button(label)
+                                .padding([7, 10])
+                                .style(design::secondary)
+                                .on_press(Message::RecallQuickSelect(slot)),
+                        )
+                    } else {
+                        row.push(container(label).padding([7, 10]))
+                    }
                 }),
         )
         .width(Length::Fill)
         .center_x(Length::Fill)
         .into()
     } else {
-        text("Quick Select names are unavailable until protocol evidence is validated.")
+        text("Quick Select names are unavailable for this receiver.")
             .size(12)
             .color(design::MUTED)
             .into()
@@ -2581,7 +2596,31 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn launch_waits_for_saved_receiver_status_and_initial_http_result() {
+    async fn launch_opens_receiver_setup_when_no_receiver_is_saved() {
+        let bridge = ControllerBridge::new(AvrSessionFactory::default());
+        let mut gui = Gui::new(bridge);
+
+        let _ = gui.update(Message::ConfigLoaded(Ok(ConfiguredReceivers::default())));
+
+        assert!(gui.launch_ready);
+        assert!(gui.selection.is_none());
+        assert_eq!(gui.lifecycle, denon_avr_application::Lifecycle::NoReceiver);
+    }
+
+    #[tokio::test]
+    async fn launch_opens_receiver_setup_when_configuration_fails() {
+        let bridge = ControllerBridge::new(AvrSessionFactory::default());
+        let mut gui = Gui::new(bridge);
+
+        let _ = gui.update(Message::ConfigLoaded(Err(
+            "configuration unavailable".into()
+        )));
+
+        assert!(gui.launch_ready);
+    }
+
+    #[tokio::test]
+    async fn launch_opens_after_saved_receiver_connection() {
         let bridge = ControllerBridge::new(AvrSessionFactory::default());
         let mut gui = Gui::new(bridge);
         gui.selection = Some(ReceiverSelection::Saved {
@@ -2593,17 +2632,32 @@ mod tests {
             },
         });
         gui.lifecycle = denon_avr_application::Lifecycle::Connected { generation: 1 };
-        gui.snapshot.set_value(
-            MainZoneValue::Power(PowerState::On),
-            StateAuthority::Authoritative,
-        );
 
         gui.complete_launch_if_ready();
-        assert!(!gui.launch_ready);
+        assert!(gui.launch_ready);
+    }
 
-        gui.snapshot.http_information.freshness = denon_avr_domain::Freshness::Live;
-        gui.snapshot.http_information.observed_at = Some(std::time::SystemTime::now());
-        gui.complete_launch_if_ready();
+    #[tokio::test]
+    async fn connected_lifecycle_event_opens_saved_receiver_without_status_snapshot() {
+        let bridge = ControllerBridge::new(AvrSessionFactory::default());
+        let mut gui = Gui::new(bridge);
+        gui.selection = Some(ReceiverSelection::Saved {
+            name: "Living room".into(),
+            identity: ReceiverIdentity {
+                host: "receiver.local".into(),
+                model: Some("AVR-X3800H".into()),
+                friendly_name: None,
+            },
+        });
+
+        let _ = gui.update(Message::Bridge(Box::new(BridgeEvent {
+            request_id: 1,
+            generation: 1,
+            event: ReceiverEvent::Lifecycle(denon_avr_application::Lifecycle::Connected {
+                generation: 1,
+            }),
+        })));
+
         assert!(gui.launch_ready);
     }
 
@@ -3006,6 +3060,7 @@ mod tests {
             denon_avr_application::ControllerConfig {
                 validated_quick_select_eq: Some(denon_avr_domain::QuickSelectEqCapabilities {
                     quick_select_recall: true,
+                    quick_select_names: true,
                     eq_status: true,
                 }),
                 ..denon_avr_application::ControllerConfig::default()

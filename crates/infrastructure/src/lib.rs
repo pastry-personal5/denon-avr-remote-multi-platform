@@ -8,6 +8,7 @@ pub mod avr_session;
 pub mod config_yaml;
 pub mod discovery_ssdp;
 pub mod http_information;
+pub mod quick_select_names;
 pub mod source_catalog;
 pub mod tcp_avr;
 
@@ -16,5 +17,6 @@ pub use avr_session::{AvrSession, AvrSessionConfig, AvrSessionFactory};
 pub use config_yaml::YamlConfigRepository;
 pub use discovery_ssdp::SsdpDiscoveryAdapter;
 pub use http_information::{HttpInformationHttpClient, X3800H_HTTP_PORT};
+pub use quick_select_names::QuickSelectNamesHttpClient;
 pub use source_catalog::SourceCatalogHttpClient;
 pub use tcp_avr::SyncAvrClient;

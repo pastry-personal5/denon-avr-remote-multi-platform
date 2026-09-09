@@ -2,9 +2,10 @@
 
 **Status: Implemented — live receiver validation remains a release gate.**
 
-The typed paths and UI are implemented, but the Phase 8 capability flags remain
-disabled until the required X3800H live records confirm the candidate wire
-commands. Unknown and unvalidated receivers remain read-only.
+The typed paths and UI are implemented. Receiver-owned Quick Select names are
+read over the validated X3800H AppCommand information path; recall and EQ
+remain independently gated until their required live records are complete.
+Unknown and unvalidated receivers remain read-only.
 
 Phase 8 adds Main Zone Quick Select presets and EQ/room-correction status to
 the Phase 5 GUI, building on the grouped listening modes from Phase 6.

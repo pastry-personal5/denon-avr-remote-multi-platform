@@ -105,6 +105,18 @@ impl QuickSelectSnapshot {
         self.resource_version = self.resource_version.saturating_add(1);
         self.freshness = super::Freshness::Live;
     }
+    pub fn set_name(&mut self, slot: QuickSelectSlot, name: QuickSelectName) {
+        let index = slot.number() as usize - 1;
+        let preset = self.presets[index].get_or_insert_with(|| QuickSelectPreset {
+            slot,
+            name: None,
+            available: true,
+            summary: QuickSelectSummary::default(),
+        });
+        preset.name = Some(name);
+        self.resource_version = self.resource_version.saturating_add(1);
+        self.freshness = super::Freshness::Live;
+    }
     pub fn resource_version(&self) -> u64 {
         self.resource_version
     }

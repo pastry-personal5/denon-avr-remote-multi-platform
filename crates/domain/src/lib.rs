@@ -9,6 +9,7 @@ pub mod eq_status;
 pub mod http_information;
 pub mod main_zone;
 pub mod quick_select;
+pub mod quick_select_names;
 pub mod receiver;
 pub mod source_catalog;
 
@@ -35,6 +36,7 @@ pub use quick_select::{
     QuickSelectName, QuickSelectPreset, QuickSelectRecallConfirmation, QuickSelectRecallOutcome,
     QuickSelectSlot, QuickSelectSnapshot, QuickSelectSummary, Registered,
 };
+pub use quick_select_names::{QuickSelectNameObservation, QuickSelectNameResponseEvidence};
 pub use receiver::{ConfiguredReceivers, DiscoveredReceiver, ReceiverEndpoint, ReceiverIdentity};
 pub use source_catalog::{
     CatalogResponseEvidence, SourceCatalog, SourceCatalogObservation, SourceEntry, SourceId,

@@ -35,18 +35,30 @@ pub struct ModelCapabilities {
     pub inputs: &'static [&'static str],
     pub surround_modes: &'static [&'static str],
     pub quick_select_recall: bool,
+    pub quick_select_names: bool,
     pub eq_status: bool,
     pub source_catalog_read: bool,
     pub http_information_read: bool,
 }
 
 /// Capabilities may be enabled only after model/firmware-specific Quick
-/// Select/EQ validation has been recorded. The default application profile leaves this
-/// absent, so candidate commands cannot become supported accidentally.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// Recall/EQ validation has been recorded. Quick Select names are a separate,
+/// read-only AppCommand capability validated for the X3800H profile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QuickSelectEqCapabilities {
     pub quick_select_recall: bool,
+    pub quick_select_names: bool,
     pub eq_status: bool,
+}
+
+impl Default for QuickSelectEqCapabilities {
+    fn default() -> Self {
+        Self {
+            quick_select_recall: false,
+            quick_select_names: true,
+            eq_status: false,
+        }
+    }
 }
 
 const X3800H_INPUTS: &[&str] = &[
@@ -104,10 +116,11 @@ impl ModelCapabilities {
             native_volume_max: 985,
             inputs: if writable { X3800H_INPUTS } else { &[] },
             surround_modes: if writable { X3800H_SURROUND_MODES } else { &[] },
-            // Quick Select/EQ wire commands remain candidate evidence until a live
-            // X3800H record confirms their exact request/response behavior.
-            // Do not inherit the Main Zone control capability here.
+            // Quick Select recall and EQ remain execute/query candidates until
+            // separately validated. Quick Select names are a validated,
+            // read-only AppCommand observation for the X3800H profile.
             quick_select_recall: false,
+            quick_select_names: matches!(model, Model::AvrX3800h),
             eq_status: false,
             // Source labels and visibility are receiver-owned presentation
             // facts. The X3800H profile reads them without enabling any
@@ -124,6 +137,7 @@ impl ModelCapabilities {
     ) -> Self {
         if matches!(self.model, Model::AvrX3800h) {
             self.quick_select_recall = capabilities.quick_select_recall;
+            self.quick_select_names = capabilities.quick_select_names;
             self.eq_status = capabilities.eq_status;
         }
         self
@@ -253,6 +267,7 @@ mod tests {
         let capabilities = ModelCapabilities::for_model(Model::AvrX3800h)
             .with_validated_quick_select_eq(QuickSelectEqCapabilities {
                 quick_select_recall: true,
+                quick_select_names: true,
                 eq_status: true,
             });
         assert!(capabilities.quick_select_recall);
@@ -264,6 +279,7 @@ mod tests {
         let capabilities = ModelCapabilities::for_model(Model::Unknown)
             .with_validated_quick_select_eq(QuickSelectEqCapabilities {
                 quick_select_recall: true,
+                quick_select_names: true,
                 eq_status: true,
             });
         assert!(!capabilities.quick_select_recall);

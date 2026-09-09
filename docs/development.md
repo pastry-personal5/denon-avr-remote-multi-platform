@@ -25,6 +25,9 @@ make run-diagnostics-http ARGS="HOST TIMEOUT-MS MODEL FIRMWARE [PORT]"
 cargo run -p denon-avr-diagnostics --bin source-catalog-probe -- \
   http://HOST:8080/goform/AppCommand.xml TIMEOUT-MS MODEL FIRMWARE SCENARIO
                       # diagnostic-only candidate source-catalog read; no writes
+cargo run -p denon-avr-diagnostics --bin quick-select-name-probe -- \
+  http://HOST:PORT TIMEOUT-MS MODEL FIRMWARE SCENARIO
+                      # four fixed XML GETs plus receiver-advertised name read; no writes
 make capture-visual-baselines CAPTURES=target/visual-captures
                       # captures every deterministic scenario at 100% and 200%, then exits
 make visual-baselines PLATFORM=linux CAPTURES=target/visual-captures/linux
