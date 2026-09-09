@@ -1,4 +1,4 @@
-//! Phase 8 AVR command primitives. These are kept typed so callers cannot
+//! Quick Select/EQ AVR command primitives. These are kept typed so callers cannot
 //! accidentally treat a preset as several independently replayable controls.
 
 use super::command::{AvrCommand, AvrProtocolError};

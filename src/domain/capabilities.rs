@@ -38,11 +38,11 @@ pub struct ModelCapabilities {
     pub eq_status: bool,
 }
 
-/// Capabilities may be enabled only after model/firmware-specific Phase 8
+/// Capabilities may be enabled only after model/firmware-specific advanced feature
 /// validation has been recorded. The default application profile leaves this
 /// absent, so candidate commands cannot become supported accidentally.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct ValidatedPhase8Capabilities {
+pub struct QuickSelectEqCapabilities {
     pub quick_select_recall: bool,
     pub eq_status: bool,
 }
@@ -102,7 +102,7 @@ impl ModelCapabilities {
             native_volume_max: 985,
             inputs: if writable { X3800H_INPUTS } else { &[] },
             surround_modes: if writable { X3800H_SURROUND_MODES } else { &[] },
-            // Phase 8 wire commands remain candidate evidence until a live
+            // Quick Select/EQ wire commands remain candidate evidence until a live
             // X3800H record confirms their exact request/response behavior.
             // Do not inherit the Main Zone control capability here.
             quick_select_recall: false,
@@ -110,10 +110,13 @@ impl ModelCapabilities {
         }
     }
 
-    pub const fn with_validated_phase8(mut self, phase8: ValidatedPhase8Capabilities) -> Self {
+    pub const fn with_validated_quick_select_eq(
+        mut self,
+        capabilities: QuickSelectEqCapabilities,
+    ) -> Self {
         if matches!(self.model, Model::AvrX3800h) {
-            self.quick_select_recall = phase8.quick_select_recall;
-            self.eq_status = phase8.eq_status;
+            self.quick_select_recall = capabilities.quick_select_recall;
+            self.eq_status = capabilities.eq_status;
         }
         self
     }
@@ -220,7 +223,7 @@ mod tests {
     }
 
     #[test]
-    fn phase8_candidates_do_not_inherit_main_zone_validation() {
+    fn quick_select_eq_candidates_do_not_inherit_main_zone_validation() {
         let capabilities = ModelCapabilities::for_model(Model::AvrX3800h);
         assert!(capabilities.writable);
         assert!(!capabilities.quick_select_recall);
@@ -228,9 +231,9 @@ mod tests {
     }
 
     #[test]
-    fn validated_phase8_profile_is_explicit_opt_in() {
-        let capabilities = ModelCapabilities::for_model(Model::AvrX3800h).with_validated_phase8(
-            ValidatedPhase8Capabilities {
+    fn validated_quick_select_eq_profile_is_explicit_opt_in() {
+        let capabilities = ModelCapabilities::for_model(Model::AvrX3800h)
+            .with_validated_quick_select_eq(QuickSelectEqCapabilities {
                 quick_select_recall: true,
                 eq_status: true,
             },
@@ -240,9 +243,9 @@ mod tests {
     }
 
     #[test]
-    fn unknown_models_never_inherit_phase8_validation() {
-        let capabilities = ModelCapabilities::for_model(Model::Unknown).with_validated_phase8(
-            ValidatedPhase8Capabilities {
+    fn unknown_models_never_inherit_quick_select_eq_validation() {
+        let capabilities = ModelCapabilities::for_model(Model::Unknown)
+            .with_validated_quick_select_eq(QuickSelectEqCapabilities {
                 quick_select_recall: true,
                 eq_status: true,
             },

@@ -38,13 +38,23 @@ The companion HTTP probe uses the receiver's read-only
 x3800h-http-info-probe <receiver-host> <timeout-ms> <model> <firmware> [port]
 ```
 
-It requests `GetAudioInfo`, `GetInputSignal`, and `GetActiveSpeaker`, then
-prints the raw XML and each returned parameter's `name`, `control`, and value.
+It sends the five-command read-only request used by independent Denon
+captures: `GetInputSignal`, `GetActiveSpeaker`, `GetVideoInfo`,
+`GetAudioInfo`, and `GetAudyssyInfo`. It prints the exact request XML, raw
+XML response, and each returned parameter's `name`, `control`, and value. If
+the receiver returns an empty `<rx/>`, it automatically retries
+`GetInputSignal` and `GetActiveSpeaker` as separate requests; this detects
+receivers that reject batched AppCommand queries.
+The fallback also probes `GetAudioInfo` separately, so an unsupported channel
+query cannot hide otherwise working audio-format information.
 The `control` attribute is deliberately retained as raw evidence; its meaning
 must be correlated with front-panel indicators before it is used as a channel
 map. The HTTP request contains no state-changing operation. XML construction
 and parsing live in `src/protocol/app_command.rs`; socket and bounded-response
 handling live in `src/infrastructure/app_command_http.rs`.
+The probe uses a curl-compatible `Content-Type: text/xml; charset=utf-8`
+request header, matching the X3800H web-control response format observed in
+field captures.
 
 Denon's X3800H manual documents browser-based web control and instructs users
 to enable `Network Control` → `Always On` for web and app access. Denon's

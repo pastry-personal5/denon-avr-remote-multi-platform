@@ -100,6 +100,10 @@ mod tests {
         ) -> Result<SessionEvent, OperationError> {
             unreachable!()
         }
+
+        fn query_audio_context(&mut self) -> AudioContextSnapshot {
+            AudioContextSnapshot::default()
+        }
     }
 
     #[test]

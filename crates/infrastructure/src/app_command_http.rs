@@ -52,12 +52,46 @@ impl AppCommandHttpClient {
         self.post_xml(APP_COMMAND_0300_PATH, &body)
     }
 
+    pub fn execute_xml_at(&self, path: &str, body: &str) -> io::Result<RawHttpResponse> {
+        if !path.starts_with('/') || path.contains(['\r', '\n']) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "HTTP request path is invalid",
+            ));
+        }
+        self.post_xml(path, body)
+    }
+
     pub fn get_audio_information(&self) -> io::Result<AppCommandExchange> {
         self.execute_and_parse(&AppCommandRequest::audio_information())
     }
 
+    pub fn get_input_signal(&self) -> io::Result<AppCommandExchange> {
+        self.execute_and_parse(&AppCommandRequest::input_signal())
+    }
+
+    pub fn get_active_speaker(&self) -> io::Result<AppCommandExchange> {
+        self.execute_and_parse(&AppCommandRequest::active_speaker())
+    }
+
+    pub fn get_audio_info(&self) -> io::Result<AppCommandExchange> {
+        self.execute_and_parse(&AppCommandRequest::audio_info())
+    }
+
     pub fn execute_and_parse(&self, request: &AppCommandRequest) -> io::Result<AppCommandExchange> {
         let http = self.execute(request)?;
+        parse_app_command_exchange(http)
+    }
+
+    pub fn execute_and_parse_at(
+        &self,
+        path: &str,
+        request: &AppCommandRequest,
+    ) -> io::Result<AppCommandExchange> {
+        let body = request
+            .to_xml()
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+        let http = self.execute_xml_at(path, &body)?;
         parse_app_command_exchange(http)
     }
 
@@ -153,7 +187,7 @@ fn build_request(host: &str, port: u16, path: &str, body: &str) -> String {
         format!("{host}:{port}")
     };
     format!(
-        "POST {path} HTTP/1.1\r\nHost: {authority}\r\nAccept: application/xml\r\nContent-Type: application/xml; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\nUser-Agent: denon-avr-remote/1.0\r\n\r\n{body}",
+        "POST {path} HTTP/1.1\r\nHost: {authority}\r\nAccept: */*\r\nContent-Type: text/xml; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\nUser-Agent: curl/8.0\r\n\r\n{body}",
         body.len()
     )
 }
@@ -386,8 +420,8 @@ mod tests {
         let request = build_request("receiver", 8080, APP_COMMAND_0300_PATH, "<tx/>");
         assert!(request.starts_with("POST /goform/AppCommand0300.xml HTTP/1.1\r\n"));
         assert!(request.contains("Host: receiver:8080\r\n"));
-        assert!(request.contains("Accept: application/xml\r\n"));
-        assert!(request.contains("Content-Type: application/xml; charset=utf-8\r\n"));
+        assert!(request.contains("Accept: */*\r\n"));
+        assert!(request.contains("Content-Type: text/xml; charset=utf-8\r\n"));
         assert!(request.contains("Content-Length: 5\r\n"));
         assert!(request.contains("Connection: close\r\n"));
     }

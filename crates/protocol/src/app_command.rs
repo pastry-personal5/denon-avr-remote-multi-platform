@@ -11,6 +11,7 @@ use quick_xml::{Reader, Writer, XmlVersion};
 use std::collections::BTreeMap;
 
 pub const APP_COMMAND_0300_PATH: &str = "/goform/AppCommand0300.xml";
+pub const APP_COMMAND_0301_PATH: &str = "/goform/AppCommand0301.xml";
 const QUERY_ID: &str = "3";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,16 +63,50 @@ impl AppCommandRequest {
 
     pub fn audio_information() -> Self {
         Self::new(vec![
+            AppCommandQuery::new("GetInputSignal", ["inputsigall"])
+                .expect("built-in query is valid"),
+            AppCommandQuery::new("GetActiveSpeaker", ["activespall"])
+                .expect("built-in query is valid"),
+            AppCommandQuery::new("GetVideoInfo", ["videooutput", "hdmisigin", "hdmisigout"])
+                .expect("built-in query is valid"),
             AppCommandQuery::new(
                 "GetAudioInfo",
                 ["inputmode", "output", "signal", "sound", "fs"],
             )
             .expect("built-in query is valid"),
-            AppCommandQuery::new("GetInputSignal", ["inputsigall"])
-                .expect("built-in query is valid"),
-            AppCommandQuery::new("GetActiveSpeaker", ["activespall"])
-                .expect("built-in query is valid"),
+            AppCommandQuery::new(
+                "GetAudyssyInfo",
+                ["eqname", "eqvalue", "dynamiceq", "dynamicvol"],
+            )
+            .expect("built-in query is valid"),
         ])
+        .expect("built-in request is valid")
+    }
+
+    pub fn input_signal() -> Self {
+        Self::new(vec![AppCommandQuery::new(
+            "GetInputSignal",
+            ["inputsigall"],
+        )
+        .expect("built-in query is valid")])
+        .expect("built-in request is valid")
+    }
+
+    pub fn active_speaker() -> Self {
+        Self::new(vec![AppCommandQuery::new(
+            "GetActiveSpeaker",
+            ["activespall"],
+        )
+        .expect("built-in query is valid")])
+        .expect("built-in request is valid")
+    }
+
+    pub fn audio_info() -> Self {
+        Self::new(vec![AppCommandQuery::new(
+            "GetAudioInfo",
+            ["inputmode", "output", "signal", "sound", "fs"],
+        )
+        .expect("built-in query is valid")])
         .expect("built-in request is valid")
     }
 
@@ -423,9 +458,13 @@ mod tests {
     fn audio_information_request_is_read_only_and_well_formed() {
         let request = AppCommandRequest::audio_information();
         let xml = request.to_xml().unwrap();
-        assert_eq!(request.queries().len(), 3);
+        assert_eq!(request.queries().len(), 5);
         assert!(xml.starts_with("<?xml version=\"1.0\" encoding=\"utf-8\"?>"));
         assert!(xml.contains("<name>GetAudioInfo</name>"));
+        assert!(xml.contains("<name>GetInputSignal</name>"));
+        assert!(xml.contains("<name>GetActiveSpeaker</name>"));
+        assert!(xml.contains("<name>GetVideoInfo</name>"));
+        assert!(xml.contains("<name>GetAudyssyInfo</name>"));
         assert!(xml.contains("<param name=\"inputsigall\"></param>"));
         assert!(!xml.contains("Set"));
     }

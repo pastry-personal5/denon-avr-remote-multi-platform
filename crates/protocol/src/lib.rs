@@ -6,6 +6,7 @@
 pub mod app_command;
 pub mod avr;
 pub mod heos;
+pub mod source_catalog;
 
 pub use app_command::{
     parse_app_command_response, AppCommandParameter, AppCommandProtocolError, AppCommandQuery,

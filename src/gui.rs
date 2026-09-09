@@ -12,7 +12,7 @@ use crate::application::{
 use crate::domain::{
     ConfiguredReceivers, EqFeature, EqStatus, ListeningModeGroup, MainZoneControl,
     MainZoneSnapshot, Model, ModelCapabilities, PowerState, QuickSelectSlot, QuickSelectSnapshot,
-    Registered, ValidatedPhase8Capabilities,
+    QuickSelectEqCapabilities, Registered,
 };
 use crate::infrastructure::{AvrSessionFactory, SsdpDiscoveryAdapter, YamlConfigRepository};
 use iced::futures::SinkExt;
@@ -51,7 +51,7 @@ enum BridgeCommand {
     Refresh(u64),
     Disconnect(u64),
     Control(u64, MainZoneControl, Option<u64>),
-    RefreshPhase8(u64),
+    RefreshQuickSelectEq(u64),
     RecallQuickSelect(u64, QuickSelectSlot, Option<u64>),
     Shutdown(u64),
 }
@@ -61,7 +61,7 @@ enum BridgeCommand {
 pub struct ControllerBridge {
     commands: mpsc::Sender<BridgeCommand>,
     events: Arc<Mutex<mpsc::Receiver<BridgeEvent>>>,
-    validated_phase8: Option<ValidatedPhase8Capabilities>,
+    validated_quick_select_eq: Option<QuickSelectEqCapabilities>,
 }
 
 impl ControllerBridge {
@@ -73,7 +73,7 @@ impl ControllerBridge {
         factory: F,
         config: crate::application::ControllerConfig,
     ) -> Self {
-        let validated_phase8 = config.validated_phase8;
+        let validated_quick_select_eq = config.validated_quick_select_eq;
         let (commands, mut command_rx) = mpsc::channel(16);
         let (event_sender, event_rx) = mpsc::channel(32);
         let events = Arc::new(Mutex::new(event_rx));
@@ -84,7 +84,7 @@ impl ControllerBridge {
         Self {
             commands,
             events: Arc::clone(&events),
-            validated_phase8,
+            validated_quick_select_eq,
         }
     }
 
@@ -146,7 +146,7 @@ async fn run_bridge(
             BridgeCommand::Control(id, control, version) => {
                 (id, handle.control(control, version).await)
             }
-            BridgeCommand::RefreshPhase8(id) => (id, handle.refresh_phase8().await),
+            BridgeCommand::RefreshQuickSelectEq(id) => (id, handle.refresh_quick_select_eq().await),
             BridgeCommand::RecallQuickSelect(id, slot, expected_version) => {
                 (id, handle.recall_quick_select(slot, expected_version).await)
             }
@@ -219,7 +219,7 @@ pub enum Message {
     Unmute,
     SelectListeningModeGroup(ListeningModeGroup),
     SelectSurroundMode(String),
-    RefreshPhase8,
+    RefreshQuickSelectEq,
     RecallQuickSelect(QuickSelectSlot),
     Shutdown,
     Bridge(Box<BridgeEvent>),
@@ -240,13 +240,13 @@ pub struct Gui {
     pub generation: u64,
     pub quick_select: QuickSelectSnapshot,
     pub eq_status: EqStatus,
-    validated_phase8: Option<ValidatedPhase8Capabilities>,
+    validated_quick_select_eq: Option<QuickSelectEqCapabilities>,
     bridge: ControllerBridge,
 }
 
 impl Gui {
     pub fn new(bridge: ControllerBridge) -> Self {
-        let validated_phase8 = bridge.validated_phase8;
+        let validated_quick_select_eq = bridge.validated_quick_select_eq;
         Self {
             route: Route::Dashboard,
             window_class: WindowClass::Wide,
@@ -262,7 +262,7 @@ impl Gui {
             generation: 0,
             quick_select: QuickSelectSnapshot::default(),
             eq_status: EqStatus::default(),
-            validated_phase8,
+            validated_quick_select_eq,
             bridge,
         }
     }
@@ -287,10 +287,10 @@ impl Gui {
             .map(|model| Model::from_reported(&model))
             .unwrap_or(Model::Unknown);
         ModelCapabilities::for_model(model)
-            .with_validated_phase8(self.validated_phase8.unwrap_or_default())
+            .with_validated_quick_select_eq(self.validated_quick_select_eq.unwrap_or_default())
     }
 
-    fn invalidate_phase8(&mut self) {
+    fn invalidate_quick_select_eq(&mut self) {
         self.quick_select.invalidate();
         self.eq_status.invalidate();
         self.quick_select.generation = self.generation;
@@ -341,7 +341,7 @@ impl Gui {
             Message::Select(selection) => {
                 self.selection = Some(selection.clone());
                 self.snapshot.invalidate();
-                self.invalidate_phase8();
+                self.invalidate_quick_select_eq();
                 let id = self.next_request();
                 self.command(BridgeCommand::Select(id, selection))
             }
@@ -371,10 +371,10 @@ impl Gui {
                     Task::none()
                 }
             },
-            Message::RefreshPhase8 => {
+            Message::RefreshQuickSelectEq => {
                 let id = self.next_request();
                 self.announcement = "Refreshing EQ status…".into();
-                self.command(BridgeCommand::RefreshPhase8(id))
+                self.command(BridgeCommand::RefreshQuickSelectEq(id))
             }
             Message::RecallQuickSelect(slot) => {
                 let id = self.next_request();
@@ -451,7 +451,7 @@ impl Gui {
                                 | crate::application::Lifecycle::Reconnecting { .. }
                                 | crate::application::Lifecycle::Disconnected
                         ) {
-                            self.invalidate_phase8();
+                            self.invalidate_quick_select_eq();
                         }
                         self.lifecycle = lifecycle;
                     }
@@ -566,10 +566,10 @@ impl Gui {
             .value()
             .map(ToString::to_string)
             .unwrap_or_else(|| "Unavailable".into());
-        let phase8_capabilities = self.selected_capabilities();
-        let writable = phase8_capabilities.writable;
-        let quick_select_supported = phase8_capabilities.quick_select_recall;
-        let phase8_status_supported = phase8_capabilities.eq_status;
+        let capabilities = self.selected_capabilities();
+        let writable = capabilities.writable;
+        let quick_select_supported = capabilities.quick_select_recall;
+        let eq_status_supported = capabilities.eq_status;
         let controls = if writable {
             row![
                 button("Mute").on_press(Message::Mute),
@@ -629,7 +629,7 @@ impl Gui {
                     ))]
             } else {
                 row![text(
-                    "Quick Select is unavailable until Phase 8 protocol evidence is validated."
+                    "Quick Select is unavailable until protocol evidence is validated."
                 )]
             },
             QuickSelectSlot::ALL
@@ -637,11 +637,11 @@ impl Gui {
                 .fold(column![].spacing(4), |page, slot| page
                     .push(text(quick_select_line(&self.quick_select, slot)))),
             text("EQ Status").size(22),
-            if phase8_status_supported {
-                row![button("Refresh EQ status").on_press(Message::RefreshPhase8)]
+            if eq_status_supported {
+                row![button("Refresh EQ status").on_press(Message::RefreshQuickSelectEq)]
             } else {
                 row![text(
-                    "EQ status is unavailable until Phase 8 protocol evidence is validated."
+                    "EQ status is unavailable until protocol evidence is validated."
                 )]
             },
             text(eq_summary(&self.eq_status)),
@@ -910,11 +910,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn gui_uses_explicit_phase8_validation_for_known_models() {
+    async fn gui_uses_explicit_quick_select_eq_validation_for_known_models() {
         let bridge = ControllerBridge::new_with_config(
             AvrSessionFactory::default(),
             crate::application::ControllerConfig {
-                validated_phase8: Some(crate::domain::ValidatedPhase8Capabilities {
+                validated_quick_select_eq: Some(crate::domain::QuickSelectEqCapabilities {
                     quick_select_recall: true,
                     eq_status: true,
                 }),

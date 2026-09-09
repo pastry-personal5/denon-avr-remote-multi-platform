@@ -15,7 +15,7 @@ pub use audio_context::{
     Observed, OutputChannelLayout, Provenance, RawObservation, SampleRate, SignalCodec,
     SignalFlags, SignalFormat,
 };
-pub use capabilities::{Model, ModelCapabilities, ValidatedPhase8Capabilities};
+pub use capabilities::{Model, ModelCapabilities, QuickSelectEqCapabilities};
 pub use eq_status::{EqEvidence, EqFeature, EqState, EqStatus};
 pub use main_zone::{
     AudioContextField, AudioContextValue, ConnectionState, FieldError, FieldErrorKind, FieldStatus,

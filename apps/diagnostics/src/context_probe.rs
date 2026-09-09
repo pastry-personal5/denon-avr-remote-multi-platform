@@ -19,7 +19,7 @@ const COMMANDS: [&str; 16] = [
     "OPINFASP ?",
     "SYSMI ?",
     "SSINFAISFSV ?",
-    // Phase 8 EQ read-only candidates. Quick Select recall is execute-only
+    // EQ read-only candidates. Quick Select recall is execute-only
     // and is intentionally excluded from this diagnostic probe.
     "PSMULTEQ: ?",
     "PSDYNEQ ?",

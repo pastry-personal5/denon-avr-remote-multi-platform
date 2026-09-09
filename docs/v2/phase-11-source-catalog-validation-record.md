@@ -1,6 +1,6 @@
 # Phase 11 source-catalog validation record
 
-**Status: Open — no validated profile or product catalog reader exists.**
+**Status: Open — product code is capability-gated; no validated profile is enabled.**
 
 This is the provenance record required before enabling source-catalog reads.
 Do not replace these fields with invented responses or promote the candidate

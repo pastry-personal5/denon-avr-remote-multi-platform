@@ -1,14 +1,14 @@
 # Version 2 - Phase 11 Source Catalog Architecture
 
-**Status: Evidence-gated follow-on — no product catalog reader is enabled.**
+**Status: Implemented behind an evidence gate — no production profile is enabled.**
 
 ## Research summary
 
-The sole implementation before validation is the diagnostic-only
-`source-catalog-probe` in `apps/diagnostics`. It accepts an explicit HTTP
-AppCommand endpoint, sends candidate read commands only, and records raw
-exchange evidence. It is not linked to controller, GUI, or receiver session
-code. Product work below is conditional on the completed validation record.
+The diagnostic-only `source-catalog-probe` in `apps/diagnostics` remains the
+sole authorized live-validation tool until the record is complete. The product
+reader is implemented but is disabled by default and requires an explicit,
+model/firmware-specific Phase 11 validation capability. It sends candidate
+read commands only and never exposes rename or visibility writes.
 
 Denon's X3800H manual separates two receiver-owned settings under **Inputs**:
 

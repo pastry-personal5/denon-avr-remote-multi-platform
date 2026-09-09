@@ -3,7 +3,7 @@
 use denon_avr_application::controller::{ReceiverSession, SessionEvent as ControllerSessionEvent};
 use denon_avr_application::{
     AsyncControlGateway, AsyncStatusGateway, BoxFuture, OperationError, OperationErrorKind,
-    SessionEvent,
+    SessionEvent, SourceCatalogReader,
 };
 use denon_avr_domain::{
     AudioContextSnapshot, Confidence, ConnectionState, EqEvidence, EqFeature, EqState, EqStatus,
@@ -37,6 +37,7 @@ pub struct AvrSessionConfig {
     pub reconnect_attempts: usize,
     pub reconnect_delay: Duration,
     pub max_line_length: usize,
+    pub app_command_port: u16,
 }
 
 impl Default for AvrSessionConfig {
@@ -48,6 +49,7 @@ impl Default for AvrSessionConfig {
             reconnect_attempts: 3,
             reconnect_delay: Duration::from_millis(250),
             max_line_length: DEFAULT_MAX_LINE_LENGTH,
+            app_command_port: 80,
         }
     }
 }
@@ -118,6 +120,9 @@ pub struct AvrSession {
     generation: Arc<AtomicU64>,
     snapshot: Arc<Mutex<MainZoneSnapshot>>,
     task_handle: JoinHandle<()>,
+    source_catalog_host: String,
+    source_catalog_port: u16,
+    source_catalog_timeout: Duration,
 }
 
 /// Production session factory used by persistent application clients.
@@ -149,13 +154,17 @@ impl AvrSession {
             .map_err(|error| AvrSessionError::Connection(error.to_string()))?
             .next()
             .ok_or_else(|| AvrSessionError::Connection("host has no address".to_owned()))?;
-        Self::connect_addr(address, config).await
+        let mut session = Self::connect_addr(address, config).await?;
+        session.source_catalog_host = host.to_owned();
+        Ok(session)
     }
 
     pub async fn connect_addr(
         address: SocketAddr,
         config: AvrSessionConfig,
     ) -> Result<Self, AvrSessionError> {
+        let source_catalog_port = config.app_command_port;
+        let source_catalog_timeout = config.response_timeout;
         let reader = connect_socket(address, &config).await?;
         let (requests, request_rx) = mpsc::channel(16);
         let (event_tx, events) = mpsc::channel(32);
@@ -176,6 +185,9 @@ impl AvrSession {
             generation,
             snapshot,
             task_handle,
+            source_catalog_host: address.ip().to_string(),
+            source_catalog_port,
+            source_catalog_timeout,
         })
     }
 
@@ -405,6 +417,14 @@ impl AsyncControlGateway for AvrSession {
     }
 }
 
+impl SourceCatalogReader for AvrSession {
+    fn refresh_source_catalog(
+        &mut self,
+    ) -> BoxFuture<'_, Result<denon_avr_domain::SourceCatalogObservation, OperationError>> {
+        <Self as ReceiverSession>::refresh_source_catalog(self)
+    }
+}
+
 impl ReceiverSession for AvrSession {
     fn query_field(
         &mut self,
@@ -507,6 +527,39 @@ impl ReceiverSession for AvrSession {
                 Freshness::Live
             };
             Ok(status)
+        })
+    }
+
+    fn refresh_source_catalog(
+        &mut self,
+    ) -> BoxFuture<'_, Result<denon_avr_domain::SourceCatalogObservation, OperationError>> {
+        let endpoint = denon_avr_domain::ReceiverEndpoint {
+            host: self.source_catalog_host.clone(),
+            port: self.source_catalog_port,
+        };
+        let timeout = self.source_catalog_timeout;
+        let generation = self.connection_generation();
+        Box::pin(async move {
+            tokio::task::spawn_blocking(move || {
+                crate::SourceCatalogHttpClient::new(endpoint, timeout)
+                    .and_then(|client| client.read(generation))
+            })
+            .await
+            .map_err(|error| {
+                OperationError::new(
+                    OperationErrorKind::Stopped,
+                    "reading source catalog",
+                    error.to_string(),
+                )
+            })?
+            .map_err(|error| {
+                let kind = match error.kind() {
+                    std::io::ErrorKind::TimedOut => OperationErrorKind::Timeout,
+                    std::io::ErrorKind::InvalidData => OperationErrorKind::Malformed,
+                    _ => OperationErrorKind::Connection,
+                };
+                OperationError::new(kind, "reading source catalog", error.to_string())
+            })
         })
     }
 }

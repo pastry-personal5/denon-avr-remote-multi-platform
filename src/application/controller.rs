@@ -5,7 +5,7 @@ use crate::domain::{
     AudioContextSnapshot, ConnectionState, DiscoveredReceiver, EqStatus, MainZoneControl,
     MainZoneEvent, MainZoneField, MainZoneSnapshot, MainZoneValue, Model, ModelCapabilities,
     QuickSelectRecallConfirmation, QuickSelectRecallOutcome, QuickSelectSlot, QuickSelectSnapshot,
-    ReceiverIdentity, StateAuthority, ValidatedPhase8Capabilities,
+    QuickSelectEqCapabilities, ReceiverIdentity, StateAuthority,
 };
 use std::sync::Arc;
 use std::time::Duration;
@@ -85,7 +85,7 @@ pub enum ReceiverCommand {
         control: MainZoneControl,
         expected_version: Option<u64>,
     },
-    RefreshPhase8,
+    RefreshQuickSelectEq,
     RecallQuickSelect {
         slot: QuickSelectSlot,
         expected_version: Option<u64>,
@@ -167,9 +167,9 @@ pub struct ControllerConfig {
     pub close_timeout: Duration,
     pub queue_capacity: usize,
     pub sleeper: Arc<dyn Sleeper>,
-    /// Explicit model/firmware validation output. `None` keeps Phase 8
+    /// Explicit model/firmware validation output. `None` keeps Quick Select/EQ
     /// operations read-only even for a known X3800H.
-    pub validated_phase8: Option<ValidatedPhase8Capabilities>,
+    pub validated_quick_select_eq: Option<QuickSelectEqCapabilities>,
 }
 impl Default for ControllerConfig {
     fn default() -> Self {
@@ -179,7 +179,7 @@ impl Default for ControllerConfig {
             close_timeout: Duration::from_secs(1),
             queue_capacity: 32,
             sleeper: Arc::new(TokioSleeper),
-            validated_phase8: None,
+            validated_quick_select_eq: None,
         }
     }
 }
@@ -230,8 +230,8 @@ impl ControllerHandle {
     pub async fn shutdown(&self) -> Result<CommandReply, OperationError> {
         self.send(ReceiverCommand::Shutdown).await
     }
-    pub async fn refresh_phase8(&self) -> Result<CommandReply, OperationError> {
-        self.send(ReceiverCommand::RefreshPhase8).await
+    pub async fn refresh_quick_select_eq(&self) -> Result<CommandReply, OperationError> {
+        self.send(ReceiverCommand::RefreshQuickSelectEq).await
     }
     pub async fn recall_quick_select(
         &self,
@@ -259,7 +259,7 @@ impl ReceiverController {
         let (commands, mut rx) = mpsc::channel::<Envelope>(config.queue_capacity.max(1));
         let (events, event_rx) = mpsc::channel::<ReceiverEvent>(config.queue_capacity.max(1));
         tokio::spawn(async move {
-            let validated_phase8 = config.validated_phase8;
+            let validated_quick_select_eq = config.validated_quick_select_eq;
             let mut state = State {
                 factory,
                 config,
@@ -271,7 +271,7 @@ impl ReceiverController {
                 generation: 0,
                 quick_select: QuickSelectSnapshot::default(),
                 eq_status: EqStatus::default(),
-                validated_phase8,
+                validated_quick_select_eq,
             };
             while let Some(envelope) = rx.recv().await {
                 let stop = matches!(envelope.command, ReceiverCommand::Shutdown);
@@ -307,7 +307,7 @@ struct State<F> {
     generation: u64,
     quick_select: QuickSelectSnapshot,
     eq_status: EqStatus,
-    validated_phase8: Option<ValidatedPhase8Capabilities>,
+    validated_quick_select_eq: Option<QuickSelectEqCapabilities>,
 }
 impl<F: SessionFactory> State<F> {
     async fn handle(
@@ -335,8 +335,8 @@ impl<F: SessionFactory> State<F> {
                 self.refresh(events).await?;
                 Ok(Some(ReceiverEvent::Snapshot(self.snapshot.clone())))
             }
-            ReceiverCommand::RefreshPhase8 => {
-                self.refresh_phase8(events).await?;
+            ReceiverCommand::RefreshQuickSelectEq => {
+                self.refresh_quick_select_eq(events).await?;
                 Ok(Some(ReceiverEvent::EqStatus(Box::new(
                     self.eq_status.clone(),
                 ))))
@@ -389,7 +389,7 @@ impl<F: SessionFactory> State<F> {
             Ok(s) => {
                 self.session = Some(s);
                 self.generation += 1;
-                self.invalidate_phase8();
+                self.invalidate_quick_select_eq();
                 self.lifecycle = Lifecycle::Connected {
                     generation: self.generation,
                 };
@@ -416,11 +416,11 @@ impl<F: SessionFactory> State<F> {
         } else {
             Lifecycle::NoReceiver
         };
-        self.invalidate_phase8();
+        self.invalidate_quick_select_eq();
         Ok(())
     }
 
-    fn invalidate_phase8(&mut self) {
+    fn invalidate_quick_select_eq(&mut self) {
         self.quick_select.invalidate();
         self.eq_status.invalidate();
         self.quick_select.generation = self.generation;
@@ -445,7 +445,7 @@ impl<F: SessionFactory> State<F> {
                         generation: self.generation,
                     };
                     self.snapshot.invalidate();
-                    self.invalidate_phase8();
+                    self.invalidate_quick_select_eq();
                     Self::emit(events, ReceiverEvent::Lifecycle(self.lifecycle.clone())).await;
                 }
                 Ok(SessionEvent::Connection(ConnectionState::Connected)) => {
@@ -459,7 +459,7 @@ impl<F: SessionFactory> State<F> {
                 Ok(SessionEvent::Connection(ConnectionState::Disconnected)) => {
                     self.lifecycle = Lifecycle::Disconnected;
                     self.snapshot.invalidate();
-                    self.invalidate_phase8();
+                    self.invalidate_quick_select_eq();
                     Self::emit(events, ReceiverEvent::Lifecycle(self.lifecycle.clone())).await;
                 }
                 Ok(SessionEvent::MainZone(event)) => {
@@ -472,7 +472,7 @@ impl<F: SessionFactory> State<F> {
                     });
                     self.lifecycle = Lifecycle::Disconnected;
                     self.snapshot.invalidate();
-                    self.invalidate_phase8();
+                    self.invalidate_quick_select_eq();
                     Self::emit(events, ReceiverEvent::Lifecycle(self.lifecycle.clone())).await;
                     return;
                 }
@@ -525,7 +525,7 @@ impl<F: SessionFactory> State<F> {
         Self::emit(events, ReceiverEvent::Snapshot(self.snapshot.clone())).await;
         Ok(())
     }
-    async fn refresh_phase8(
+    async fn refresh_quick_select_eq(
         &mut self,
         events: &mpsc::Sender<ReceiverEvent>,
     ) -> Result<(), OperationError> {
@@ -635,7 +635,7 @@ impl<F: SessionFactory> State<F> {
             .map(|value| Model::from_reported(&value))
             .unwrap_or(Model::Unknown);
         ModelCapabilities::for_model(model)
-            .with_validated_phase8(self.validated_phase8.unwrap_or_default())
+            .with_validated_quick_select_eq(self.validated_quick_select_eq.unwrap_or_default())
     }
     async fn control(
         &mut self,
@@ -894,7 +894,7 @@ mod tests {
     #[tokio::test]
     async fn validated_profile_preserves_authoritative_recall_result() {
         let config = ControllerConfig {
-            validated_phase8: Some(ValidatedPhase8Capabilities {
+            validated_quick_select_eq: Some(QuickSelectEqCapabilities {
                 quick_select_recall: true,
                 eq_status: true,
             }),
@@ -917,7 +917,7 @@ mod tests {
     #[tokio::test]
     async fn stale_quick_select_version_is_rejected_before_dispatch() {
         let config = ControllerConfig {
-            validated_phase8: Some(ValidatedPhase8Capabilities {
+            validated_quick_select_eq: Some(QuickSelectEqCapabilities {
                 quick_select_recall: true,
                 eq_status: true,
             }),
@@ -941,7 +941,7 @@ mod tests {
     #[tokio::test]
     async fn eq_refresh_returns_status_with_controller_generation() {
         let config = ControllerConfig {
-            validated_phase8: Some(ValidatedPhase8Capabilities {
+            validated_quick_select_eq: Some(QuickSelectEqCapabilities {
                 quick_select_recall: false,
                 eq_status: true,
             }),
@@ -949,7 +949,7 @@ mod tests {
         };
         let handle = ReceiverController::spawn(FakeFactory, config);
         handle.select(selection()).await.unwrap();
-        let reply = handle.refresh_phase8().await.unwrap();
+        let reply = handle.refresh_quick_select_eq().await.unwrap();
         let Some(ReceiverEvent::EqStatus(status)) = reply else {
             panic!("EQ refresh did not return an EQ status snapshot")
         };
@@ -960,7 +960,7 @@ mod tests {
     #[tokio::test]
     async fn quick_select_only_profile_rejects_status_refresh() {
         let config = ControllerConfig {
-            validated_phase8: Some(ValidatedPhase8Capabilities {
+            validated_quick_select_eq: Some(QuickSelectEqCapabilities {
                 quick_select_recall: true,
                 eq_status: false,
             }),
@@ -968,7 +968,7 @@ mod tests {
         };
         let handle = ReceiverController::spawn(FakeFactory, config);
         handle.select(selection()).await.unwrap();
-        let error = handle.refresh_phase8().await.unwrap_err();
+        let error = handle.refresh_quick_select_eq().await.unwrap_err();
         assert_eq!(error.kind, OperationErrorKind::Unsupported);
     }
 }

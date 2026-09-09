@@ -1,13 +1,13 @@
 # Version 2 - Phase 11 Source Catalog Overview
 
-**Status: Separate evidence-gated follow-on increment — diagnostic capture only.**
+**Status: Implemented, evidence-gated follow-on — diagnostic capture still required before enablement.**
 
 This follow-on increment makes the desktop app use the source names and source
 visibility chosen on the receiver. It is not a dependency of visual-identity
 completion. It does not replace the canonical receiver-control boundary or
 turn an unverified protocol observation into a writable capability.
 
-Before product code, use the diagnostic-only read-only `source-catalog-probe`
+Before enabling product reads, use the diagnostic-only read-only `source-catalog-probe`
 with an explicit AppCommand endpoint. It records candidate request XML, HTTP
 status, and raw response XML and cannot change receiver state. The required
 trace sequence and its current status are in the
@@ -59,6 +59,7 @@ Do not add Rename, Reset name, Hide, or Show desktop controls until a separate l
 - A receiver-hidden source is absent from every selectable list, while an active hidden source remains accurately reported without becoming selectable.
 - All source commands use canonical identifiers, never human display labels.
 - Catalog failures cannot replace a known label with a guessed one or expose an input as hidden; lifecycle and freshness language explain the state.
+- Diagnostics reports catalog freshness and entry count, and Quick Select source summaries use the same receiver-owned labels when a preset includes an input.
 - Fixture, parser, controller, GUI reducer, accessibility, and visual cases cover renamed, hidden, active-hidden, defaults, partial replies, failure, reconnect, and stale-result rejection.
 
 The detailed layer design and implementation order are in [the source-catalog architecture](phase-11-source-catalog-architecture.md).

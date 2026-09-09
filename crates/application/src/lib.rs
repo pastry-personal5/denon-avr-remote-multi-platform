@@ -21,7 +21,7 @@ pub use main_zone_status::{
 pub use ports::{
     AsyncConfigRepository, AsyncControlGateway, AsyncReceiverDiscovery, AsyncStatusGateway,
     BoxFuture, ConfigRepository, ControlGateway, OperationError, OperationErrorKind,
-    ReceiverDiscovery, SessionEvent, StatusGateway,
+    ReceiverDiscovery, SessionEvent, SourceCatalogReader, StatusGateway,
 };
 pub use receiver_selection::{
     resolve_receiver, resolve_status_receiver, resolve_status_receiver_with_probe, ResolvedReceiver,

@@ -269,6 +269,10 @@ impl StatusGateway for SyncAvrClient {
             event => SessionEvent::MainZone(event),
         })
     }
+
+    fn query_audio_context(&mut self) -> AudioContextSnapshot {
+        SyncAvrClient::query_audio_context(self)
+    }
 }
 
 impl ControlGateway for SyncAvrClient {

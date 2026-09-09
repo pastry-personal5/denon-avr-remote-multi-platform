@@ -10,9 +10,9 @@ use denon_avr_application::{
 };
 use denon_avr_domain::{
     ConfiguredReceivers, EqStatus, Input, ListeningModeGroup, MainZoneControl, MainZoneSnapshot,
-    MainZoneValue, Model, ModelCapabilities, MuteState, PowerState, QuickSelectSlot,
-    QuickSelectSnapshot, ReceiverIdentity, StateAuthority, SurroundMode,
-    ValidatedPhase8Capabilities, Volume,
+    MainZoneValue, Model, ModelCapabilities, MuteState, PowerState, QuickSelectEqCapabilities,
+    QuickSelectSlot, QuickSelectSnapshot, ReceiverIdentity, SourceCatalog,
+    SourceCatalogCapabilities, SourceVisibility, StateAuthority, SurroundMode, Volume,
 };
 use iced::futures::SinkExt;
 use iced::widget::{
@@ -75,7 +75,8 @@ enum BridgeCommand {
     Refresh(u64),
     Disconnect(u64),
     Control(u64, MainZoneControl, Option<u64>),
-    RefreshPhase8(u64),
+    RefreshQuickSelectEq(u64),
+    RefreshSourceCatalog(u64),
     RecallQuickSelect(u64, QuickSelectSlot, Option<u64>),
     Shutdown(u64),
 }
@@ -85,7 +86,8 @@ enum BridgeCommand {
 pub struct ControllerBridge {
     commands: mpsc::Sender<BridgeCommand>,
     events: Arc<Mutex<mpsc::Receiver<BridgeEvent>>>,
-    validated_phase8: Option<ValidatedPhase8Capabilities>,
+    validated_quick_select_eq: Option<QuickSelectEqCapabilities>,
+    validated_source_catalog: Option<SourceCatalogCapabilities>,
 }
 
 /// Presentation-facing service ports supplied by the desktop composition root.
@@ -105,7 +107,8 @@ impl ControllerBridge {
         factory: F,
         config: denon_avr_application::ControllerConfig,
     ) -> Self {
-        let validated_phase8 = config.validated_phase8;
+        let validated_quick_select_eq = config.validated_quick_select_eq;
+        let validated_source_catalog = config.validated_source_catalog;
         let (commands, mut command_rx) = mpsc::channel(16);
         let (event_sender, event_rx) = mpsc::channel(32);
         let events = Arc::new(Mutex::new(event_rx));
@@ -120,7 +123,8 @@ impl ControllerBridge {
         Self {
             commands,
             events: Arc::clone(&events),
-            validated_phase8,
+            validated_quick_select_eq,
+            validated_source_catalog,
         }
     }
 
@@ -192,7 +196,12 @@ async fn run_bridge(
                     BridgeCommand::Control(id, control, version) => {
                         (id, handle.control(control, version).await)
                     }
-                    BridgeCommand::RefreshPhase8(id) => (id, handle.refresh_phase8().await),
+                    BridgeCommand::RefreshQuickSelectEq(id) => {
+                        (id, handle.refresh_quick_select_eq().await)
+                    }
+                    BridgeCommand::RefreshSourceCatalog(id) => {
+                        (id, handle.refresh_source_catalog().await)
+                    }
                     BridgeCommand::RecallQuickSelect(id, slot, expected_version) => {
                         (id, handle.recall_quick_select(slot, expected_version).await)
                     }
@@ -291,7 +300,8 @@ fn bridge_command_name(command: &BridgeCommand) -> &'static str {
         BridgeCommand::Refresh(..) => "refresh",
         BridgeCommand::Disconnect(..) => "disconnect",
         BridgeCommand::Control(..) => "control",
-        BridgeCommand::RefreshPhase8(..) => "refresh_phase8",
+        BridgeCommand::RefreshQuickSelectEq(..) => "refresh_quick_select_eq",
+        BridgeCommand::RefreshSourceCatalog(..) => "refresh_source_catalog",
         BridgeCommand::RecallQuickSelect(..) => "recall_quick_select",
         BridgeCommand::Shutdown(..) => "shutdown",
     }
@@ -357,8 +367,8 @@ pub enum Message {
     Connect,
     Refresh,
     Disconnect,
-    PowerOn,
-    PowerOff,
+    /// Toggle the receiver's Main Zone (Zone 1) power state.
+    ToggleMainZonePower,
     Mute,
     Unmute,
     VolumeChanged(f32),
@@ -370,7 +380,8 @@ pub enum Message {
     OpenSourcePicker,
     CloseSourcePicker,
     SelectInput(String),
-    RefreshPhase8,
+    RefreshQuickSelectEq,
+    RefreshSourceCatalog,
     RecallQuickSelect(QuickSelectSlot),
     Shutdown,
     ToggleMessages,
@@ -404,6 +415,8 @@ pub struct Gui {
     pub generation: u64,
     pub quick_select: QuickSelectSnapshot,
     pub eq_status: EqStatus,
+    pub source_catalog: SourceCatalog,
+    volume_command_pending: bool,
     status_confirmed_generation: Option<u64>,
     /// Chronological, bounded command and lifecycle feedback for the global
     /// message panel. The panel is the only outcome surface in the shell.
@@ -414,7 +427,8 @@ pub struct Gui {
     pub contrast_preference: ContrastPreference,
     capture_directory: Option<PathBuf>,
     capture_scenario: Option<String>,
-    validated_phase8: Option<ValidatedPhase8Capabilities>,
+    validated_quick_select_eq: Option<QuickSelectEqCapabilities>,
+    validated_source_catalog: Option<SourceCatalogCapabilities>,
     bridge: ControllerBridge,
     discovery: Arc<dyn AsyncReceiverDiscovery>,
     configuration: Arc<dyn denon_avr_application::AsyncConfigRepository>,
@@ -422,7 +436,8 @@ pub struct Gui {
 
 impl Gui {
     pub fn new(bridge: ControllerBridge) -> Self {
-        let validated_phase8 = bridge.validated_phase8;
+        let validated_quick_select_eq = bridge.validated_quick_select_eq;
+        let validated_source_catalog = bridge.validated_source_catalog;
         Self {
             route: Route::Dashboard,
             window_class: WindowClass::Wide,
@@ -442,6 +457,8 @@ impl Gui {
             generation: 0,
             quick_select: QuickSelectSnapshot::default(),
             eq_status: EqStatus::default(),
+            source_catalog: SourceCatalog::default(),
+            volume_command_pending: false,
             status_confirmed_generation: None,
             messages: VecDeque::new(),
             messages_collapsed: false,
@@ -450,7 +467,8 @@ impl Gui {
             contrast_preference: ContrastPreference::Normal,
             capture_directory: std::env::var_os("DENON_AVR_CAPTURE_DIR").map(PathBuf::from),
             capture_scenario: None,
-            validated_phase8,
+            validated_quick_select_eq,
+            validated_source_catalog,
             bridge,
             discovery: Arc::new(NoopDiscovery),
             configuration: Arc::new(NoopConfiguration),
@@ -514,7 +532,7 @@ impl Gui {
             StateAuthority::Authoritative,
         );
         self.snapshot.set_value(
-            MainZoneValue::Volume(Volume::from_parts("350", -300)),
+            MainZoneValue::Volume(Volume::from_parts("35", -450)),
             StateAuthority::Authoritative,
         );
         self.snapshot.set_value(
@@ -527,7 +545,7 @@ impl Gui {
             ),
             StateAuthority::Authoritative,
         );
-        self.volume_slider = 35.0;
+        self.volume_slider = -45.0;
         self.source_picker_open = false;
         match scenario {
             "connected" => self.announce("Deterministic capture scenario: connected."),
@@ -578,14 +596,16 @@ impl Gui {
             .map(|model| Model::from_reported(&model))
             .unwrap_or(Model::Unknown);
         ModelCapabilities::for_model(model)
-            .with_validated_phase8(self.validated_phase8.unwrap_or_default())
+            .with_validated_quick_select_eq(self.validated_quick_select_eq.unwrap_or_default())
+            .with_validated_source_catalog(self.validated_source_catalog.unwrap_or_default())
     }
 
-    fn invalidate_phase8(&mut self) {
+    fn invalidate_quick_select_eq(&mut self) {
         self.quick_select.invalidate();
         self.eq_status.invalidate();
         self.quick_select.generation = self.generation;
         self.eq_status.generation = self.generation;
+        self.source_catalog.invalidate(self.generation);
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
@@ -614,6 +634,7 @@ impl Gui {
                 Task::none()
             }
             Message::CommandFinished(Err(error)) => {
+                self.volume_command_pending = false;
                 self.announce(format!("Operation failed: {error}"));
                 Task::none()
             }
@@ -709,7 +730,8 @@ impl Gui {
                 self.selection = Some(selection.clone());
                 self.route = Route::Dashboard;
                 self.snapshot.invalidate();
-                self.invalidate_phase8();
+                self.invalidate_quick_select_eq();
+                self.volume_command_pending = false;
                 self.status_confirmed_generation = None;
                 let id = self.next_request();
                 self.announce(format!(
@@ -739,7 +761,7 @@ impl Gui {
                                 | denon_avr_application::Lifecycle::Reconnecting { .. }
                                 | denon_avr_application::Lifecycle::Disconnected
                         ) {
-                            self.invalidate_phase8();
+                            self.invalidate_quick_select_eq();
                         }
                         if matches!(
                             &lifecycle,
@@ -747,6 +769,7 @@ impl Gui {
                                 | denon_avr_application::Lifecycle::Disconnected
                         ) {
                             self.snapshot.invalidate();
+                            self.volume_command_pending = false;
                         }
                         if matches!(
                             &lifecycle,
@@ -775,19 +798,40 @@ impl Gui {
                         }
                         self.volume_slider = slider_volume(&snapshot).unwrap_or(self.volume_slider);
                         self.snapshot = snapshot;
+                        if self.selected_capabilities().source_catalog_read
+                            && matches!(
+                                self.source_catalog.freshness,
+                                denon_avr_domain::Freshness::Unknown
+                                    | denon_avr_domain::Freshness::Invalidated
+                            )
+                            && self.snapshot.power.value().is_some()
+                        {
+                            let id = self.next_request();
+                            self.announce("Refreshing source list…");
+                            return self.command(BridgeCommand::RefreshSourceCatalog(id));
+                        }
                     }
                     ReceiverEvent::QuickSelect(snapshot) => self.quick_select = *snapshot,
                     ReceiverEvent::EqStatus(status) => self.eq_status = *status,
+                    ReceiverEvent::SourceCatalog(observation) => {
+                        if observation.catalog.generation == self.generation || self.generation == 0
+                        {
+                            self.source_catalog = observation.catalog;
+                            self.announce("Source list refreshed.");
+                        }
+                    }
                     ReceiverEvent::QuickSelectRecall(outcome) => {
                         self.announce(feedback::quick_select_recall_message(&outcome))
                     }
                     ReceiverEvent::Control(result) => {
+                        self.volume_command_pending = false;
                         self.announce(feedback::control_message(&result))
                     }
                     ReceiverEvent::FieldError { field, error } => {
                         self.announce(format!("{} unavailable: {}", field.name(), error.message))
                     }
                     ReceiverEvent::Diagnostic(diagnostic) => {
+                        self.volume_command_pending = false;
                         self.announce(format!("Diagnostic: {diagnostic:?}"))
                     }
                     _ => {}
@@ -806,28 +850,32 @@ impl Gui {
                 let id = self.next_request();
                 self.command(BridgeCommand::Disconnect(id))
             }
-            Message::PowerOn => self.control(MainZoneControl::Power(PowerState::On)),
-            Message::PowerOff => self.control(MainZoneControl::Power(PowerState::Standby)),
+            Message::ToggleMainZonePower => main_zone_power_control(self.snapshot.power.value())
+                .map_or_else(Task::none, |control| self.control(control)),
             Message::Mute => self.control(MainZoneControl::Mute(denon_avr_domain::MuteState::On)),
             Message::Unmute => {
                 self.control(MainZoneControl::Mute(denon_avr_domain::MuteState::Off))
             }
             Message::VolumeChanged(value) => {
-                if value > MAX_VOLUME {
-                    self.volume_slider = MAX_VOLUME;
-                    self.announce("Volume is limited to 60.0.");
+                if self.volume_is_interactive() {
+                    self.volume_slider = value.clamp(MIN_VOLUME_DB, MAX_VOLUME_DB);
+                    self.show_volume_value()
                 } else {
-                    self.volume_slider = value.clamp(0.0, MAX_VOLUME);
-                }
-                self.show_volume_value()
-            }
-            Message::CommitVolume => match volume_level_for_slider(self.volume_slider) {
-                Ok(level) => self.control(MainZoneControl::Volume(level)),
-                Err(error) => {
-                    self.announce(error);
                     Task::none()
                 }
-            },
+            }
+            Message::CommitVolume => {
+                if !self.volume_is_interactive() {
+                    return Task::none();
+                }
+                match volume_level_for_slider(self.volume_slider) {
+                    Ok(level) => self.submit_volume(level),
+                    Err(error) => {
+                        self.announce(error);
+                        Task::none()
+                    }
+                }
+            }
             Message::AdjustVolume(delta) => self.adjust_volume(delta),
             Message::HideVolumeValue(request_id) => {
                 if request_id == self.volume_value_request_id {
@@ -865,10 +913,15 @@ impl Gui {
                     }
                 }
             }
-            Message::RefreshPhase8 => {
+            Message::RefreshQuickSelectEq => {
                 let id = self.next_request();
                 self.announce("Refreshing EQ status…");
-                self.command(BridgeCommand::RefreshPhase8(id))
+                self.command(BridgeCommand::RefreshQuickSelectEq(id))
+            }
+            Message::RefreshSourceCatalog => {
+                let id = self.next_request();
+                self.announce("Refreshing source list…");
+                self.command(BridgeCommand::RefreshSourceCatalog(id))
             }
             Message::RecallQuickSelect(slot) => {
                 let id = self.next_request();
@@ -1000,14 +1053,17 @@ impl Gui {
     }
 
     fn adjust_volume(&mut self, delta: f32) -> Task<Message> {
+        if !self.volume_is_interactive() {
+            return Task::none();
+        }
         let requested = self.volume_slider + delta;
-        let target = requested.clamp(0.0, MAX_VOLUME);
+        let target = requested.clamp(MIN_VOLUME_DB, MAX_VOLUME_DB);
         let changed = target != self.volume_slider;
         self.volume_slider = target;
         let value_task = changed.then(|| self.show_volume_value());
         let task = if changed {
             match volume_level_for_slider(target) {
-                Ok(level) => self.control(MainZoneControl::Volume(level)),
+                Ok(level) => self.submit_volume(level),
                 Err(error) => {
                     self.announce(error);
                     Task::none()
@@ -1016,13 +1072,21 @@ impl Gui {
         } else {
             Task::none()
         };
-        if requested > MAX_VOLUME {
-            self.announce("Volume is limited to 60.0.");
-        }
         match value_task {
             Some(value_task) => Task::batch([task, value_task]),
             None => task,
         }
+    }
+
+    fn volume_is_interactive(&self) -> bool {
+        self.selected_capabilities().writable
+            && self.snapshot.volume.value().is_some()
+            && !self.volume_command_pending
+    }
+
+    fn submit_volume(&mut self, level: denon_avr_domain::VolumeLevel) -> Task<Message> {
+        self.volume_command_pending = true;
+        self.control(MainZoneControl::Volume(level))
     }
 
     fn show_volume_value(&mut self) -> Task<Message> {
@@ -1196,7 +1260,17 @@ impl Gui {
                 text("Capture is enabled only when DENON_AVR_CAPTURE_DIR names an explicit directory. Files are native RGBA PNGs organized by platform, route, and text scale.").color(design::MUTED),
                 text("Screen-reader semantic support is release-blocked pending an Iced native accessibility bridge and three-platform audit.").color(design::MUTED),
             ].spacing(10)),
-            components::panel("Configuration", column![text("YAML configuration is managed by the desktop host."), text("Quick Select slot editing requires validated receiver support.").color(design::MUTED)])
+            components::panel("Configuration", column![text("YAML configuration is managed by the desktop host."), text("Quick Select slot editing requires validated receiver support.").color(design::MUTED)]),
+            components::panel("Source presentation", column![
+                text("Source names and visibility are managed on the receiver at Settings → Inputs → Source Rename / Hide Sources.").color(design::MUTED),
+                text(match self.source_catalog.freshness {
+                    denon_avr_domain::Freshness::Live => "Receiver source list is current.",
+                    denon_avr_domain::Freshness::Partial => "Receiver source list is last known; the latest refresh was partial.",
+                    denon_avr_domain::Freshness::Invalidated => "Source list will refresh after reconnect.",
+                    denon_avr_domain::Freshness::Unknown => "Source list has not been confirmed.",
+                }).color(design::MUTED),
+                components::quiet_action("Refresh source list", Message::RefreshSourceCatalog),
+            ].spacing(10))
         ].spacing(18)
     }
 
@@ -1241,6 +1315,14 @@ impl Gui {
                         "Quick Select freshness",
                         format!("{:?}", self.quick_select.freshness)
                     ),
+                    components::state_row(
+                        "Source catalog freshness",
+                        format!("{:?}", self.source_catalog.freshness)
+                    ),
+                    components::state_row(
+                        "Source catalog entries",
+                        self.source_catalog.entries.len().to_string()
+                    ),
                     text(feedback::eq_summary(&self.eq_status)),
                     text(feedback::eq_evidence_summary(&self.eq_status)).color(design::MUTED),
                     text(
@@ -1254,17 +1336,11 @@ impl Gui {
     }
 
     fn dashboard(&self) -> iced::widget::Column<'_, Message> {
-        let phase8_capabilities = self.selected_capabilities();
-        let writable = phase8_capabilities.writable;
-        let power_action = if writable {
-            match self.snapshot.power.value() {
-                Some(PowerState::On) => Some(Message::PowerOff),
-                Some(PowerState::Standby) => Some(Message::PowerOn),
-                None => None,
-            }
-        } else {
-            None
-        };
+        let capabilities = self.selected_capabilities();
+        let writable = capabilities.writable;
+        let power_action = (writable
+            && main_zone_power_control(self.snapshot.power.value()).is_some())
+        .then_some(Message::ToggleMainZonePower);
         let header = dashboard_header(self.snapshot.power.value(), power_action);
         if self.snapshot.power.value() == Some(&PowerState::Standby) {
             return column![container(stack![
@@ -1307,8 +1383,8 @@ impl Gui {
             .value()
             .map(ToString::to_string)
             .unwrap_or_else(|| "Unavailable".into());
-        let quick_select_supported = phase8_capabilities.quick_select_recall;
-        let phase8_status_supported = phase8_capabilities.eq_status;
+        let quick_select_supported = capabilities.quick_select_recall;
+        let eq_status_supported = capabilities.eq_status;
         let group_controls = if writable {
             ListeningModeGroup::ALL
                 .into_iter()
@@ -1353,18 +1429,66 @@ impl Gui {
             .value
             .known()
             .map(|v| v.as_str());
-        let eq = phase8_status_supported
+        let eq = eq_status_supported
             .then(|| eq_summary_if_reported(&self.eq_status))
             .flatten()
             .unwrap_or_default();
-        let eq_refresh: Element<'_, Message> = if phase8_status_supported {
-            components::quiet_action("Refresh", Message::RefreshPhase8).into()
+        let eq_refresh: Element<'_, Message> = if eq_status_supported {
+            components::quiet_action("Refresh", Message::RefreshQuickSelectEq).into()
         } else {
             space().into()
         };
+        // Keep the established volume control visible while its command is in
+        // flight. `volume_is_interactive` still rejects input until the
+        // receiver confirms the command, but replacing the slider with a
+        // transient status label makes an ordinary adjustment look like the
+        // control disappeared.
+        let volume_controls: Element<'_, Message> =
+            if writable && self.snapshot.volume.value().is_some() {
+                column![
+                    container(volume_slider(self.volume_slider, self.volume_value,))
+                        .width(Length::Fill)
+                        .padding([8, 0]),
+                    row![
+                        text("-80.0 dB").size(12).color(design::MUTED),
+                        space().width(Length::Fill),
+                        text("+18.5 dB").size(12).color(design::MUTED),
+                    ]
+                    .width(Length::Fill),
+                    row![
+                        row![
+                            components::quiet_action("≪", Message::AdjustVolume(-10.0)),
+                            components::quiet_action("−", Message::AdjustVolume(-0.5)),
+                        ]
+                        .spacing(8),
+                        space().width(Length::Fill),
+                        row![
+                            components::quiet_action("+", Message::AdjustVolume(0.5)),
+                            components::quiet_action("≫", Message::AdjustVolume(10.0)),
+                        ]
+                        .spacing(8),
+                    ]
+                    .width(Length::Fill),
+                ]
+                .spacing(8)
+                .into()
+            } else {
+                text(if !writable {
+                    "Volume controls are unavailable: receiver model is not validated for writes."
+                } else {
+                    "Volume controls are unavailable until the receiver reports its current volume."
+                })
+                .color(design::MUTED)
+                .into()
+            };
         column![
             header,
-            dashboard_context_line(&input, self.source_picker_open, phase8_capabilities),
+            dashboard_context_line(
+                &input,
+                self.source_picker_open,
+                capabilities,
+                self.source_catalog.clone(),
+            ),
             row![
                 container(
                     column![
@@ -1413,30 +1537,15 @@ impl Gui {
                 .style(design::panel)
             ]
             .spacing(16),
-            column![
-                container(volume_slider(self.volume_slider, self.volume_value,))
-                    .width(Length::Fill)
-                    .padding([8, 0]),
-                row![
-                    row![
-                        components::quiet_action("≪", Message::AdjustVolume(-10.0)),
-                        components::quiet_action("−", Message::AdjustVolume(-0.5)),
-                    ]
-                    .spacing(8),
-                    space().width(Length::Fill),
-                    row![
-                        components::quiet_action("+", Message::AdjustVolume(0.5)),
-                        components::quiet_action("≫", Message::AdjustVolume(10.0)),
-                    ]
-                    .spacing(8),
-                ]
-                .width(Length::Fill)
-            ]
-            .spacing(8),
+            volume_controls,
             row![mute_controls, group_controls]
                 .spacing(14)
                 .align_y(iced::Alignment::Center),
-            quick_select_bar(&self.quick_select, quick_select_supported),
+            quick_select_bar(
+                &self.quick_select,
+                quick_select_supported,
+                self.source_catalog.clone(),
+            ),
         ]
         .spacing(18)
     }
@@ -1489,24 +1598,27 @@ impl Gui {
     }
 }
 
-const MAX_VOLUME: f32 = 60.0;
+/// Denon `MV00` is -80.0 dB and `MV985` is +18.5 dB. Keep the desktop
+/// control in that receiver-visible unit instead of treating the wire code as
+/// a 0–60 UI value.
+const MIN_VOLUME_DB: f32 = -80.0;
+const MAX_VOLUME_DB: f32 = 18.5;
+const VOLUME_HALF_DB_STEPS: u16 = 197;
 const VOLUME_INDICATOR_HEIGHT: f32 = 28.0;
 
 fn slider_volume(snapshot: &MainZoneSnapshot) -> Option<f32> {
     snapshot
         .volume
         .value()
-        // AVR volume codes are absolute volume in 0.5-step units. Display
-        // that direct receiver value instead of the domain's normalized
-        // 0–100 control value, which can round 24.5 up to 25.0.
-        .map(|volume| (volume.native_code() as f32 / 10.0).min(MAX_VOLUME))
+        .map(|volume| volume.db_tenths() as f32 / 10.0)
 }
 
 fn volume_level_for_slider(value: f32) -> Result<denon_avr_domain::VolumeLevel, String> {
-    if value > MAX_VOLUME {
-        return Err("Volume is limited to 60.0.".into());
+    if !value.is_finite() || !(MIN_VOLUME_DB..=MAX_VOLUME_DB).contains(&value) {
+        return Err("Volume must be between -80.0 and +18.5 dB.".into());
     }
-    let native_code = (value.clamp(0.0, MAX_VOLUME) * 10.0).round() as u16;
+    let half_db_steps = (value * 2.0).round() as i16;
+    let native_code = ((half_db_steps + 160) * 5) as u16;
     denon_avr_domain::VolumeLevel::from_native_code(native_code).map_err(str::to_owned)
 }
 
@@ -1514,12 +1626,13 @@ fn volume_slider<'a>(value: f32, shown_value: Option<f32>) -> Element<'a, Messag
     let bubble: Element<'a, Message> = shown_value.map_or_else(
         || space().into(),
         |shown_value| {
-            let steps = (shown_value.clamp(0.0, MAX_VOLUME) * 2.0).round() as u16;
+            let steps = ((shown_value.clamp(MIN_VOLUME_DB, MAX_VOLUME_DB) - MIN_VOLUME_DB) * 2.0)
+                .round() as u16;
             let leading = steps.max(1);
-            let trailing = (120_u16.saturating_sub(steps)).max(1);
+            let trailing = VOLUME_HALF_DB_STEPS.saturating_sub(steps).max(1);
             row![
                 space().width(Length::FillPortion(leading)),
-                container(text(format!("{shown_value:.1}")).size(13))
+                container(text(format!("{shown_value:.1} dB")).size(13))
                     .padding([3, 7])
                     .style(design::panel),
                 space().width(Length::FillPortion(trailing)),
@@ -1535,13 +1648,24 @@ fn volume_slider<'a>(value: f32, shown_value: Option<f32>) -> Element<'a, Messag
         container(bubble)
             .width(Length::Fill)
             .height(Length::Fixed(VOLUME_INDICATOR_HEIGHT)),
-        slider(0.0..=MAX_VOLUME, value, Message::VolumeChanged)
+        slider(MIN_VOLUME_DB..=MAX_VOLUME_DB, value, Message::VolumeChanged)
             .step(0.5_f32)
             .on_release(Message::CommitVolume)
             .width(Length::Fill),
     ]
     .spacing(2)
     .into()
+}
+
+/// The desktop dashboard intentionally exposes only the receiver's Main Zone
+/// (Zone 1). Denon `PW` commands target that zone; secondary-zone power
+/// commands are not available from this control.
+fn main_zone_power_control(power: Option<&PowerState>) -> Option<MainZoneControl> {
+    match power {
+        Some(PowerState::On) => Some(MainZoneControl::Power(PowerState::Standby)),
+        Some(PowerState::Standby) => Some(MainZoneControl::Power(PowerState::On)),
+        None => None,
+    }
 }
 
 fn power_recovery(
@@ -1607,7 +1731,8 @@ fn dashboard_header(
     };
     row![
         container(power_button).align_right(Length::Fill),
-        container(text("RECEIVER").size(13).color(design::MUTED)).center_x(Length::Fixed(120.0)),
+        container(text("MAIN ZONE · ZONE 1").size(13).color(design::MUTED))
+            .center_x(Length::Fixed(160.0)),
         space().width(Length::Fill)
     ]
     .align_y(iced::Alignment::Center)
@@ -1618,12 +1743,22 @@ fn dashboard_context_line(
     source: &str,
     source_picker_open: bool,
     capabilities: ModelCapabilities,
+    catalog: SourceCatalog,
 ) -> Element<'static, Message> {
+    let label = catalog_entry_label(source, &catalog);
+    let active_hidden = catalog
+        .entry(source)
+        .is_some_and(|entry| entry.visibility == SourceVisibility::Hidden);
     let context = row![
         button(
             row![
                 text(source_icon(source)).size(18).color(design::ACCENT),
-                text(source_label(source)).size(15)
+                text(if active_hidden {
+                    format!("{label} · Hidden on receiver")
+                } else {
+                    label
+                })
+                .size(15)
             ]
             .spacing(8)
             .align_y(iced::Alignment::Center)
@@ -1638,7 +1773,7 @@ fn dashboard_context_line(
     .align_y(iced::Alignment::Center);
 
     if source_picker_open {
-        column![context, source_picker_popup(capabilities)]
+        column![context, source_picker_popup(capabilities, catalog)]
             .spacing(8)
             .into()
     } else {
@@ -1667,10 +1802,41 @@ fn source_label(source: &str) -> String {
     }
 }
 
-fn source_picker_popup(capabilities: ModelCapabilities) -> Element<'static, Message> {
+fn catalog_entry_label(source: &str, catalog: &SourceCatalog) -> String {
+    catalog
+        .entry(source)
+        .map(|entry| entry.display_name_or(&source_label(source)).to_owned())
+        .unwrap_or_else(|| source_label(source))
+}
+
+fn source_picker_popup(
+    capabilities: ModelCapabilities,
+    catalog: SourceCatalog,
+) -> Element<'static, Message> {
     let choices: Element<'static, Message> = if capabilities.inputs.is_empty() {
         text("Source selection is unavailable for this receiver.")
             .color(design::MUTED)
+            .into()
+    } else if catalog.freshness != denon_avr_domain::Freshness::Unknown
+        && catalog.freshness != denon_avr_domain::Freshness::Invalidated
+    {
+        capabilities
+            .inputs
+            .iter()
+            .filter(|source| {
+                catalog
+                    .entry(source)
+                    .is_none_or(|entry| entry.visibility != SourceVisibility::Hidden)
+            })
+            .fold(column![].spacing(7), |column, entry| {
+                column.push(
+                    components::quiet_action(
+                        catalog_entry_label(entry, &catalog),
+                        Message::SelectInput((*entry).into()),
+                    )
+                    .width(Length::Fill),
+                )
+            })
             .into()
     } else {
         capabilities
@@ -1838,14 +2004,18 @@ fn mode_icon(group: ListeningModeGroup) -> &'static str {
     }
 }
 
-fn quick_select_bar<'a>(snapshot: &QuickSelectSnapshot, supported: bool) -> Element<'a, Message> {
+fn quick_select_bar<'a>(
+    snapshot: &QuickSelectSnapshot,
+    supported: bool,
+    catalog: SourceCatalog,
+) -> Element<'a, Message> {
     let content: Element<'a, Message> = if supported {
         container(
             QuickSelectSlot::ALL
                 .into_iter()
                 .fold(row![].spacing(8), |row, slot| {
                     row.push(
-                        button(text(quick_select_slot_label(snapshot, slot)).size(12))
+                        button(text(quick_select_slot_label(snapshot, slot, &catalog)).size(12))
                             .padding([7, 10])
                             .style(design::secondary)
                             .on_press(Message::RecallQuickSelect(slot)),
@@ -1868,19 +2038,34 @@ fn quick_select_bar<'a>(snapshot: &QuickSelectSnapshot, supported: bool) -> Elem
         .into()
 }
 
-fn quick_select_slot_label(snapshot: &QuickSelectSnapshot, slot: QuickSelectSlot) -> String {
-    let name = match snapshot.preset(slot) {
-        Some(preset) if preset.available => preset
+fn quick_select_slot_label(
+    snapshot: &QuickSelectSnapshot,
+    slot: QuickSelectSlot,
+    catalog: &SourceCatalog,
+) -> String {
+    let Some(preset) = snapshot.preset(slot) else {
+        return slot.number().to_string();
+    };
+    let name = if preset.available {
+        preset
             .name
             .as_ref()
             .map(|name| name.as_str())
-            .map(str::to_owned),
+            .map(str::to_owned)
+    } else {
+        None
+    };
+    let source = match &preset.summary.input {
+        denon_avr_domain::Registered::Included(input) => {
+            Some(catalog_entry_label(input.as_str(), catalog))
+        }
         _ => None,
     };
-    name.map_or_else(
+    let base = name.map_or_else(
         || slot.number().to_string(),
         |name| format!("{} {name}", slot.number()),
-    )
+    );
+    source.map_or(base.clone(), |source| format!("{base} · {source}"))
 }
 
 /// Unknown EQ observations carry no usable display value. Keep that state
@@ -2225,10 +2410,46 @@ mod tests {
             available: true,
             summary: Default::default(),
         });
-        assert_eq!(quick_select_slot_label(&snapshot, slot), "1 Cinema");
         assert_eq!(
-            quick_select_slot_label(&QuickSelectSnapshot::default(), slot),
+            quick_select_slot_label(&snapshot, slot, &SourceCatalog::default()),
+            "1 Cinema"
+        );
+        assert_eq!(
+            quick_select_slot_label(
+                &QuickSelectSnapshot::default(),
+                slot,
+                &SourceCatalog::default()
+            ),
             "1"
+        );
+    }
+
+    #[test]
+    fn quick_select_slot_label_uses_receiver_source_name() {
+        let slot = QuickSelectSlot::new(1).unwrap();
+        let mut snapshot = QuickSelectSnapshot::default();
+        snapshot.set(denon_avr_domain::QuickSelectPreset {
+            slot,
+            name: None,
+            available: true,
+            summary: denon_avr_domain::QuickSelectSummary {
+                input: denon_avr_domain::Registered::Included(
+                    denon_avr_domain::Input::new("GAME").unwrap(),
+                ),
+                ..Default::default()
+            },
+        });
+        let catalog = SourceCatalog {
+            entries: vec![denon_avr_domain::SourceEntry {
+                id: denon_avr_domain::SourceId::new("GAME").unwrap(),
+                display_name: Some("PlayStation 5".into()),
+                visibility: SourceVisibility::Shown,
+            }],
+            ..SourceCatalog::default()
+        };
+        assert_eq!(
+            quick_select_slot_label(&snapshot, slot, &catalog),
+            "1 · PlayStation 5"
         );
     }
 
@@ -2243,21 +2464,28 @@ mod tests {
     }
 
     #[test]
-    fn volume_slider_is_capped_at_sixty() {
+    fn volume_slider_spans_the_validated_receiver_decibel_range() {
         assert_eq!(
-            volume_level_for_slider(MAX_VOLUME)
+            volume_level_for_slider(MIN_VOLUME_DB)
                 .unwrap()
                 .to_native_code(),
-            600
+            0
+        );
+        assert_eq!(volume_level_for_slider(0.0).unwrap().to_native_code(), 800);
+        assert_eq!(
+            volume_level_for_slider(MAX_VOLUME_DB)
+                .unwrap()
+                .to_native_code(),
+            985
         );
         assert_eq!(
-            volume_level_for_slider(60.5).unwrap_err(),
-            "Volume is limited to 60.0."
+            volume_level_for_slider(19.0).unwrap_err(),
+            "Volume must be between -80.0 and +18.5 dB."
         );
     }
 
     #[test]
-    fn volume_slider_uses_the_receiver_absolute_volume_scale() {
+    fn volume_slider_uses_the_receiver_decibel_scale() {
         let mut snapshot = MainZoneSnapshot::default();
         snapshot.set_value(
             denon_avr_domain::MainZoneValue::Volume(denon_avr_domain::Volume::from_parts(
@@ -2266,27 +2494,87 @@ mod tests {
             denon_avr_domain::StateAuthority::Authoritative,
         );
 
-        assert_eq!(slider_volume(&snapshot), Some(24.5));
-        assert_eq!(volume_level_for_slider(25.0).unwrap().to_native_code(), 250);
+        assert_eq!(slider_volume(&snapshot), Some(-55.5));
+        assert_eq!(
+            volume_level_for_slider(-55.0).unwrap().to_native_code(),
+            250
+        );
+    }
+
+    #[test]
+    fn power_toggle_only_produces_main_zone_commands() {
+        assert_eq!(
+            main_zone_power_control(Some(&PowerState::On)),
+            Some(MainZoneControl::Power(PowerState::Standby))
+        );
+        assert_eq!(
+            main_zone_power_control(Some(&PowerState::Standby)),
+            Some(MainZoneControl::Power(PowerState::On))
+        );
+        assert_eq!(main_zone_power_control(None), None);
     }
 
     #[tokio::test]
-    async fn volume_step_caps_at_sixty_and_explains_the_limit() {
+    async fn volume_step_respects_the_receiver_ceiling_and_blocks_duplicates() {
         let bridge = ControllerBridge::new(AvrSessionFactory::default());
         let mut gui = Gui::new(bridge);
-        gui.volume_slider = 55.0;
+        gui.selection = Some(ReceiverSelection::ExplicitHost(
+            denon_avr_domain::ReceiverIdentity {
+                host: "receiver.local".into(),
+                model: Some("AVR-X3800H".into()),
+                friendly_name: None,
+            },
+        ));
+        gui.snapshot.set_value(
+            MainZoneValue::Volume(Volume::from_parts("95", 150)),
+            StateAuthority::Authoritative,
+        );
+        gui.volume_slider = 15.0;
 
         let _ = gui.update(Message::AdjustVolume(10.0));
 
-        assert_eq!(gui.volume_slider, MAX_VOLUME);
-        assert_eq!(gui.volume_value, Some(MAX_VOLUME));
-        assert_eq!(gui.announcement, "Volume is limited to 60.0.");
+        assert_eq!(gui.volume_slider, MAX_VOLUME_DB);
+        assert_eq!(gui.volume_value, Some(MAX_VOLUME_DB));
+        assert!(gui.volume_command_pending);
+
+        let _ = gui.update(Message::AdjustVolume(-0.5));
+        assert_eq!(gui.volume_slider, MAX_VOLUME_DB);
 
         let current_request = gui.volume_value_request_id;
         let _ = gui.update(Message::HideVolumeValue(current_request.saturating_sub(1)));
-        assert_eq!(gui.volume_value, Some(MAX_VOLUME));
+        assert_eq!(gui.volume_value, Some(MAX_VOLUME_DB));
         let _ = gui.update(Message::HideVolumeValue(current_request));
         assert_eq!(gui.volume_value, None);
+    }
+
+    #[tokio::test]
+    async fn unavailable_volume_does_not_create_a_low_volume_command() {
+        let bridge = ControllerBridge::new(AvrSessionFactory::default());
+        let mut gui = Gui::new(bridge);
+        gui.volume_slider = MIN_VOLUME_DB;
+
+        let _ = gui.update(Message::AdjustVolume(0.5));
+        let _ = gui.update(Message::CommitVolume);
+
+        assert_eq!(gui.volume_slider, MIN_VOLUME_DB);
+        assert!(!gui.volume_command_pending);
+    }
+
+    #[tokio::test]
+    async fn bridge_failure_reenables_volume_controls() {
+        let bridge = ControllerBridge::new(AvrSessionFactory::default());
+        let mut gui = Gui::new(bridge);
+        gui.volume_command_pending = true;
+
+        let _ = gui.update(Message::Bridge(Box::new(BridgeEvent {
+            request_id: 1,
+            generation: 0,
+            event: ReceiverEvent::Diagnostic(denon_avr_application::Diagnostic::Timeout {
+                context: "setting volume".into(),
+            }),
+        })));
+
+        assert!(!gui.volume_command_pending);
     }
 
     #[tokio::test]
@@ -2305,6 +2593,20 @@ mod tests {
         assert!(gui.source_picker_open);
         let _ = gui.update(Message::SelectInput("TV AUDIO".into()));
         assert!(!gui.source_picker_open);
+    }
+
+    #[test]
+    fn receiver_source_label_overrides_the_canonical_fallback() {
+        let catalog = SourceCatalog {
+            entries: vec![denon_avr_domain::SourceEntry {
+                id: denon_avr_domain::SourceId::new("GAME").unwrap(),
+                display_name: Some("PlayStation 5".into()),
+                visibility: SourceVisibility::Shown,
+            }],
+            ..SourceCatalog::default()
+        };
+        assert_eq!(catalog_entry_label("GAME", &catalog), "PlayStation 5");
+        assert_eq!(catalog_entry_label("TV AUDIO", &catalog), "TV Audio");
     }
 
     #[tokio::test]
@@ -2352,11 +2654,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn gui_uses_explicit_phase8_validation_for_known_models() {
+    async fn gui_uses_explicit_quick_select_eq_validation_for_known_models() {
         let bridge = ControllerBridge::new_with_config(
             AvrSessionFactory::default(),
             denon_avr_application::ControllerConfig {
-                validated_phase8: Some(denon_avr_domain::ValidatedPhase8Capabilities {
+                validated_quick_select_eq: Some(denon_avr_domain::QuickSelectEqCapabilities {
                     quick_select_recall: true,
                     eq_status: true,
                 }),

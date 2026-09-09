@@ -2,7 +2,7 @@
 
 use denon_avr_domain::{
     AudioContextSnapshot, ConfiguredReceivers, ConnectionState, DiscoveredReceiver, MainZoneEvent,
-    MainZoneField, MainZoneValue,
+    MainZoneField, MainZoneValue, SourceCatalogObservation,
 };
 use std::fmt;
 use std::future::Future;
@@ -89,6 +89,7 @@ pub trait StatusGateway {
     fn query_field(&mut self, field: MainZoneField) -> Result<MainZoneValue, OperationError>;
     fn connection_generation(&self) -> u64;
     fn next_event(&mut self, timeout: Option<Duration>) -> Result<SessionEvent, OperationError>;
+    fn query_audio_context(&mut self) -> AudioContextSnapshot;
 }
 
 /// A write-only boundary for state-changing commands. Implementations must
@@ -115,4 +116,12 @@ pub trait AsyncStatusGateway: Send {
     fn connection_generation(&self) -> u64;
     fn next_event(&mut self) -> BoxFuture<'_, Result<SessionEvent, OperationError>>;
     fn query_audio_context(&mut self) -> BoxFuture<'_, AudioContextSnapshot>;
+}
+
+/// Read-only receiver-owned source names and visibility. Implementations must
+/// preserve the raw response as diagnostic evidence and never issue writes.
+pub trait SourceCatalogReader: Send {
+    fn refresh_source_catalog(
+        &mut self,
+    ) -> BoxFuture<'_, Result<SourceCatalogObservation, OperationError>>;
 }
