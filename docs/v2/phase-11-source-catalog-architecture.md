@@ -1,8 +1,14 @@
-# Version 2 - Phase 10 Source Catalog Architecture
+# Version 2 - Phase 11 Source Catalog Architecture
 
-**Status: Planned — implementation follows live X3800H read validation.**
+**Status: Evidence-gated follow-on — no product catalog reader is enabled.**
 
 ## Research summary
+
+The sole implementation before validation is the diagnostic-only
+`source-catalog-probe` in `apps/diagnostics`. It accepts an explicit HTTP
+AppCommand endpoint, sends candidate read commands only, and records raw
+exchange evidence. It is not linked to controller, GUI, or receiver session
+code. Product work below is conditional on the completed validation record.
 
 Denon's X3800H manual separates two receiver-owned settings under **Inputs**:
 
@@ -79,4 +85,3 @@ Future writes use separate ports—`rename_source(SourceId, label)` and `set_sou
 | Visual/manual | 1400 × 880 and 200% text with a 16-character name; vertical source dropdown scrolling; default, HDMI-renamed, hidden, and failure states on supported platforms. |
 
 Completion requires passing the normal workspace checks, committed deterministic fixtures/tests, a recorded X3800H validation artifact, and manual comparison against the receiver after rename, hide, show, HDMI auto-rename, reconnect, and selection of a source that is subsequently hidden. A desktop write feature cannot be called complete merely because the receiver's on-screen menu works.
-

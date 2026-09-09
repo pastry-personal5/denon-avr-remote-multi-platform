@@ -1,8 +1,17 @@
-# Version 2 - Phase 10 Source Catalog Overview
+# Version 2 - Phase 11 Source Catalog Overview
 
-**Status: Planned — design only; no source-catalog code is introduced by this plan.**
+**Status: Separate evidence-gated follow-on increment — diagnostic capture only.**
 
-This Phase 10 extension makes the desktop app use the source names and source visibility chosen on the receiver. It supplements the visual-identity work; it does not replace the canonical receiver-control boundary or turn an unverified protocol observation into a writable capability.
+This follow-on increment makes the desktop app use the source names and source
+visibility chosen on the receiver. It is not a dependency of visual-identity
+completion. It does not replace the canonical receiver-control boundary or
+turn an unverified protocol observation into a writable capability.
+
+Before product code, use the diagnostic-only read-only `source-catalog-probe`
+with an explicit AppCommand endpoint. It records candidate request XML, HTTP
+status, and raw response XML and cannot change receiver state. The required
+trace sequence and its current status are in the
+[source-catalog validation record](phase-11-source-catalog-validation-record.md).
 
 ## Objective
 
@@ -33,7 +42,14 @@ Until desktop write operations are independently validated, the management surfa
 
 The X3800H manual establishes the feature and its user intent, but does not document the network payload. A mature Denon integration reports a read-only `AppCommand.xml` request containing `GetRenameSource` and `GetDeletedSource`, with name/rename and FuncName/use rows respectively. Treat that as a candidate shape only, not as X3800H validation. See its [implementation](https://github.com/JPHutchins/denonavr2016/blob/master/denonavr2016/denonavr.py).
 
-Before enabling source-catalog reads for the X3800H profile, record a live, sanitized fixture including model, firmware, date, request XML, complete response XML, renamed entries, shown entries, hidden entries, default names, an HDMI-discovered label if available, and a currently selected hidden source. Validate malformed XML, absent functions, unknown identifiers, and a mid-session rename/hide refresh.
+Before enabling source-catalog reads for the X3800H profile, record a live,
+sanitized fixture including model, firmware, date/timezone, endpoint, timing,
+request XML, complete response XML, renamed entries, shown entries, hidden
+entries, default names, an HDMI-discovered label if available, and a currently
+selected hidden source. Capture baseline; rename; shown; selected-then-hidden;
+hidden; shown/restored; reconnect; and restoration confirmation. Validate
+malformed XML, absent functions, unknown identifiers, and a mid-session
+rename/hide refresh.
 
 Do not add Rename, Reset name, Hide, or Show desktop controls until a separate live record establishes the exact X3800H mutation request, response/acknowledgment, persistence across reconnect, and rollback/error behavior. The planned read-only source catalog is independently useful and safe; write support is a subsequent evidence-gated increment.
 
@@ -45,5 +61,4 @@ Do not add Rename, Reset name, Hide, or Show desktop controls until a separate l
 - Catalog failures cannot replace a known label with a guessed one or expose an input as hidden; lifecycle and freshness language explain the state.
 - Fixture, parser, controller, GUI reducer, accessibility, and visual cases cover renamed, hidden, active-hidden, defaults, partial replies, failure, reconnect, and stale-result rejection.
 
-The detailed layer design and implementation order are in [the source-catalog architecture](phase-10-source-catalog-architecture.md).
-
+The detailed layer design and implementation order are in [the source-catalog architecture](phase-11-source-catalog-architecture.md).
