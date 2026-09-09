@@ -2,7 +2,7 @@
 
 ## Review result
 
-**Status: substantially improved; accessibility and visual-regression gates remain open.**
+**Status: in progress; accessibility and visual-regression gates remain open.**
 
 The redesign establishes a useful dark console shell, a persistent receiver
 rail, reusable styling primitives, bounded session feedback, and a dedicated
@@ -24,22 +24,22 @@ The following earlier findings are resolved:
 
 ## Findings
 
-### High — host accessibility preferences are not implemented
+### High — semantic screen-reader bridge is not available as release evidence
 
-The Settings view says that reduced motion, contrast, and 200% text scaling are
-supported host preferences, but the GUI has no preference subscription, text
-scale application, reduced-motion behavior, or higher-contrast handling. The
-review manifest correctly leaves screenshot and platform review open; these
-features must not be described as supported until the selected Iced runtime
-integration is verified.
+The Settings view now provides session-only 100/125/150/175/200% scale,
+normal/reduced motion, and normal/high-contrast controls. They are not
+persisted. Reliable host preference discovery, reduced-motion visual behavior,
+and the required native semantic accessibility bridge are not yet verified.
+Iced issue #552 remains the upstream capability gate. Do not claim
+VoiceOver/Narrator/Orca support until all three audits validate roles, values,
+state, focus, and outcomes.
 
-### Medium — visual tokens are only partially applied
+### Medium — visual regression evidence is absent
 
-The token and component modules exist, and receiver actions use the new button
-styles. Several route controls, text inputs, and dashboard status groups still
-use default Iced styling, and the custom theme remains `Theme::Dark` rather
-than a palette applying the documented tokens globally. The resulting visual
-hierarchy is therefore inconsistent across routes.
+The GUI now selects a real custom Iced palette and shares component styles for
+actions, navigation, panels, and setup fields. Native screenshot capture,
+fixed fake-service scenarios, committed PNG baselines, automated comparison,
+and per-platform review are not yet present.
 
 ### Medium — focus and screen-reader semantics remain unverified
 
@@ -51,6 +51,9 @@ verification and should remain qualified until those checks exist.
 
 ## Verification performed
 
+- `design::tests::documented_text_and_focus_tokens_meet_their_contrast_floor`:
+  passed. It asserts 7:1 for primary text and high-contrast focus border, and
+  4.5:1 for muted text and accent against the documented canvas.
 - `cargo check --workspace`: passed.
 - `cargo clippy --workspace --all-targets -- -D warnings`: passed.
 - `cargo test -p denon-avr-gui-lib`: passed (5 tests).

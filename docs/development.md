@@ -20,6 +20,14 @@ make run ARGS="help"
 make run-gui          # run the native Iced desktop GUI
 make run-diagnostics ARGS="HOST TIMEOUT-MS MODEL FIRMWARE"
                       # run the read-only Telnet diagnostics probe
+cargo run -p denon-avr-diagnostics --bin source-catalog-probe -- \
+  http://HOST:8080/goform/AppCommand.xml TIMEOUT-MS MODEL FIRMWARE SCENARIO
+                      # diagnostic-only candidate source-catalog read; no writes
+DENON_AVR_CAPTURE_DIR=target/visual-captures \
+DENON_AVR_CAPTURE_SCENARIO=connected DENON_AVR_CAPTURE_SCALE=100 \
+  make run-gui       # native deterministic visual capture; repeats at scale 200
+make visual-baselines PLATFORM=linux CAPTURES=target/visual-captures/linux
+                      # compare all captured PNGs to committed Linux baselines
 ```
 
 Equivalent Cargo commands are documented by the Makefile. Do not run live

@@ -9,9 +9,10 @@ use denon_avr_application::{
     ControllerHandle, ReceiverController, ReceiverEvent, ReceiverSelection, SessionFactory,
 };
 use denon_avr_domain::{
-    ConfiguredReceivers, EqStatus, ListeningModeGroup, MainZoneControl, MainZoneSnapshot, Model,
-    ModelCapabilities, PowerState, QuickSelectSlot, QuickSelectSnapshot,
-    ValidatedPhase8Capabilities,
+    ConfiguredReceivers, EqStatus, Input, ListeningModeGroup, MainZoneControl, MainZoneSnapshot,
+    MainZoneValue, Model, ModelCapabilities, MuteState, PowerState, QuickSelectSlot,
+    QuickSelectSnapshot, ReceiverIdentity, StateAuthority, SurroundMode,
+    ValidatedPhase8Capabilities, Volume,
 };
 use iced::futures::SinkExt;
 use iced::widget::{
@@ -21,10 +22,12 @@ use iced::{Element, Length, Subscription, Task};
 use std::collections::BTreeMap;
 use std::collections::VecDeque;
 use std::hash::{Hash, Hasher};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, Mutex};
 
+mod capture;
 pub mod components;
 pub mod design;
 mod feedback;
@@ -42,6 +45,20 @@ pub enum Route {
 pub enum WindowClass {
     Wide,
     Compact,
+}
+
+/// Session-only accessibility preferences. They deliberately live in GUI
+/// state: a user override wins for this run and is never written to YAML.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MotionPreference {
+    Normal,
+    Reduced,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContrastPreference {
+    Normal,
+    High,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -358,6 +375,12 @@ pub enum Message {
     Shutdown,
     ToggleMessages,
     ClearMessages,
+    SetTextScale(u8),
+    SetMotion(MotionPreference),
+    SetContrast(ContrastPreference),
+    CaptureVisual,
+    ScreenshotCaptured(iced::window::Screenshot),
+    ScreenshotWritten(Result<PathBuf, String>),
     Bridge(Box<BridgeEvent>),
 }
 
@@ -385,6 +408,11 @@ pub struct Gui {
     /// message panel. The panel is the only outcome surface in the shell.
     pub messages: VecDeque<String>,
     pub messages_collapsed: bool,
+    pub text_scale: u8,
+    pub motion_preference: MotionPreference,
+    pub contrast_preference: ContrastPreference,
+    capture_directory: Option<PathBuf>,
+    capture_scenario: Option<String>,
     validated_phase8: Option<ValidatedPhase8Capabilities>,
     bridge: ControllerBridge,
     discovery: Arc<dyn AsyncReceiverDiscovery>,
@@ -416,6 +444,11 @@ impl Gui {
             status_confirmed_generation: None,
             messages: VecDeque::new(),
             messages_collapsed: false,
+            text_scale: 100,
+            motion_preference: MotionPreference::Normal,
+            contrast_preference: ContrastPreference::Normal,
+            capture_directory: std::env::var_os("DENON_AVR_CAPTURE_DIR").map(PathBuf::from),
+            capture_scenario: None,
             validated_phase8,
             bridge,
             discovery: Arc::new(NoopDiscovery),
@@ -443,6 +476,90 @@ impl Gui {
     /// Adds feedback to the global chronological message surface.
     pub fn record_message(&mut self, message: impl Into<String>) {
         self.announce(message);
+    }
+    fn capture_destination(&self) -> Option<PathBuf> {
+        let route = match self.route {
+            Route::Dashboard => "dashboard",
+            Route::Receivers => "receivers",
+            Route::Settings => "settings",
+            Route::Advanced => "advanced",
+            Route::Diagnostics => "diagnostics",
+        };
+        let scenario = self.capture_scenario.as_deref().unwrap_or(route);
+        self.capture_directory.as_ref().map(|directory| {
+            directory
+                .join(std::env::consts::OS)
+                .join(format!("{scenario}-{}pct.png", self.text_scale))
+        })
+    }
+    fn configure_capture_scenario(&mut self, scenario: &str) -> Result<(), String> {
+        self.messages.clear();
+        self.messages_collapsed = false;
+        self.route = Route::Dashboard;
+        self.selection = Some(ReceiverSelection::ExplicitHost(ReceiverIdentity {
+            host: "capture.invalid".into(),
+            model: Some("AVR-X3800H".into()),
+            friendly_name: Some("Capture receiver".into()),
+        }));
+        self.generation = 1;
+        self.lifecycle = denon_avr_application::Lifecycle::Connected { generation: 1 };
+        self.snapshot = MainZoneSnapshot::default();
+        self.snapshot.set_value(
+            MainZoneValue::Power(PowerState::On),
+            StateAuthority::Authoritative,
+        );
+        self.snapshot.set_value(
+            MainZoneValue::Input(Input::new("GAME").expect("fixed capture input")),
+            StateAuthority::Authoritative,
+        );
+        self.snapshot.set_value(
+            MainZoneValue::Volume(Volume::from_parts("350", -300)),
+            StateAuthority::Authoritative,
+        );
+        self.snapshot.set_value(
+            MainZoneValue::Mute(MuteState::Off),
+            StateAuthority::Authoritative,
+        );
+        self.snapshot.set_value(
+            MainZoneValue::SurroundMode(
+                SurroundMode::new("DOLBY SURROUND").expect("fixed capture mode"),
+            ),
+            StateAuthority::Authoritative,
+        );
+        self.volume_slider = 35.0;
+        self.source_picker_open = false;
+        match scenario {
+            "connected" => self.announce("Deterministic capture scenario: connected."),
+            "source-picker" => {
+                self.source_picker_open = true;
+                self.announce("Deterministic capture scenario: source picker.");
+            }
+            "unavailable" => {
+                self.snapshot.invalidate();
+                self.lifecycle = denon_avr_application::Lifecycle::Disconnected;
+                self.announce("Deterministic capture scenario: unavailable receiver.");
+            }
+            "settings" => {
+                self.route = Route::Settings;
+                self.announce("Deterministic capture scenario: settings.");
+            }
+            "receivers" => {
+                self.route = Route::Receivers;
+                self.announce("Deterministic capture scenario: receiver setup.");
+            }
+            "diagnostics" => {
+                self.route = Route::Diagnostics;
+                self.announce("Deterministic capture scenario: diagnostics.");
+            }
+            "messages" => {
+                self.announce("Deterministic capture scenario: global messages.");
+                self.announce("Command confirmed by capture receiver.");
+                self.announce("No pending receiver operation.");
+            }
+            _ => return Err(format!("unknown capture scenario {scenario:?}; use connected, source-picker, unavailable, settings, receivers, diagnostics, or messages")),
+        }
+        self.capture_scenario = Some(scenario.into());
+        Ok(())
     }
     fn command(&mut self, command: BridgeCommand) -> Task<Message> {
         let bridge = self.bridge.clone();
@@ -511,6 +628,57 @@ impl Gui {
             Message::ClearMessages => {
                 self.messages.clear();
                 self.announcement = "Message history cleared.".into();
+                Task::none()
+            }
+            Message::SetTextScale(scale) => {
+                self.text_scale = scale.clamp(100, 200);
+                self.announce(format!(
+                    "Text scale set to {}% for this session.",
+                    self.text_scale
+                ));
+                Task::none()
+            }
+            Message::SetMotion(preference) => {
+                self.motion_preference = preference;
+                self.announce(match preference {
+                    MotionPreference::Normal => "Normal motion enabled for this session.",
+                    MotionPreference::Reduced => "Reduced motion enabled for this session.",
+                });
+                Task::none()
+            }
+            Message::SetContrast(preference) => {
+                self.contrast_preference = preference;
+                self.announce(match preference {
+                    ContrastPreference::Normal => "Normal contrast enabled for this session.",
+                    ContrastPreference::High => "High contrast enabled for this session.",
+                });
+                Task::none()
+            }
+            Message::CaptureVisual => {
+                if self.capture_destination().is_none() {
+                    self.announce("Visual capture is disabled. Set DENON_AVR_CAPTURE_DIR to an explicit output directory.");
+                    return Task::none();
+                }
+                capture_window()
+            }
+            Message::ScreenshotCaptured(screenshot) => {
+                let Some(destination) = self.capture_destination() else {
+                    self.announce(
+                        "Discarded visual capture because DENON_AVR_CAPTURE_DIR is not set.",
+                    );
+                    return Task::none();
+                };
+                Task::perform(
+                    async move { capture::write_png(screenshot, &destination) },
+                    Message::ScreenshotWritten,
+                )
+            }
+            Message::ScreenshotWritten(Ok(path)) => {
+                self.announce(format!("Wrote native PNG capture to {}.", path.display()));
+                Task::none()
+            }
+            Message::ScreenshotWritten(Err(error)) => {
+                self.announce(format!("Could not write native PNG capture: {error}"));
                 Task::none()
             }
             Message::AddressChanged(value) => {
@@ -975,7 +1143,45 @@ impl Gui {
     }
 
     fn settings(&self) -> iced::widget::Column<'_, Message> {
-        column![text("Settings").size(32), components::panel("Appearance", column![text("Dark console theme").size(16), text("The receiver console uses a dark-only palette for a calm, low-glare workspace.").color(design::MUTED), text("Host accessibility integration is pending verification: reduced motion, contrast, and text scaling up to 200%.").color(design::MUTED)]), components::panel("Configuration", column![text("YAML configuration is managed by the desktop host."), text("Quick Select slot editing requires validated receiver support.").color(design::MUTED)])].spacing(18)
+        let scale_controls = [
+            (100_u8, "100%"),
+            (125, "125%"),
+            (150, "150%"),
+            (175, "175%"),
+            (200, "200%"),
+        ]
+        .into_iter()
+        .fold(row![].spacing(8), |row, (scale, label)| {
+            row.push(components::toggle_action(
+                "Aa",
+                label,
+                self.text_scale == scale,
+                Message::SetTextScale(scale),
+            ))
+        });
+        column![
+            text("Settings").size(32),
+            components::panel("Appearance", column![
+                text("Dark console theme").size(16),
+                text("Session accessibility overrides are never persisted. When a reliable host preference is available it is the starting point; these controls take precedence.").color(design::MUTED),
+                text("Text scale").color(design::MUTED),
+                scale_controls,
+                text("Motion").color(design::MUTED),
+                row![
+                    components::toggle_action("◌", "Normal", self.motion_preference == MotionPreference::Normal, Message::SetMotion(MotionPreference::Normal)),
+                    components::toggle_action("◐", "Reduced", self.motion_preference == MotionPreference::Reduced, Message::SetMotion(MotionPreference::Reduced)),
+                ].spacing(8),
+                text("Contrast").color(design::MUTED),
+                row![
+                    components::toggle_action("◒", "Normal", self.contrast_preference == ContrastPreference::Normal, Message::SetContrast(ContrastPreference::Normal)),
+                    components::toggle_action("◑", "High", self.contrast_preference == ContrastPreference::High, Message::SetContrast(ContrastPreference::High)),
+                ].spacing(8),
+                components::quiet_action("Capture current screen", Message::CaptureVisual),
+                text("Capture is enabled only when DENON_AVR_CAPTURE_DIR names an explicit directory. Files are native RGBA PNGs organized by platform, route, and text scale.").color(design::MUTED),
+                text("Screen-reader semantic support is release-blocked pending an Iced native accessibility bridge and three-platform audit.").color(design::MUTED),
+            ].spacing(10)),
+            components::panel("Configuration", column![text("YAML configuration is managed by the desktop host."), text("Quick Select slot editing requires validated receiver support.").color(design::MUTED)])
+        ].spacing(18)
     }
 
     fn advanced(&self) -> iced::widget::Column<'_, Message> {
@@ -1225,10 +1431,13 @@ impl Gui {
             page = page.push(
                 row![
                     text(format!("{name} · {}", identity.host)),
-                    button("Select").on_press(Message::Select(ReceiverSelection::Saved {
-                        name: name.clone(),
-                        identity: identity.clone()
-                    }))
+                    components::quiet_action(
+                        "Select",
+                        Message::Select(ReceiverSelection::Saved {
+                            name: name.clone(),
+                            identity: identity.clone()
+                        })
+                    )
                 ]
                 .spacing(12),
             );
@@ -1248,12 +1457,16 @@ impl Gui {
             );
         }
         page.push(text("Find a receiver"))
-            .push(button("Discover").on_press(Message::Discover))
+            .push(components::quiet_action("Discover", Message::Discover))
             .push(
                 row![
-                    text_input("Receiver address", &self.address).on_input(Message::AddressChanged),
-                    text_input("Name (optional)", &self.name).on_input(Message::NameChanged),
-                    button("Save and connect").on_press(Message::ManualSetup)
+                    text_input("Receiver address", &self.address)
+                        .on_input(Message::AddressChanged)
+                        .style(design::text_field),
+                    text_input("Name (optional)", &self.name)
+                        .on_input(Message::NameChanged)
+                        .style(design::text_field),
+                    components::action("Save and connect", Message::ManualSetup)
                 ]
                 .spacing(8),
             )
@@ -1378,7 +1591,7 @@ fn dashboard_header(
     };
     row![
         container(power_button).align_right(Length::Fill),
-        container(text("DENON").size(20).color(iced::Color::WHITE)).center_x(Length::Fixed(120.0)),
+        container(text("RECEIVER").size(13).color(design::MUTED)).center_x(Length::Fixed(120.0)),
         space().width(Length::Fill)
     ]
     .align_y(iced::Alignment::Center)
@@ -1721,6 +1934,28 @@ pub fn boot_with_services(services: GuiServices) -> (Gui, Task<Message>) {
     ));
     gui.discovery = services.discovery;
     gui.configuration = Arc::clone(&services.configuration);
+    if let Some(scenario) = std::env::var_os("DENON_AVR_CAPTURE_SCENARIO") {
+        let scenario = scenario.to_string_lossy();
+        let message = match gui.configure_capture_scenario(&scenario) {
+            Ok(()) => format!("Capture mode enabled for scenario {scenario:?}."),
+            Err(error) => format!("Capture mode configuration error: {error}"),
+        };
+        gui.announce(message);
+        if let Some(scale) = std::env::var_os("DENON_AVR_CAPTURE_SCALE") {
+            match scale.to_string_lossy().parse::<u8>() {
+                Ok(scale @ (100 | 125 | 150 | 175 | 200)) => gui.text_scale = scale,
+                _ => {
+                    gui.announce("Ignored DENON_AVR_CAPTURE_SCALE; use 100, 125, 150, 175, or 200.")
+                }
+            }
+        }
+        let task = if gui.capture_directory.is_some() {
+            capture_window()
+        } else {
+            Task::none()
+        };
+        return (gui, task);
+    }
     let repository = services.configuration;
     (
         gui,
@@ -1731,11 +1966,23 @@ pub fn boot_with_services(services: GuiServices) -> (Gui, Task<Message>) {
     )
 }
 
+fn capture_window() -> Task<Message> {
+    iced::window::latest().then(|id| match id {
+        Some(id) => iced::window::screenshot(id).map(Message::ScreenshotCaptured),
+        None => Task::done(Message::ScreenshotWritten(Err(
+            "could not capture: no application window exists".into(),
+        ))),
+    })
+}
+
 pub fn update(gui: &mut Gui, message: Message) -> Task<Message> {
     gui.update(message)
 }
-pub fn app_theme(_: &Gui) -> iced::Theme {
-    design::theme()
+pub fn app_theme(gui: &Gui) -> iced::Theme {
+    design::theme(gui.contrast_preference == ContrastPreference::High)
+}
+pub fn app_scale(gui: &Gui) -> f32 {
+    f32::from(gui.text_scale) / 100.0
 }
 pub fn view(gui: &Gui) -> Element<'_, Message> {
     gui.view()
@@ -1783,6 +2030,46 @@ impl denon_avr_application::AsyncConfigRepository for NoopConfiguration {
 mod tests {
     use super::*;
     use denon_avr_infrastructure::AvrSessionFactory;
+
+    #[tokio::test]
+    async fn accessibility_overrides_are_session_only_and_update_theme_state() {
+        let bridge = ControllerBridge::new(AvrSessionFactory::default());
+        let mut gui = Gui::new(bridge);
+        let _ = gui.update(Message::SetTextScale(200));
+        let _ = gui.update(Message::SetMotion(MotionPreference::Reduced));
+        let _ = gui.update(Message::SetContrast(ContrastPreference::High));
+
+        assert_eq!(gui.text_scale, 200);
+        assert_eq!(app_scale(&gui), 2.0);
+        assert_eq!(gui.motion_preference, MotionPreference::Reduced);
+        assert_eq!(gui.contrast_preference, ContrastPreference::High);
+        assert!(matches!(app_theme(&gui), iced::Theme::Custom(_)));
+    }
+
+    #[tokio::test]
+    async fn fixed_capture_scenarios_do_not_need_a_receiver_connection() {
+        let bridge = ControllerBridge::new(AvrSessionFactory::default());
+        let mut gui = Gui::new(bridge);
+        gui.configure_capture_scenario("source-picker").unwrap();
+        assert_eq!(
+            gui.lifecycle,
+            denon_avr_application::Lifecycle::Connected { generation: 1 }
+        );
+        assert_eq!(gui.snapshot.power.value(), Some(&PowerState::On));
+        assert!(gui.source_picker_open);
+
+        gui.configure_capture_scenario("unavailable").unwrap();
+        assert_eq!(
+            gui.lifecycle,
+            denon_avr_application::Lifecycle::Disconnected
+        );
+        assert!(gui.snapshot.power.value().is_none());
+
+        gui.configure_capture_scenario("diagnostics").unwrap();
+        assert_eq!(gui.route, Route::Diagnostics);
+        gui.configure_capture_scenario("messages").unwrap();
+        assert!(gui.messages.len() >= 3);
+    }
     #[tokio::test]
     async fn stale_bridge_results_are_ignored() {
         // State construction is kept independent of widgets, making ordering

@@ -2,7 +2,7 @@
 
 CARGO ?= cargo
 
-.PHONY: help format format-check check test build run run-gui run-release run-diagnostics run-diagnostics-http clippy boundary clean
+.PHONY: help format format-check check test build run run-gui run-release run-diagnostics run-diagnostics-http visual-baselines clippy boundary clean
 
 help: ## Show available developer commands
 	@echo "Available targets:"
@@ -38,6 +38,9 @@ run-diagnostics: ## Run the diagnostics probe (use ARGS="...")
 
 run-diagnostics-http: ## Run the HTTP diagnostics probe (use ARGS="...")
 	$(CARGO) run -p denon-avr-diagnostics --bin x3800h-http-info-probe -- $(ARGS)
+
+visual-baselines: ## Compare native GUI captures (use PLATFORM=macos|windows|linux CAPTURES=DIR)
+	tools/check-visual-baselines.sh "$(PLATFORM)" "$(CAPTURES)"
 
 run-release: ## Run the CLI with release optimizations (use ARGS="...")
 	$(CARGO) run --release -p denon-avr-cli --bin denon-avr-remote -- $(ARGS)

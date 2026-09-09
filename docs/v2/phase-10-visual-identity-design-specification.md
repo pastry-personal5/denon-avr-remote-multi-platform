@@ -1,6 +1,6 @@
 # Version 2 - Phase 10 Visual Identity
 
-**Status: Planned — begins after completed Phases 8 and 9.**
+**Status: In progress — tokens and shell are implemented; evidence gates remain open.**
 
 This specification is authoritative for Phase 10 appearance. It complements
 the Phase 2 information architecture and interaction rules; it does not alter
@@ -64,12 +64,19 @@ panel, and background-surface transitions may run for 300–600 ms. Receiver
 values, pending operations, confirmations, errors, and status text update
 immediately and are never animated in a way that implies confirmation. With
 reduced motion, remove shell transitions and spinners while retaining static
-feedback. Use the host higher-contrast preference where Iced supports it.
+feedback. Use the host higher-contrast preference where Iced reliably exposes
+it. The current implementation also provides session-only manual text-scale
+(100–200%), motion, and contrast overrides; manual choices take precedence and
+are never persisted. Host preference detection remains evidence-gated.
 Required keyboard, focus, contrast, text-scaling, and screen-reader semantics
 are release-blocking; do not claim support where the selected Iced runtime
 cannot provide it.
 
-Capture deterministic visual-regression cases for the wide layout at 1400 ×
-880, each component state, and 100%/200% text. Commit reviewed screenshot
-baselines. Verify keyboard-only traversal, readable outcome copy, contrast, and
-platform accessibility semantics on macOS, Windows, and Linux before release.
+Capture deterministic fake-service cases through Iced's native window
+screenshots at 1400 × 880 and 100%/200% scale, encode per-platform PNG
+baselines, and compare them in automated checks. Verify keyboard-only
+traversal, readable outcome copy, contrast, and platform accessibility
+semantics on macOS, Windows, and Linux before release. Iced must first provide
+a native semantic accessibility bridge and it must pass VoiceOver, Narrator,
+and Orca validation of roles, values, state, focus, and outcomes. Otherwise
+the phase remains open; a parallel custom accessibility tree is out of scope.

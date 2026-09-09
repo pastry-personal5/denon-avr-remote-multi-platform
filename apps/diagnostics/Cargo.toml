@@ -10,6 +10,9 @@ path = "src/context_probe.rs"
 [[bin]]
 name = "x3800h-http-info-probe"
 path = "src/http_info_probe.rs"
+[[bin]]
+name = "source-catalog-probe"
+path = "src/source_catalog_probe.rs"
 [dependencies]
 denon-avr-domain = { path = "../../crates/domain" }
 denon-avr-infrastructure = { path = "../../crates/infrastructure" }

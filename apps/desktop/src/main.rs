@@ -30,6 +30,7 @@ fn main() -> iced::Result {
     )
     .subscription(denon_avr_gui_lib::subscription)
     .theme(denon_avr_gui_lib::app_theme)
+    .scale_factor(denon_avr_gui_lib::app_scale)
     .window(iced::window::Settings {
         size: iced::Size::new(1400.0, 880.0),
         min_size: Some(iced::Size::new(1400.0, 880.0)),

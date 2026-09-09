@@ -13,6 +13,8 @@ denon-avr-domain = { path = "../domain" }
 iced = { version = "0.14", default-features = true, features = ["tokio"] }
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
 tracing = "0.1"
+flate2 = "1"
+crc32fast = "1"
 
 [dev-dependencies]
 denon-avr-infrastructure = { path = "../infrastructure" }

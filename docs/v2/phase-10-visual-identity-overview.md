@@ -1,6 +1,6 @@
 # Version 2 - Phase 10 Overview
 
-**Status: Planned — begins after completed Phases 8 and 9.**
+**Status: In progress — implementation exists; release evidence remains open.**
 
 Phase 10 gives the desktop application a cohesive visual identity while
 preserving its established receiver behavior, routes, and safety guarantees.
@@ -22,11 +22,10 @@ motion/contrast accommodations supported by Iced.
 
 Phase 10 adds no speculative receiver capability, light mode, theme picker,
 appearance persistence, vendor branding, third-party visual assets, HEOS,
-additional zones, web/mobile client, or cloud service. The planned
-[source-catalog extension](phase-10-source-catalog-overview.md) is the narrow
-exception: it reads the receiver's own renamed and hidden-source settings and
-uses them consistently in the desktop presentation. Any desktop mutation of
-those settings remains evidence-gated.
+additional zones, web/mobile client, or cloud service. The
+[source-catalog increment](phase-11-source-catalog-overview.md) is independent
+and separately evidence-gated; it is not a dependency of visual-identity
+completion.
 
 ## Deliverables
 
@@ -34,8 +33,9 @@ those settings remains evidence-gated.
 - Consistent styles for normal, focused, disabled, pending, confirmed,
   rejected, unconfirmed, unavailable, and error states.
 - Wide-layout rules for every established route at the minimum window size.
-- Committed deterministic screenshot baselines, accessibility checks, and
-  host-platform review.
+- A capture harness using Iced's native screenshot API, committed PNG
+  baselines, accessibility checks, and host-platform review. These are still
+  required before this phase can close.
 
 ## Acceptance Criteria
 
