@@ -81,35 +81,15 @@ impl fmt::Display for SurroundMode {
     }
 }
 
+/// Presentation-only organization for the receiver's individual sound modes.
+/// It is deliberately not a control: selecting a mode always sends its exact
+/// `MS…` value, never the old category-recall command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ListeningModeGroup {
+pub enum SoundModeCategory {
     Movie,
     Music,
     Game,
-}
-
-impl ListeningModeGroup {
-    pub const ALL: [Self; 3] = [Self::Movie, Self::Music, Self::Game];
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Movie => "Movie",
-            Self::Music => "Music",
-            Self::Game => "Game",
-        }
-    }
-    pub const fn command_suffix(self) -> &'static str {
-        match self {
-            Self::Movie => "MOVIE",
-            Self::Music => "MUSIC",
-            Self::Game => "GAME",
-        }
-    }
-}
-
-impl fmt::Display for ListeningModeGroup {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
-    }
+    Pure,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -302,7 +282,45 @@ pub enum MainZoneControl {
     Volume(VolumeLevel),
     Mute(MuteState),
     SurroundMode(SurroundMode),
-    ListeningModeGroup(ListeningModeGroup),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Zone2Control {
+    Power(PowerState),
+}
+
+/// The independent Zone 2 state. It is intentionally separate from the Main
+/// Zone snapshot because Denon `Z2` commands do not target `PW`/Zone 1.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Zone2Snapshot {
+    pub power: FieldStatus<PowerState>,
+    pub freshness: Freshness,
+    pub authority: StateAuthority,
+}
+
+impl Default for Zone2Snapshot {
+    fn default() -> Self {
+        Self {
+            power: FieldStatus::Unavailable(not_queried()),
+            freshness: Freshness::Unknown,
+            authority: StateAuthority::Unconfirmed,
+        }
+    }
+}
+
+impl Zone2Snapshot {
+    pub fn invalidate(&mut self) {
+        *self = Self::default();
+        self.freshness = Freshness::Invalidated;
+    }
+    pub fn set_power(&mut self, power: PowerState, authority: StateAuthority) {
+        self.power = FieldStatus::Value(power);
+        self.freshness = Freshness::Live;
+        self.authority = authority;
+    }
+    pub fn set_error(&mut self, error: FieldError) {
+        self.power = FieldStatus::Unavailable(error);
+    }
 }
 
 impl fmt::Display for MainZoneValue {

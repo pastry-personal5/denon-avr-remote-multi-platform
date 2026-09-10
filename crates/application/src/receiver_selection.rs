@@ -150,6 +150,7 @@ mod tests {
                 "living-room".into(),
                 ReceiverIdentity::ad_hoc("192.0.2.10"),
             )]),
+            ..ConfiguredReceivers::default()
         }
     }
 

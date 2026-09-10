@@ -2,7 +2,7 @@
 
 use crate::{BridgeEvent, ContrastPreference, MotionPreference, Route};
 use denon_avr_application::ReceiverSelection;
-use denon_avr_domain::{ConfiguredReceivers, ListeningModeGroup, QuickSelectSlot};
+use denon_avr_domain::{ConfiguredReceivers, PowerState, QuickSelectSlot};
 use std::path::PathBuf;
 
 #[derive(Debug, Clone)]
@@ -24,6 +24,12 @@ pub enum Message {
     Disconnect,
     /// Toggle the receiver's Main Zone (Zone 1) power state.
     ToggleMainZonePower,
+    ToggleZone2Power,
+    OpenMainZonePowerPopup,
+    OpenZone2PowerPopup,
+    ClosePowerPopup,
+    SetMainZonePower(PowerState),
+    SetZone2Power(PowerState),
     Mute,
     Unmute,
     VolumeChanged(f32),
@@ -31,8 +37,9 @@ pub enum Message {
     AdjustVolume(f32),
     HideVolumeValue(u64),
     LaunchTick,
-    SelectListeningModeGroup(ListeningModeGroup),
     SelectSurroundMode(String),
+    ToggleSoundModeFavorite(String),
+    SoundModeFavoritesSaved(Result<ConfiguredReceivers, String>),
     OpenSourcePicker,
     CloseSourcePicker,
     SelectInput(String),

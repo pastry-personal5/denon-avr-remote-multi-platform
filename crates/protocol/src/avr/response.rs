@@ -82,6 +82,17 @@ pub fn parse_main_zone_event(line: &str) -> MainZoneEvent {
     MainZoneEvent::Unknown(line.to_owned())
 }
 
+/// Parses the AVR-X3800H's independent Zone 2 power family.
+pub fn parse_zone2_power(response: &str) -> Result<PowerState, AvrProtocolError> {
+    match response {
+        "Z2ON" => Ok(PowerState::On),
+        "Z2OFF" => Ok(PowerState::Standby),
+        _ => Err(AvrProtocolError::MalformedResponse(
+            "invalid Z2 power response",
+        )),
+    }
+}
+
 fn prefixed<'a>(
     response: &'a str,
     prefix: &str,
@@ -146,6 +157,12 @@ mod tests {
     }
 
     #[test]
+    fn parses_zone_2_power() {
+        assert_eq!(parse_zone2_power("Z2ON").unwrap(), PowerState::On);
+        assert_eq!(parse_zone2_power("Z2OFF").unwrap(), PowerState::Standby);
+    }
+
+    #[test]
     fn response_matching_rejects_wrong_or_malformed_families() {
         assert!(response_matches("SI", "SICD"));
         assert!(!response_matches("SI", "MSSTEREO"));
@@ -179,5 +196,15 @@ mod tests {
             "MSSTEREO"
         )
         .is_err());
+    }
+
+    #[test]
+    fn parses_the_x3800h_multi_channel_stereo_status_spelling() {
+        assert_eq!(
+            parse_main_zone_response(MainZoneField::SurroundMode, "MSMCH STEREO")
+                .unwrap()
+                .to_string(),
+            "MCH STEREO"
+        );
     }
 }

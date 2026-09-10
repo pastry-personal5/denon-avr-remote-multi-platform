@@ -19,11 +19,12 @@ The initial AVC/AVR-X3800H candidate mapping is:
 
 | Group | Modes |
 | --- | --- |
-| Movie | Stereo, Dolby Surround, Multi Ch Stereo, Mono Movie |
-| Music | Stereo, Dolby Surround, Multi Ch Stereo, Rock Arena, Jazz Club, Matrix |
+| Movie | Stereo, Dolby Surround, MCH Stereo, Mono Movie |
+| Music | Stereo, Dolby Surround, MCH Stereo, Rock Arena, Jazz Club, Matrix |
 | Game | Stereo, Dolby Surround, Video Game |
 
-The receiver's exact spelling `Multi Ch Stereo` is used. Shared modes are
+The AVR Telnet protocol's exact spelling `MCH STEREO` is used. (The HTTP
+Information view may label the same mode `Multi Ch Stereo`.) Shared modes are
 defined once and may appear in more than one group. Selecting Movie, Music,
 or Game is itself a receiver control: the receiver recalls the last mode
 saved for that group. The GUI must preserve and display that recalled mode;

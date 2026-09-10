@@ -8,10 +8,11 @@ use crate::main_zone_control::{
 };
 use denon_avr_domain::{
     ConnectionState, DiscoveredReceiver, EqStatus, MainZoneControl, MainZoneEvent, MainZoneField,
-    MainZoneSnapshot, MainZoneValue, Model, ModelCapabilities, QuickSelectEqCapabilities,
-    QuickSelectNameObservation, QuickSelectRecallOutcome, QuickSelectSlot, QuickSelectSnapshot,
-    ReceiverIdentity, SourceCatalog, SourceCatalogCapabilities, SourceCatalogObservation,
-    StateAuthority,
+    MainZoneSnapshot, MainZoneValue, Model, ModelCapabilities, PowerState,
+    QuickSelectEqCapabilities, QuickSelectNameObservation, QuickSelectRecallOutcome,
+    QuickSelectSlot, QuickSelectSnapshot, ReceiverIdentity, SourceCatalog,
+    SourceCatalogCapabilities, SourceCatalogObservation, StateAuthority, Zone2Control,
+    Zone2Snapshot,
 };
 use std::sync::Arc;
 use std::time::Duration;
@@ -45,6 +46,9 @@ pub enum ReceiverCommand {
     Control {
         control: MainZoneControl,
         expected_version: Option<u64>,
+    },
+    ControlZone2 {
+        power: PowerState,
     },
     RefreshQuickSelectEq,
     RefreshSourceCatalog,
@@ -92,6 +96,7 @@ pub enum Diagnostic {
 pub enum ReceiverEvent {
     Lifecycle(Lifecycle),
     Snapshot(MainZoneSnapshot),
+    Zone2Snapshot(Zone2Snapshot),
     FieldError {
         field: MainZoneField,
         error: denon_avr_domain::FieldError,
@@ -198,6 +203,9 @@ impl ControllerHandle {
         })
         .await
     }
+    pub async fn control_zone2(&self, power: PowerState) -> Result<CommandReply, OperationError> {
+        self.send(ReceiverCommand::ControlZone2 { power }).await
+    }
     pub async fn shutdown(&self) -> Result<CommandReply, OperationError> {
         self.send(ReceiverCommand::Shutdown).await
     }
@@ -245,6 +253,7 @@ impl ReceiverController {
                 selection: None,
                 session: None,
                 snapshot: MainZoneSnapshot::default(),
+                zone2: Zone2Snapshot::default(),
                 lifecycle: Lifecycle::NoReceiver,
                 generation: 0,
                 quick_select: QuickSelectSnapshot::default(),
@@ -255,11 +264,14 @@ impl ReceiverController {
                 source_catalog_observation: None,
                 quick_select_names_observation: None,
             };
-            let mut information_interval = tokio::time::interval(Duration::from_secs(30));
-            information_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            let mut monitor_tick = tokio::time::interval(Duration::from_millis(25));
+            monitor_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            let mut reconcile_interval = tokio::time::interval(Duration::from_secs(15));
+            reconcile_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             // The first automatic read follows an authoritative status refresh,
             // not controller startup.
-            information_interval.tick().await;
+            monitor_tick.tick().await;
+            reconcile_interval.tick().await;
             loop {
                 tokio::select! {
                     envelope = rx.recv() => {
@@ -286,9 +298,13 @@ impl ReceiverController {
                             let _ = state.refresh_quick_select_names(&events).await;
                         }
                     }
-                    _ = information_interval.tick() => {
-                        let _ = state.refresh_http_information(&events).await;
+                    _ = monitor_tick.tick() => {
                         state.drain_session_events(&events).await;
+                    }
+                    _ = reconcile_interval.tick() => {
+                        let _ = state.refresh(&events).await;
+                        let _ = state.refresh_zone2(&events).await;
+                        let _ = state.refresh_http_information(&events).await;
                     }
                 }
             }
@@ -313,6 +329,7 @@ struct State<F> {
     selection: Option<ReceiverSelection>,
     session: Option<Box<dyn ReceiverSession>>,
     snapshot: MainZoneSnapshot,
+    zone2: Zone2Snapshot,
     lifecycle: Lifecycle,
     generation: u64,
     quick_select: QuickSelectSnapshot,
@@ -356,12 +373,17 @@ impl<F: SessionFactory> State<F> {
             }
             ReceiverCommand::Refresh => {
                 self.refresh(events).await?;
+                let _ = self.refresh_zone2(events).await;
                 // Keep startup/refresh bounded by the core Main Zone queries.
                 // HTTP information and Quick Select names are supplemental
                 // reads; awaiting either here would prevent the bridge from
                 // forwarding the Connected/core Snapshot events when an
                 // optional endpoint stalls or is unsupported.
                 Ok(Some(ReceiverEvent::Snapshot(self.snapshot.clone())))
+            }
+            ReceiverCommand::ControlZone2 { power } => {
+                let result = self.control_zone2(power, events).await;
+                Ok(Some(ReceiverEvent::Control(result)))
             }
             ReceiverCommand::RefreshQuickSelectEq => {
                 self.refresh_quick_select_eq(events).await?;
@@ -449,17 +471,20 @@ impl<F: SessionFactory> State<F> {
             Err(e) => {
                 self.lifecycle = Lifecycle::Disconnected;
                 self.snapshot.invalidate();
+                self.zone2.invalidate();
                 self.invalidate_quick_select_eq();
                 self.invalidate_source_catalog();
                 self.snapshot.invalidate_http_information(self.generation);
                 Self::emit(events, ReceiverEvent::Lifecycle(Lifecycle::Disconnected)).await;
                 Self::emit(events, ReceiverEvent::Snapshot(self.snapshot.clone())).await;
+                Self::emit(events, ReceiverEvent::Zone2Snapshot(self.zone2.clone())).await;
                 Err(e)
             }
         }
     }
     async fn disconnect(&mut self) -> Result<(), OperationError> {
         self.snapshot.invalidate();
+        self.zone2.invalidate();
         self.invalidate_quick_select_eq();
         self.invalidate_source_catalog();
         self.snapshot.invalidate_http_information(self.generation);
@@ -513,11 +538,13 @@ impl<F: SessionFactory> State<F> {
                         generation: self.generation,
                     };
                     self.snapshot.invalidate();
+                    self.zone2.invalidate();
                     self.invalidate_quick_select_eq();
                     self.invalidate_source_catalog();
                     self.snapshot.invalidate_http_information(self.generation);
                     Self::emit(events, ReceiverEvent::Lifecycle(self.lifecycle.clone())).await;
                     Self::emit(events, ReceiverEvent::Snapshot(self.snapshot.clone())).await;
+                    Self::emit(events, ReceiverEvent::Zone2Snapshot(self.zone2.clone())).await;
                 }
                 Ok(SessionEvent::Connection(ConnectionState::Connected)) => {
                     let was_reconnecting = matches!(self.lifecycle, Lifecycle::Reconnecting { .. });
@@ -538,11 +565,13 @@ impl<F: SessionFactory> State<F> {
                 Ok(SessionEvent::Connection(ConnectionState::Disconnected)) => {
                     self.lifecycle = Lifecycle::Disconnected;
                     self.snapshot.invalidate();
+                    self.zone2.invalidate();
                     self.invalidate_quick_select_eq();
                     self.invalidate_source_catalog();
                     self.snapshot.invalidate_http_information(self.generation);
                     Self::emit(events, ReceiverEvent::Lifecycle(self.lifecycle.clone())).await;
                     Self::emit(events, ReceiverEvent::Snapshot(self.snapshot.clone())).await;
+                    Self::emit(events, ReceiverEvent::Zone2Snapshot(self.zone2.clone())).await;
                 }
                 Ok(SessionEvent::MainZone(event)) => {
                     let refresh_information = matches!(
@@ -559,17 +588,23 @@ impl<F: SessionFactory> State<F> {
                         let _ = self.refresh_http_information(events).await;
                     }
                 }
+                Ok(SessionEvent::Zone2Power(power)) => {
+                    self.zone2.set_power(power, StateAuthority::Event);
+                    Self::emit(events, ReceiverEvent::Zone2Snapshot(self.zone2.clone())).await;
+                }
                 Err(error) => {
                     self.observability.record(Diagnostic::Timeout {
                         context: error.to_string(),
                     });
                     self.lifecycle = Lifecycle::Disconnected;
                     self.snapshot.invalidate();
+                    self.zone2.invalidate();
                     self.invalidate_quick_select_eq();
                     self.invalidate_source_catalog();
                     self.snapshot.invalidate_http_information(self.generation);
                     Self::emit(events, ReceiverEvent::Lifecycle(self.lifecycle.clone())).await;
                     Self::emit(events, ReceiverEvent::Snapshot(self.snapshot.clone())).await;
+                    Self::emit(events, ReceiverEvent::Zone2Snapshot(self.zone2.clone())).await;
                     return;
                 }
             }
@@ -626,6 +661,72 @@ impl<F: SessionFactory> State<F> {
         // command. Main Zone status (especially PWON) must be published even
         // when the receiver's optional HTTP endpoint is unavailable.
         Ok(())
+    }
+    async fn refresh_zone2(
+        &mut self,
+        events: &mpsc::Sender<ReceiverEvent>,
+    ) -> Result<(), OperationError> {
+        if !self.capabilities().zone2_power {
+            return Ok(());
+        }
+        let result = self
+            .session
+            .as_mut()
+            .ok_or_else(stopped)?
+            .query_zone2_power()
+            .await;
+        match result {
+            Ok(power) => self.zone2.set_power(power, StateAuthority::Authoritative),
+            Err(error) => self.zone2.set_error(field_error(error)),
+        }
+        Self::emit(events, ReceiverEvent::Zone2Snapshot(self.zone2.clone())).await;
+        Ok(())
+    }
+
+    async fn control_zone2(
+        &mut self,
+        power: PowerState,
+        events: &mpsc::Sender<ReceiverEvent>,
+    ) -> ControlResult {
+        if !self.capabilities().zone2_power {
+            return ControlResult::Unsupported(
+                "Zone 2 power is available only on AVR-X3800H receivers".into(),
+            );
+        }
+        if self.session.is_none() {
+            if let Err(error) = self.connect(events).await {
+                return ControlResult::Rejected(error);
+            }
+        }
+        if self.zone2.power.value() == Some(&power) {
+            return ControlResult::NoOp {
+                snapshot: self.snapshot.clone(),
+            };
+        }
+        let Some(session) = self.session.as_mut() else {
+            return ControlResult::Rejected(stopped());
+        };
+        if let Err(error) = session.execute_zone2_once(Zone2Control::Power(power)).await {
+            return ControlResult::TransportFailure(error);
+        }
+        match tokio::time::timeout(self.config.confirmation_timeout, self.refresh_zone2(events))
+            .await
+        {
+            Ok(Ok(())) if self.zone2.power.value() == Some(&power) => ControlResult::Confirmed {
+                snapshot: self.snapshot.clone(),
+            },
+            Ok(Ok(())) => ControlResult::Unconfirmed(OperationError::new(
+                OperationErrorKind::Unavailable,
+                "confirming Zone 2 power",
+                "receiver did not report requested value",
+            )),
+            Ok(Err(error)) => ControlResult::Unconfirmed(error),
+            Err(_) => ControlResult::Unconfirmed(OperationError::new(
+                OperationErrorKind::Timeout,
+                "confirming Zone 2 power",
+                "confirmation deadline expired",
+            )),
+        }
     }
     async fn refresh_http_information(
         &mut self,

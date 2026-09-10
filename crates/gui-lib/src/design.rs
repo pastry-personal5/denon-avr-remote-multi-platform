@@ -1,6 +1,6 @@
 //! Code-native visual tokens for the receiver console.
 
-use iced::widget::{button, container, text_input};
+use iced::widget::{button, container, radio, text_input};
 use iced::{Background, Color, Theme};
 
 pub const CANVAS: Color = Color::from_rgb(0.067, 0.075, 0.082);
@@ -15,6 +15,10 @@ pub const WARNING: Color = ACCENT;
 pub const ERROR: Color = Color::from_rgb(0.882, 0.431, 0.404);
 pub const HIGH_CONTRAST_BORDER: Color = Color::from_rgb(0.92, 0.94, 0.97);
 pub const MESSAGE_ICON: Color = Color::from_rgb(0.30, 0.32, 0.35);
+pub const SOUND_ROW_A: Color = Color::from_rgb(0.110, 0.129, 0.146);
+pub const SOUND_ROW_B: Color = Color::from_rgb(0.082, 0.096, 0.110);
+pub const SOUND_SELECTION_GLOW: Color = Color::from_rgb(1.0, 0.735, 0.300);
+pub const SOUND_HEART_DISABLED: Color = Color::from_rgb(0.145, 0.155, 0.165);
 
 pub const RAIL: f32 = 180.0;
 pub const MIN_WIDTH: f32 = 1100.0;
@@ -137,6 +141,70 @@ pub fn message_icon(theme: &Theme, status: button::Status) -> button::Style {
         } else {
             MESSAGE_ICON
         },
+        border: iced::Border::default(),
+        ..Default::default()
+    }
+}
+
+pub fn sound_mode_row_a(_: &Theme) -> container::Style {
+    sound_mode_row(SOUND_ROW_A)
+}
+
+pub fn sound_mode_row_b(_: &Theme) -> container::Style {
+    sound_mode_row(SOUND_ROW_B)
+}
+
+pub fn sound_mode_row_selected(_: &Theme) -> container::Style {
+    sound_mode_row(Color::from_rgb(0.245, 0.190, 0.105))
+}
+
+fn sound_mode_row(background: Color) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(background)),
+        border: iced::Border {
+            radius: 3.0.into(),
+            width: 1.0,
+            color: BORDER,
+        },
+        ..Default::default()
+    }
+}
+
+pub fn sound_mode_radio(_: &Theme, status: radio::Status) -> radio::Style {
+    let selected = match status {
+        radio::Status::Active { is_selected } | radio::Status::Hovered { is_selected } => {
+            is_selected
+        }
+    };
+    radio::Style {
+        background: Background::Color(if selected {
+            SOUND_SELECTION_GLOW
+        } else {
+            SURFACE
+        }),
+        dot_color: if selected { Color::WHITE } else { BORDER },
+        border_width: if selected { 2.0 } else { 1.0 },
+        border_color: if selected {
+            SOUND_SELECTION_GLOW
+        } else {
+            BORDER
+        },
+        text_color: None,
+    }
+}
+
+pub fn sound_mode_favorite_heart(_: &Theme, _: button::Status) -> button::Style {
+    sound_mode_heart(ERROR)
+}
+
+pub fn sound_mode_inactive_heart(_: &Theme, _: button::Status) -> button::Style {
+    sound_mode_heart(SOUND_HEART_DISABLED)
+}
+
+fn sound_mode_heart(color: Color) -> button::Style {
+    button::Style {
+        background: None,
+        text_color: color,
         border: iced::Border::default(),
         ..Default::default()
     }

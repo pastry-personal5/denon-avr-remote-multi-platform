@@ -10,6 +10,35 @@ pub(crate) const MIN_VOLUME_DB: f32 = -80.0;
 pub(crate) const MAX_VOLUME_DB: f32 = 18.5;
 pub(crate) const VOLUME_HALF_DB_STEPS: u16 = 197;
 pub(crate) const VOLUME_INDICATOR_HEIGHT: f32 = 28.0;
+pub(crate) const VOLUME_ROW_HEIGHT: f32 = 90.0;
+pub(crate) const DASHBOARD_INFORMATION_TOP_ROW_HEIGHT: f32 = 235.0;
+pub(crate) const DASHBOARD_INFORMATION_BOTTOM_ROW_HEIGHT: f32 = 170.0;
+pub(crate) const DASHBOARD_INFORMATION_ROW_GAP: f32 = 16.0;
+pub(crate) const SOUND_MODE_PANEL_HEIGHT: f32 = DASHBOARD_INFORMATION_TOP_ROW_HEIGHT
+    + DASHBOARD_INFORMATION_ROW_GAP
+    + DASHBOARD_INFORMATION_BOTTOM_ROW_HEIGHT;
+// The slider component reserves the 28 px indicator lane, its 2 px gap, the
+// slider lane, and the scale-label lane. These tokens make the optical
+// alignment below explicit and regression-testable.
+const VOLUME_SLIDER_COMPONENT_HEIGHT: f32 = 67.0;
+const VOLUME_THUMB_CENTER_IN_COMPONENT: f32 = 41.0;
+/// Optical offset that aligns adjacent buttons with the slider thumb rather
+/// than with the taller slider component (which also contains a value bubble
+/// and scale labels).
+pub(crate) const VOLUME_CONTROL_TOP_OFFSET: f32 =
+    2.0 * VOLUME_THUMB_CENTER_IN_COMPONENT - VOLUME_SLIDER_COMPONENT_HEIGHT;
+
+#[cfg(test)]
+const fn volume_slider_thumb_center(row_height: f32) -> f32 {
+    (row_height - VOLUME_SLIDER_COMPONENT_HEIGHT) / 2.0 + VOLUME_THUMB_CENTER_IN_COMPONENT
+}
+
+#[cfg(test)]
+const fn volume_button_center(row_height: f32) -> f32 {
+    // A button column is centered in the row; its button's center moves down
+    // by half the chosen optical top offset.
+    (row_height + VOLUME_CONTROL_TOP_OFFSET) / 2.0
+}
 
 pub(crate) fn slider_volume(snapshot: &MainZoneSnapshot) -> Option<f32> {
     snapshot
@@ -62,9 +91,6 @@ pub(crate) fn volume_slider<'a>(value: f32, shown_value: Option<f32>) -> Element
     .into()
 }
 
-/// The desktop dashboard intentionally exposes only the receiver's Main Zone
-/// (Zone 1). Denon `PW` commands target that zone; secondary-zone power
-/// commands are not available from this control.
 pub(crate) fn main_zone_power_control(power: Option<&PowerState>) -> Option<MainZoneControl> {
     match power {
         Some(PowerState::On) => Some(MainZoneControl::Power(PowerState::Standby)),
@@ -119,13 +145,18 @@ pub(crate) fn power_recovery(
 pub(crate) fn dashboard_header(
     power: Option<&PowerState>,
     power_action: Option<Message>,
+    main_zone_popup_action: Option<Message>,
+    zone2_power: Option<&PowerState>,
+    zone2_popup_action: Option<Message>,
+    source: &str,
+    catalog: SourceCatalog,
 ) -> Element<'static, Message> {
     let (icon, color) = match power {
         Some(PowerState::On) => ("⏻", design::SUCCESS),
         Some(PowerState::Standby) => ("⏻", design::MUTED),
         None => ("?", design::WARNING),
     };
-    let power_button = match power_action {
+    let power_button = match power_action.clone() {
         Some(action) => button(text(icon).size(24).color(color))
             .padding([6, 10])
             .style(design::secondary)
@@ -134,62 +165,129 @@ pub(crate) fn dashboard_header(
             .padding([6, 10])
             .style(design::secondary),
     };
-    row![
-        container(power_button).align_right(Length::Fill),
-        container(text("MAIN ZONE · ZONE 1").size(13).color(design::MUTED))
-            .center_x(Length::Fixed(160.0)),
-        space().width(Length::Fill)
-    ]
-    .align_y(iced::Alignment::Center)
+    let state_label = |name: &str, state: Option<&PowerState>| {
+        format!(
+            "{name} · {}",
+            match state {
+                Some(PowerState::On) => "ON",
+                Some(PowerState::Standby) => "STANDBY",
+                None => "UNAVAILABLE",
+            }
+        )
+    };
+    let zone2_label = button(
+        text(state_label("ZONE 2", zone2_power))
+            .size(13)
+            .color(design::MUTED),
+    )
+    .padding([6, 10])
+    .style(design::secondary);
+    let zone2_label = if let Some(action) = zone2_popup_action {
+        zone2_label.on_press(action)
+    } else {
+        zone2_label
+    };
+    let source_button = button(
+        row![
+            text(source_icon(source)).size(16).color(design::ACCENT),
+            text(catalog_entry_label(source, &catalog)).size(13),
+        ]
+        .spacing(6)
+        .align_y(iced::Alignment::Center),
+    )
+    .padding([6, 10])
+    .style(design::secondary)
+    .on_press(Message::OpenSourcePicker);
+    container(
+        row![
+            container(power_button),
+            button(
+                text(state_label("MAIN ZONE", power))
+                    .size(13)
+                    .color(design::MUTED)
+            )
+            .padding([6, 10])
+            .style(design::secondary)
+            .on_press_maybe(main_zone_popup_action),
+            zone2_label,
+            source_button,
+        ]
+        .spacing(6)
+        .align_y(iced::Alignment::Center),
+    )
+    .width(Length::Fill)
+    .center_x(Length::Fill)
     .into()
 }
 
-pub(crate) fn dashboard_context_line(
-    source: &str,
-    catalog: SourceCatalog,
+pub(crate) fn power_popup_overlay(
+    target: PowerPopup,
+    main_zone_power: Option<&PowerState>,
+    zone2_power: Option<&PowerState>,
 ) -> Element<'static, Message> {
-    let label = catalog_entry_label(source, &catalog);
-    let active_hidden = catalog
-        .entry(source)
-        .is_some_and(|entry| entry.visibility == SourceVisibility::Hidden);
-    let context = row![
-        button(
-            row![
-                text(source_icon(source)).size(18).color(design::ACCENT),
-                text(if active_hidden {
-                    format!("{label} · Hidden on receiver")
-                } else {
-                    label
-                })
-                .size(15)
+    let (title, state, on, standby) = match target {
+        PowerPopup::MainZone => (
+            "MAIN ZONE POWER",
+            main_zone_power,
+            Message::SetMainZonePower(PowerState::On),
+            Message::SetMainZonePower(PowerState::Standby),
+        ),
+        PowerPopup::Zone2 => (
+            "ZONE 2 POWER",
+            zone2_power,
+            Message::SetZone2Power(PowerState::On),
+            Message::SetZone2Power(PowerState::Standby),
+        ),
+    };
+    let active = state.copied();
+    let choice = |label, selected, message| {
+        button(text(label))
+            .padding([8, 14])
+            .style(if selected {
+                design::primary
+            } else {
+                design::secondary
+            })
+            .on_press(message)
+    };
+    container(
+        container(
+            column![
+                text(title).size(14),
+                row![
+                    choice("On", active == Some(PowerState::On), on),
+                    choice("Standby", active == Some(PowerState::Standby), standby),
+                ]
+                .spacing(8),
+                components::quiet_action("Close", Message::ClosePowerPopup),
             ]
-            .spacing(8)
-            .align_y(iced::Alignment::Center)
+            .spacing(10)
+            .padding(14),
         )
-        .padding([6, 10])
-        .style(design::secondary)
-        .on_press(Message::OpenSourcePicker),
-        container(space()).width(Length::Fill),
-        container(text("Main Zone").size(14).color(design::MUTED)).center_x(Length::Fixed(120.0)),
-        space().width(Length::Fill)
-    ]
-    .align_y(iced::Alignment::Center);
-
-    context.into()
+        .style(design::panel),
+    )
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .align_x(iced::alignment::Horizontal::Center)
+    .align_y(iced::alignment::Vertical::Top)
+    .into()
 }
 
 pub(crate) fn source_picker_overlay(
     capabilities: ModelCapabilities,
     catalog: SourceCatalog,
 ) -> Element<'static, Message> {
-    // This offset places the panel immediately below the Dashboard's header
-    // and source context without affecting the layout beneath it.
+    // The source button now lives in the Dashboard header, so place its popup
+    // immediately below that compact row without reflowing the information
+    // panels below it.
     container(column![
-        space().height(Length::Fixed(86.0)),
+        space().height(Length::Fixed(52.0)),
+        // The source selector is the rightmost member of the centered header
+        // control group. Bias the popup to that same right-hand position.
         row![
-            space().width(Length::Fixed(18.0)),
+            space().width(Length::FillPortion(4)),
             source_picker_popup(capabilities, catalog),
-            space().width(Length::Fill),
+            space().width(Length::FillPortion(1)),
         ],
     ])
     .width(Length::Fill)
@@ -250,6 +348,10 @@ pub(crate) fn source_picker_popup(
             // entries it contains. Keep receiver rename/hide choices visible
             // rather than falling back to canonical names for those entries.
             .filter(|source| source_is_visible(&catalog, source))
+            // Keep the compact desktop picker focused on the front-panel and
+            // commonly wired auxiliary inputs. AUX3 through AUX7 remain
+            // receiver capabilities, but are intentionally not listed here.
+            .filter(|source| source_is_picker_entry(source))
             .fold(column![].spacing(7), |column, source| {
                 column.push(
                     components::quiet_action(
@@ -261,27 +363,20 @@ pub(crate) fn source_picker_popup(
             })
             .into()
     };
-    container(
-        column![
-            row![
-                space().width(Length::Fill),
-                components::quiet_icon_action("×", Message::CloseSourcePicker),
-            ]
-            .align_y(iced::Alignment::Center),
-            scrollable(choices).height(Length::Fixed(440.0)),
-        ]
-        .spacing(12)
-        .padding(14),
-    )
-    .width(Length::Fixed(300.0))
-    .style(design::panel)
-    .into()
+    container(column![scrollable(choices).height(Length::Fixed(440.0)),].padding(14))
+        .width(Length::Fixed(300.0))
+        .style(design::panel)
+        .into()
 }
 
 pub(crate) fn source_is_visible(catalog: &SourceCatalog, source: &str) -> bool {
     catalog
         .entry(source)
         .is_none_or(|entry| entry.visibility != SourceVisibility::Hidden)
+}
+
+pub(crate) fn source_is_picker_entry(source: &str) -> bool {
+    !matches!(source, "AUX3" | "AUX4" | "AUX5" | "AUX6" | "AUX7")
 }
 
 pub(crate) fn information_card<'a>(
@@ -578,14 +673,6 @@ pub(crate) fn channel_state(layout: Option<&str>, channel: &str) -> &'static str
     }
 }
 
-pub(crate) fn mode_icon(group: ListeningModeGroup) -> &'static str {
-    match group {
-        ListeningModeGroup::Movie => "▣",
-        ListeningModeGroup::Music => "♫",
-        ListeningModeGroup::Game => "◇",
-    }
-}
-
 pub(crate) fn quick_select_bar<'a>(
     snapshot: &QuickSelectSnapshot,
     recall_supported: bool,
@@ -665,4 +752,16 @@ pub(crate) fn eq_summary_if_reported(status: &EqStatus) -> Option<String> {
         .into_iter()
         .any(|feature| !matches!(status.state(feature), denon_avr_domain::EqState::Unknown))
         .then(|| feedback::eq_summary(status))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn volume_buttons_share_the_slider_thumbs_visual_center() {
+        let slider_center = volume_slider_thumb_center(VOLUME_ROW_HEIGHT);
+        let mute_and_step_center = volume_button_center(VOLUME_ROW_HEIGHT);
+        assert!((slider_center - mute_and_step_center).abs() < f32::EPSILON);
+    }
 }

@@ -1,6 +1,6 @@
 //! Receiver identity and configuration types.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReceiverIdentity {
@@ -23,6 +23,9 @@ impl ReceiverIdentity {
 pub struct ConfiguredReceivers {
     pub current: Option<String>,
     pub receivers: BTreeMap<String, ReceiverIdentity>,
+    /// User-owned, per-receiver sound mode favorites. Receiver state never
+    /// writes this collection; it is presentation preference only.
+    pub sound_mode_favorites: BTreeMap<String, BTreeSet<String>>,
 }
 
 impl ConfiguredReceivers {
@@ -48,7 +51,45 @@ impl ConfiguredReceivers {
                 return Err(format!("current receiver {current} is not configured"));
             }
         }
+        if let Some(name) = self
+            .sound_mode_favorites
+            .keys()
+            .find(|name| !self.receivers.contains_key(*name))
+        {
+            return Err(format!(
+                "sound mode favorites reference unknown receiver {name}"
+            ));
+        }
         Ok(())
+    }
+
+    pub fn is_sound_mode_favorite(&self, mode: &str) -> bool {
+        self.current
+            .as_ref()
+            .and_then(|name| self.sound_mode_favorites.get(name))
+            .is_some_and(|favorites| favorites.contains(mode))
+    }
+
+    pub fn toggle_current_sound_mode_favorite(&mut self, mode: &str) -> Result<bool, String> {
+        let name = self
+            .current
+            .clone()
+            .ok_or("select and save a receiver before setting favorites")?;
+        if !self.receivers.contains_key(&name) {
+            return Err("current receiver is not configured".into());
+        }
+        let favorites = self.sound_mode_favorites.entry(name.clone()).or_default();
+        let favorite = if favorites.contains(mode) {
+            favorites.remove(mode);
+            false
+        } else {
+            favorites.insert(mode.to_owned());
+            true
+        };
+        if favorites.is_empty() {
+            self.sound_mode_favorites.remove(&name);
+        }
+        Ok(favorite)
     }
 }
 
@@ -75,5 +116,32 @@ impl DiscoveredReceiver {
             model: self.model.clone(),
             friendly_name: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sound_mode_favorites_are_scoped_to_the_current_receiver() {
+        let mut configured = ConfiguredReceivers {
+            current: Some("living-room".into()),
+            receivers: BTreeMap::from([(
+                "living-room".into(),
+                ReceiverIdentity::ad_hoc("192.0.2.10"),
+            )]),
+            ..ConfiguredReceivers::default()
+        };
+
+        assert!(configured
+            .toggle_current_sound_mode_favorite("DTS NEURAL:X")
+            .unwrap());
+        assert!(configured.is_sound_mode_favorite("DTS NEURAL:X"));
+        assert!(!configured
+            .toggle_current_sound_mode_favorite("DTS NEURAL:X")
+            .unwrap());
+        assert!(!configured.is_sound_mode_favorite("DTS NEURAL:X"));
+        assert!(configured.sound_mode_favorites.is_empty());
     }
 }

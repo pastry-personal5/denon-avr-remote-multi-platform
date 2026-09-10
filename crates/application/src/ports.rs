@@ -3,8 +3,8 @@
 use denon_avr_domain::{
     AudioContextSnapshot, ConfiguredReceivers, ConnectionState, DiscoveredReceiver, EqStatus,
     HttpInformationSnapshot, MainZoneControl, MainZoneEvent, MainZoneField, MainZoneValue,
-    QuickSelectNameObservation, QuickSelectRecallConfirmation, QuickSelectSlot, ReceiverIdentity,
-    SourceCatalogObservation,
+    PowerState, QuickSelectNameObservation, QuickSelectRecallConfirmation, QuickSelectSlot,
+    ReceiverIdentity, SourceCatalogObservation, Zone2Control,
 };
 use std::fmt;
 use std::future::Future;
@@ -86,6 +86,7 @@ pub trait AsyncReceiverDiscovery: Send + Sync {
 pub enum SessionEvent {
     Connection(ConnectionState),
     MainZone(MainZoneEvent),
+    Zone2Power(PowerState),
 }
 
 pub trait StatusGateway {
@@ -138,6 +139,29 @@ pub trait ReceiverSession: Send {
     fn query_audio_context(&mut self) -> BoxFuture<'_, AudioContextSnapshot>;
     fn next_event(&mut self) -> BoxFuture<'_, Result<SessionEvent, OperationError>>;
     fn close(&mut self) -> BoxFuture<'_, Result<(), OperationError>>;
+
+    /// AVR-X3800H-only independent Zone 2 power query.
+    fn query_zone2_power(&mut self) -> BoxFuture<'_, Result<PowerState, OperationError>> {
+        Box::pin(async {
+            Err(OperationError::new(
+                OperationErrorKind::Unsupported,
+                "Zone 2",
+                "Zone 2 power is not supported",
+            ))
+        })
+    }
+    fn execute_zone2_once(
+        &mut self,
+        _control: Zone2Control,
+    ) -> BoxFuture<'_, Result<(), OperationError>> {
+        Box::pin(async {
+            Err(OperationError::new(
+                OperationErrorKind::Unsupported,
+                "Zone 2",
+                "Zone 2 power is not supported",
+            ))
+        })
+    }
 
     fn recall_quick_select(
         &mut self,

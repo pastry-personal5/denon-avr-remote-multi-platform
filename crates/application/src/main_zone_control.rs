@@ -170,14 +170,13 @@ pub(crate) fn control_field(control: &MainZoneControl) -> denon_avr_domain::Main
         MainZoneControl::Volume(_) => denon_avr_domain::MainZoneField::Volume,
         MainZoneControl::Mute(_) => denon_avr_domain::MainZoneField::Mute,
         MainZoneControl::SurroundMode(_) => denon_avr_domain::MainZoneField::SurroundMode,
-        MainZoneControl::ListeningModeGroup(_) => denon_avr_domain::MainZoneField::SurroundMode,
     }
 }
 
 pub(crate) fn control_matches(
     control: &MainZoneControl,
     value: &denon_avr_domain::MainZoneValue,
-    capabilities: &ModelCapabilities,
+    _capabilities: &ModelCapabilities,
 ) -> bool {
     match (control, value) {
         (MainZoneControl::Power(expected), denon_avr_domain::MainZoneValue::Power(actual)) => {
@@ -196,12 +195,6 @@ pub(crate) fn control_matches(
             MainZoneControl::SurroundMode(expected),
             denon_avr_domain::MainZoneValue::SurroundMode(actual),
         ) => expected == actual,
-        (
-            MainZoneControl::ListeningModeGroup(group),
-            denon_avr_domain::MainZoneValue::SurroundMode(actual),
-        ) => capabilities
-            .listening_modes(*group)
-            .contains(&actual.as_str()),
         _ => false,
     }
 }
@@ -209,38 +202,7 @@ pub(crate) fn control_matches(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use denon_avr_domain::{
-        ListeningModeGroup, MainZoneValue, Model, StateAuthority, SurroundMode,
-    };
-
-    #[test]
-    fn admission_does_not_treat_every_listening_group_as_a_no_op() {
-        let mut snapshot = MainZoneSnapshot::default();
-        snapshot.set_value(
-            MainZoneValue::SurroundMode(SurroundMode::new("ROCK ARENA").unwrap()),
-            StateAuthority::Authoritative,
-        );
-        let capabilities = ModelCapabilities::for_model(Model::AvrX3800h);
-
-        assert_eq!(
-            admit_main_zone_control(
-                &snapshot,
-                &capabilities,
-                &MainZoneControl::ListeningModeGroup(ListeningModeGroup::Music),
-                None,
-            ),
-            ControlAdmission::NoOp
-        );
-        assert_eq!(
-            admit_main_zone_control(
-                &snapshot,
-                &capabilities,
-                &MainZoneControl::ListeningModeGroup(ListeningModeGroup::Movie),
-                None,
-            ),
-            ControlAdmission::Dispatch
-        );
-    }
+    use denon_avr_domain::Model;
 
     #[test]
     fn admission_rejects_stale_resource_versions_before_dispatch() {

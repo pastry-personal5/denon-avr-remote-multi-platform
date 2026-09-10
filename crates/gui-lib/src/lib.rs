@@ -10,10 +10,10 @@ use denon_avr_application::ports::{
 use denon_avr_application::{ReceiverEvent, ReceiverSelection};
 use denon_avr_domain::{
     ChannelSlot, ChannelSlotState, ConfiguredReceivers, EqStatus, FieldStatus, Input,
-    ListeningModeGroup, MainZoneControl, MainZoneSnapshot, MainZoneValue, Model, ModelCapabilities,
-    MuteState, PowerState, QuickSelectEqCapabilities, QuickSelectSlot, QuickSelectSnapshot,
-    ReceiverIdentity, SourceCatalog, SourceCatalogCapabilities, SourceVisibility, StateAuthority,
-    SurroundMode, Volume,
+    MainZoneControl, MainZoneSnapshot, MainZoneValue, Model, ModelCapabilities, MuteState,
+    PowerState, QuickSelectEqCapabilities, QuickSelectSlot, QuickSelectSnapshot, ReceiverIdentity,
+    SourceCatalog, SourceCatalogCapabilities, SourceVisibility, StateAuthority, SurroundMode,
+    Volume, Zone2Snapshot,
 };
 use iced::widget::{column, container, row, scrollable, space, stack, text, text_input};
 use iced::{Element, Length, Subscription, Task};
@@ -54,6 +54,12 @@ pub enum WindowClass {
     Compact,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PowerPopup {
+    MainZone,
+    Zone2,
+}
+
 /// Session-only accessibility preferences. They deliberately live in GUI
 /// state: a user override wins for this run and is never written to YAML.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,10 +82,12 @@ pub struct Gui {
     pub selection: Option<ReceiverSelection>,
     pub lifecycle: denon_avr_application::Lifecycle,
     pub snapshot: MainZoneSnapshot,
+    pub zone2: Zone2Snapshot,
     pub volume_slider: f32,
     volume_value: Option<f32>,
     volume_value_request_id: u64,
     source_picker_open: bool,
+    power_popup: Option<PowerPopup>,
     pub announcement: String,
     pub address: String,
     pub name: String,
@@ -124,10 +132,12 @@ impl Gui {
             selection: None,
             lifecycle: denon_avr_application::Lifecycle::NoReceiver,
             snapshot: MainZoneSnapshot::default(),
+            zone2: Zone2Snapshot::default(),
             volume_slider: 0.0,
             volume_value: None,
             volume_value_request_id: 0,
             source_picker_open: false,
+            power_popup: None,
             announcement: "Loading configuration…".into(),
             address: String::new(),
             name: String::new(),
@@ -226,8 +236,12 @@ impl Gui {
             ),
             StateAuthority::Authoritative,
         );
+        self.zone2 = Zone2Snapshot::default();
+        self.zone2
+            .set_power(PowerState::Standby, StateAuthority::Authoritative);
         self.volume_slider = -45.0;
         self.source_picker_open = false;
+        self.power_popup = None;
         self.launch_ready = true;
         match scenario {
             "connected" => self.announce("Deterministic capture scenario: connected."),
@@ -420,6 +434,7 @@ impl Gui {
                 self.selection = Some(selection.clone());
                 self.route = Route::Dashboard;
                 self.snapshot.invalidate();
+                self.zone2.invalidate();
                 self.invalidate_quick_select_eq();
                 self.volume_command_pending = false;
                 self.volume_command_request_id = None;
@@ -483,6 +498,7 @@ impl Gui {
                                 | denon_avr_application::Lifecycle::Disconnected
                         ) {
                             self.snapshot.invalidate();
+                            self.zone2.invalidate();
                             self.volume_command_pending = false;
                             self.volume_command_request_id = None;
                         }
@@ -529,6 +545,7 @@ impl Gui {
                             return self.command(BridgeCommand::RefreshSourceCatalog(id));
                         }
                     }
+                    ReceiverEvent::Zone2Snapshot(snapshot) => self.zone2 = snapshot,
                     ReceiverEvent::QuickSelect(snapshot) => self.quick_select = *snapshot,
                     ReceiverEvent::EqStatus(status) => self.eq_status = *status,
                     ReceiverEvent::SourceCatalog(observation) => {
@@ -579,6 +596,46 @@ impl Gui {
             }
             Message::ToggleMainZonePower => main_zone_power_control(self.snapshot.power.value())
                 .map_or_else(Task::none, |control| self.control(control)),
+            Message::ToggleZone2Power => {
+                let power = match self.zone2.power.value() {
+                    Some(PowerState::On) => PowerState::Standby,
+                    Some(PowerState::Standby) => PowerState::On,
+                    None => return Task::none(),
+                };
+                let id = self.next_request();
+                self.command(BridgeCommand::ControlZone2(id, power))
+            }
+            Message::OpenMainZonePowerPopup => {
+                self.power_popup = self
+                    .snapshot
+                    .power
+                    .value()
+                    .is_some()
+                    .then_some(PowerPopup::MainZone);
+                Task::none()
+            }
+            Message::OpenZone2PowerPopup => {
+                self.power_popup = self
+                    .zone2
+                    .power
+                    .value()
+                    .is_some()
+                    .then_some(PowerPopup::Zone2);
+                Task::none()
+            }
+            Message::ClosePowerPopup => {
+                self.power_popup = None;
+                Task::none()
+            }
+            Message::SetMainZonePower(power) => {
+                self.power_popup = None;
+                self.control(MainZoneControl::Power(power))
+            }
+            Message::SetZone2Power(power) => {
+                self.power_popup = None;
+                let id = self.next_request();
+                self.command(BridgeCommand::ControlZone2(id, power))
+            }
             Message::Mute => self.control(MainZoneControl::Mute(denon_avr_domain::MuteState::On)),
             Message::Unmute => {
                 self.control(MainZoneControl::Mute(denon_avr_domain::MuteState::Off))
@@ -616,9 +673,6 @@ impl Gui {
                 }
                 Task::none()
             }
-            Message::SelectListeningModeGroup(group) => {
-                self.control(MainZoneControl::ListeningModeGroup(group))
-            }
             Message::SelectSurroundMode(value) => {
                 match denon_avr_domain::SurroundMode::new(value) {
                     Ok(mode) => self.control(MainZoneControl::SurroundMode(mode)),
@@ -627,6 +681,41 @@ impl Gui {
                         Task::none()
                     }
                 }
+            }
+            Message::ToggleSoundModeFavorite(mode) => {
+                let mut config = self.configured.clone();
+                let favorite = match config.toggle_current_sound_mode_favorite(&mode) {
+                    Ok(favorite) => favorite,
+                    Err(error) => {
+                        self.announce(error);
+                        return Task::none();
+                    }
+                };
+                let configuration = Arc::clone(&self.configuration);
+                self.announce(format!(
+                    "{} {} favorite…",
+                    if favorite { "Saving" } else { "Removing" },
+                    mode
+                ));
+                Task::perform(
+                    async move {
+                        configuration
+                            .save(&config)
+                            .await
+                            .map(|_| config)
+                            .map_err(|error| error.to_string())
+                    },
+                    Message::SoundModeFavoritesSaved,
+                )
+            }
+            Message::SoundModeFavoritesSaved(Ok(config)) => {
+                self.configured = config;
+                self.announce("Sound mode favorites saved.");
+                Task::none()
+            }
+            Message::SoundModeFavoritesSaved(Err(error)) => {
+                self.announce(format!("Could not save sound mode favorites: {error}"));
+                Task::none()
             }
             Message::OpenSourcePicker => {
                 self.source_picker_open = true;
@@ -753,6 +842,7 @@ impl Gui {
                 let config = ConfiguredReceivers {
                     current: Some(name.clone()),
                     receivers: BTreeMap::from([(name.clone(), identity.clone())]),
+                    ..ConfiguredReceivers::default()
                 };
                 let selection = ReceiverSelection::Saved { name, identity };
                 let configuration = Arc::clone(&self.configuration);
@@ -925,19 +1015,30 @@ impl Gui {
             Route::Advanced => self.advanced().into(),
             Route::Diagnostics => self.diagnostics().into(),
         };
-        let body: Element<'_, Message> = if self.route == Route::Dashboard
-            && self.source_picker_open
-        {
-            // Keep the selector in a separate stack layer: it must not become
-            // a child of the dashboard column, which would reflow every card
-            // and control below the source line.
-            stack![
+        let dashboard_popup = (self.route == Route::Dashboard)
+            .then_some(self.power_popup)
+            .flatten();
+        let source_picker_open = self.route == Route::Dashboard && self.source_picker_open;
+        let body: Element<'_, Message> = match (source_picker_open, dashboard_popup) {
+            // Keep overlays separate from the dashboard column so opening one
+            // never reflows cards or controls below the source line.
+            (true, None) => stack![
                 base_body,
                 source_picker_overlay(self.selected_capabilities(), self.source_catalog.clone()),
             ]
-            .into()
-        } else {
-            base_body
+            .into(),
+            (false, Some(popup)) => stack![
+                base_body,
+                power_popup_overlay(popup, self.snapshot.power.value(), self.zone2.power.value(),),
+            ]
+            .into(),
+            (true, Some(popup)) => stack![
+                base_body,
+                source_picker_overlay(self.selected_capabilities(), self.source_catalog.clone()),
+                power_popup_overlay(popup, self.snapshot.power.value(), self.zone2.power.value(),),
+            ]
+            .into(),
+            (false, None) => base_body,
         };
         let messages: Element<'_, Message> = if self.messages_collapsed {
             container(
@@ -1034,6 +1135,7 @@ fn configuration_for_discovered(
     let config = ConfiguredReceivers {
         current: Some(name.clone()),
         receivers: BTreeMap::from([(name.clone(), identity.clone())]),
+        ..ConfiguredReceivers::default()
     };
     let selection = ReceiverSelection::Saved { name, identity };
     (config, selection)
@@ -1245,6 +1347,33 @@ mod tests {
         assert_eq!(gui.motion_preference, MotionPreference::Reduced);
         assert_eq!(gui.contrast_preference, ContrastPreference::High);
         assert!(matches!(app_theme(&gui), iced::Theme::Custom(_)));
+    }
+
+    #[tokio::test]
+    async fn power_popups_are_independent_and_only_open_for_known_state() {
+        let bridge = ControllerBridge::new(TestSessionFactory);
+        let mut gui = Gui::new(bridge);
+        gui.snapshot.set_value(
+            MainZoneValue::Power(PowerState::On),
+            StateAuthority::Authoritative,
+        );
+        gui.zone2
+            .set_power(PowerState::Standby, StateAuthority::Authoritative);
+
+        let _ = gui.update(Message::OpenMainZonePowerPopup);
+        assert_eq!(gui.power_popup, Some(PowerPopup::MainZone));
+        let _ = gui.update(Message::OpenZone2PowerPopup);
+        assert_eq!(gui.power_popup, Some(PowerPopup::Zone2));
+        let _ = gui.update(Message::ClosePowerPopup);
+        assert_eq!(gui.power_popup, None);
+    }
+
+    #[test]
+    fn compact_source_picker_omits_aux_3_and_later() {
+        assert!(source_is_picker_entry("AUX1"));
+        assert!(source_is_picker_entry("AUX2"));
+        assert!(!source_is_picker_entry("AUX3"));
+        assert!(!source_is_picker_entry("AUX7"));
     }
 
     #[tokio::test]

@@ -17,9 +17,8 @@ impl Model {
     }
 }
 
-use super::AudioContextSnapshot;
 use super::{
-    Input, ListeningModeGroup, MainZoneControl, MuteState, PowerState, SurroundMode, VolumeLevel,
+    Input, MainZoneControl, MuteState, PowerState, SoundModeCategory, SurroundMode, VolumeLevel,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,6 +38,7 @@ pub struct ModelCapabilities {
     pub eq_status: bool,
     pub source_catalog_read: bool,
     pub http_information_read: bool,
+    pub zone2_power: bool,
 }
 
 /// Capabilities may be enabled only after model/firmware-specific Quick
@@ -84,23 +84,49 @@ const X3800H_SURROUND_MODES: &[&str] = &[
     "STEREO",
     "MULTI CH IN",
     "DOLBY SURROUND",
-    "MULTI CH STEREO",
+    "MCH STEREO",
     "MONO MOVIE",
     "ROCK ARENA",
     "JAZZ CLUB",
     "MATRIX",
     "VIDEO GAME",
+    "DTS NEURAL:X",
+    "DTS VIRTUAL:X",
+    "AURO-3D",
+    "VIRTUAL",
+    "AUTO",
 ];
-const X3800H_MOVIE_MODES: &[&str] = &["STEREO", "DOLBY SURROUND", "MULTI CH STEREO", "MONO MOVIE"];
+const X3800H_MOVIE_MODES: &[&str] = &[
+    "DOLBY SURROUND",
+    "DTS NEURAL:X",
+    "DTS VIRTUAL:X",
+    "AURO-3D",
+    "MULTI CH IN",
+    "MONO MOVIE",
+    "VIRTUAL",
+];
 const X3800H_MUSIC_MODES: &[&str] = &[
     "STEREO",
     "DOLBY SURROUND",
-    "MULTI CH STEREO",
+    "DTS NEURAL:X",
+    "DTS VIRTUAL:X",
+    "AURO-3D",
+    "MULTI CH IN",
+    "MCH STEREO",
     "ROCK ARENA",
     "JAZZ CLUB",
     "MATRIX",
 ];
-const X3800H_GAME_MODES: &[&str] = &["STEREO", "DOLBY SURROUND", "VIDEO GAME"];
+const X3800H_GAME_MODES: &[&str] = &[
+    "DOLBY SURROUND",
+    "DTS NEURAL:X",
+    "DTS VIRTUAL:X",
+    "AURO-3D",
+    "MULTI CH IN",
+    "MCH STEREO",
+    "VIDEO GAME",
+];
+const X3800H_PURE_MODES: &[&str] = &["AUTO", "DIRECT", "PURE DIRECT", "STEREO"];
 
 impl ModelCapabilities {
     pub const fn for_model(model: Model) -> Self {
@@ -128,6 +154,7 @@ impl ModelCapabilities {
             source_catalog_read: matches!(model, Model::AvrX3800h),
             // Validated Phase 1 observations apply only to X3800H-family models.
             http_information_read: matches!(model, Model::AvrX3800h),
+            zone2_power: matches!(model, Model::AvrX3800h),
         }
     }
 
@@ -170,43 +197,18 @@ impl ModelCapabilities {
             }
             MainZoneControl::Input(value) => self.inputs.contains(&value.as_str()),
             MainZoneControl::SurroundMode(value) => self.surround_modes.contains(&value.as_str()),
-            MainZoneControl::ListeningModeGroup(_) => self.model == Model::AvrX3800h,
         }
     }
 
-    pub fn listening_modes(&self, group: ListeningModeGroup) -> &'static [&'static str] {
+    pub fn sound_modes(&self, category: SoundModeCategory) -> &'static [&'static str] {
         if !self.writable {
             return &[];
         }
-        match group {
-            ListeningModeGroup::Movie => X3800H_MOVIE_MODES,
-            ListeningModeGroup::Music => X3800H_MUSIC_MODES,
-            ListeningModeGroup::Game => X3800H_GAME_MODES,
-        }
-    }
-
-    pub fn listening_mode(
-        &self,
-        group: ListeningModeGroup,
-        value: &str,
-    ) -> Result<SurroundMode, &'static str> {
-        if !self.listening_modes(group).contains(&value) {
-            return Err("listening mode is not supported in this group or context");
-        }
-        SurroundMode::new(value.to_owned())
-    }
-
-    /// Individual choices require validated signal and speaker context. The
-    /// documented TCP status queries do not provide those maps.
-    pub fn listening_modes_for_context(
-        &self,
-        group: ListeningModeGroup,
-        context: &AudioContextSnapshot,
-    ) -> &'static [&'static str] {
-        if context.channel_maps_are_validated() {
-            self.listening_modes(group)
-        } else {
-            &[]
+        match category {
+            SoundModeCategory::Movie => X3800H_MOVIE_MODES,
+            SoundModeCategory::Music => X3800H_MUSIC_MODES,
+            SoundModeCategory::Game => X3800H_GAME_MODES,
+            SoundModeCategory::Pure => X3800H_PURE_MODES,
         }
     }
 
@@ -248,14 +250,18 @@ mod tests {
     }
 
     #[test]
-    fn individual_modes_stay_disabled_without_validated_maps() {
+    fn individual_modes_are_available_as_a_complete_catalog() {
         let capabilities = ModelCapabilities::for_model(Model::AvrX3800h);
         assert!(capabilities
-            .listening_modes_for_context(
-                ListeningModeGroup::Movie,
-                &crate::AudioContextSnapshot::default(),
-            )
-            .is_empty());
+            .sound_modes(SoundModeCategory::Pure)
+            .contains(&"PURE DIRECT"));
+    }
+
+    #[test]
+    fn uses_the_x3800h_telnet_spelling_for_multi_channel_stereo() {
+        let capabilities = ModelCapabilities::for_model(Model::AvrX3800h);
+        assert!(capabilities.surround_mode("MCH STEREO").is_ok());
+        assert!(capabilities.surround_mode("MULTI CH STEREO").is_err());
     }
 
     #[test]

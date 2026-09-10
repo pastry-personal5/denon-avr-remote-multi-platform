@@ -28,9 +28,9 @@ pub use http_information::{
 };
 pub use main_zone::{
     AudioContextField, AudioContextValue, ConnectionState, FieldError, FieldErrorKind, FieldStatus,
-    Freshness, Input, ListeningModeGroup, MainZoneControl, MainZoneEvent, MainZoneField,
-    MainZoneSnapshot, MainZoneValue, MuteState, PowerState, StateAuthority, SurroundMode, Volume,
-    VolumeLevel,
+    Freshness, Input, MainZoneControl, MainZoneEvent, MainZoneField, MainZoneSnapshot,
+    MainZoneValue, MuteState, PowerState, SoundModeCategory, StateAuthority, SurroundMode, Volume,
+    VolumeLevel, Zone2Control, Zone2Snapshot,
 };
 pub use quick_select::{
     QuickSelectName, QuickSelectPreset, QuickSelectRecallConfirmation, QuickSelectRecallOutcome,

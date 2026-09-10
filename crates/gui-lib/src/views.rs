@@ -1,16 +1,34 @@
 //! Route-specific views for the desktop presentation.
 
 use super::*;
-use iced::widget::column;
+use iced::widget::{button, column, radio, scrollable};
 
 impl Gui {
     pub(super) fn dashboard(&self) -> iced::widget::Column<'_, Message> {
         let capabilities = self.selected_capabilities();
         let writable = capabilities.writable;
+        let input = self
+            .snapshot
+            .input
+            .value()
+            .map(ToString::to_string)
+            .unwrap_or_else(|| "Unavailable".into());
         let power_action = (writable
             && main_zone_power_control(self.snapshot.power.value()).is_some())
         .then_some(Message::ToggleMainZonePower);
-        let header = dashboard_header(self.snapshot.power.value(), power_action);
+        let main_zone_popup_action = (writable && self.snapshot.power.value().is_some())
+            .then_some(Message::OpenMainZonePowerPopup);
+        let zone2_popup_action = (capabilities.zone2_power && self.zone2.power.value().is_some())
+            .then_some(Message::OpenZone2PowerPopup);
+        let header = dashboard_header(
+            self.snapshot.power.value(),
+            power_action,
+            main_zone_popup_action,
+            self.zone2.power.value(),
+            zone2_popup_action,
+            &input,
+            self.source_catalog.clone(),
+        );
         if self.snapshot.power.value() == Some(&PowerState::Standby) {
             return column![container(stack![
                 container(text("POWER OFF").size(36).color(design::MUTED))
@@ -46,30 +64,8 @@ impl Gui {
             .spacing(18);
         }
 
-        let input = self
-            .snapshot
-            .input
-            .value()
-            .map(ToString::to_string)
-            .unwrap_or_else(|| "Unavailable".into());
         let quick_select_supported = capabilities.quick_select_recall;
         let quick_select_names_supported = capabilities.quick_select_names;
-        let group_controls = if writable {
-            ListeningModeGroup::ALL
-                .into_iter()
-                .fold(row![].spacing(12), |row, group| {
-                    row.push(
-                        components::quiet_action(
-                            format!("{}  {}", mode_icon(group), group.as_str()),
-                            Message::SelectListeningModeGroup(group),
-                        )
-                        .width(Length::Fill),
-                    )
-                })
-                .width(Length::Fill)
-        } else {
-            row![text("Mode groups unavailable for this receiver.")]
-        };
         let mute_controls: Element<'_, Message> = if writable {
             let muted = self.snapshot.mute.value() == Some(&denon_avr_domain::MuteState::On);
             components::toggle_action(
@@ -82,11 +78,14 @@ impl Gui {
                     Message::Mute
                 },
             )
-            .width(Length::Fill)
+            // Keep Mute compact so the slider remains the primary control in
+            // this row. The prior fill width made it read as a second slider.
+            .width(Length::Fixed(96.0))
             .into()
         } else {
             text("Controls unavailable: receiver model is not validated for writes.")
                 .color(design::MUTED)
+                .width(Length::Fixed(96.0))
                 .into()
         };
         let information = &self.snapshot.http_information;
@@ -98,32 +97,44 @@ impl Gui {
         let volume_controls: Element<'_, Message> = if self.snapshot.volume.value().is_some() {
             container(
                 row![
-                    column![
-                        container(volume_slider(self.volume_slider, self.volume_value,))
+                    container(
+                        column![
+                            container(volume_slider(self.volume_slider, self.volume_value,))
+                                .width(Length::Fill),
+                            row![
+                                text("-80.0 dB").size(11).color(design::MUTED),
+                                space().width(Length::Fill),
+                                text("+18.5 dB").size(11).color(design::MUTED),
+                            ]
                             .width(Length::Fill),
-                        row![
-                            text("-80.0 dB").size(11).color(design::MUTED),
-                            space().width(Length::Fill),
-                            text("+18.5 dB").size(11).color(design::MUTED),
                         ]
+                        .spacing(2)
                         .width(Length::Fill),
-                    ]
-                    .spacing(2)
-                    .width(Length::Fill),
-                    row![
-                        components::quiet_action("≪", Message::AdjustVolume(-10.0)),
-                        components::quiet_action("−", Message::AdjustVolume(-0.5)),
-                        components::quiet_action("+", Message::AdjustVolume(0.5)),
-                        components::quiet_action("≫", Message::AdjustVolume(10.0)),
-                    ]
-                    .spacing(4),
+                    )
+                    .width(Length::FillPortion(2))
+                    .height(Length::Fill)
+                    .center_y(Length::Fill),
+                    column![
+                        space().height(Length::Fixed(VOLUME_CONTROL_TOP_OFFSET)),
+                        mute_controls,
+                    ],
+                    column![
+                        space().height(Length::Fixed(VOLUME_CONTROL_TOP_OFFSET)),
+                        row![
+                            components::quiet_action("≪", Message::AdjustVolume(-10.0)),
+                            components::quiet_action("−", Message::AdjustVolume(-0.5)),
+                            components::quiet_action("+", Message::AdjustVolume(0.5)),
+                            components::quiet_action("≫", Message::AdjustVolume(10.0)),
+                        ]
+                        .spacing(4),
+                    ],
                 ]
                 .spacing(8)
                 .align_y(iced::Alignment::Center)
                 .padding([4, 0]),
             )
             .width(Length::Fill)
-            .height(Length::Fixed(90.0))
+            .height(Length::Fixed(VOLUME_ROW_HEIGHT))
             .into()
         } else {
             text("Volume controls are unavailable until the receiver reports its current volume.")
@@ -132,87 +143,100 @@ impl Gui {
         };
         column![
             header,
-            dashboard_context_line(&input, self.source_catalog.clone()),
+            // The source picker shares the power-control row. This lead makes
+            // that compact row read 16 px above the information dashboard.
+            space().height(Length::Fixed(16.0)),
             row![
-                container(
-                    column![
-                        container(text("INPUT").size(14).color(iced::Color::WHITE))
-                            .width(Length::Fill)
-                            .padding(iced::Padding::ZERO.top(10))
-                            .center_x(Length::Fill),
-                        container(typed_input_channel_grid(&information.input_slots))
-                            .width(Length::Fill)
+                column![
+                    row![
+                        container(
+                            column![
+                                container(text("INPUT").size(14).color(iced::Color::WHITE))
+                                    .width(Length::Fill)
+                                    .padding(iced::Padding::ZERO.top(10))
+                                    .center_x(Length::Fill),
+                                container(typed_input_channel_grid(&information.input_slots))
+                                    .width(Length::Fill)
+                                    .height(Length::Fill)
+                                    .padding(iced::Padding::ZERO.bottom(12))
+                                    .center(Length::Fill)
+                            ]
                             .height(Length::Fill)
-                            .padding(iced::Padding::ZERO.bottom(12))
-                            .center(Length::Fill)
-                    ]
-                    .height(Length::Fill)
-                )
-                .width(Length::Fill)
-                .height(Length::Fixed(190.0))
-                .style(design::panel),
-                container(
-                    column![
-                        container(text("OUTPUT").size(14).color(iced::Color::WHITE))
-                            .width(Length::Fill)
-                            .padding(iced::Padding::ZERO.top(10))
-                            .center_x(Length::Fill),
-                        container(typed_output_channel_grid(&information.output_slots))
-                            .width(Length::Fill)
+                        )
+                        .width(Length::Fill)
+                        .height(Length::Fixed(DASHBOARD_INFORMATION_TOP_ROW_HEIGHT))
+                        .style(design::panel),
+                        container(
+                            column![
+                                container(text("OUTPUT").size(14).color(iced::Color::WHITE))
+                                    .width(Length::Fill)
+                                    .padding(iced::Padding::ZERO.top(10))
+                                    .center_x(Length::Fill),
+                                container(typed_output_channel_grid(&information.output_slots))
+                                    .width(Length::Fill)
+                                    .height(Length::Fill)
+                                    .padding(iced::Padding::ZERO.bottom(12))
+                                    .center(Length::Fill)
+                            ]
                             .height(Length::Fill)
-                            .padding(iced::Padding::ZERO.bottom(12))
-                            .center(Length::Fill)
+                        )
+                        .width(Length::Fill)
+                        .height(Length::Fixed(DASHBOARD_INFORMATION_TOP_ROW_HEIGHT))
+                        .style(design::panel),
                     ]
-                    .height(Length::Fill)
-                )
-                .width(Length::Fill)
-                .height(Length::Fixed(190.0))
-                .style(design::panel),
-                container(information_card(
-                    "AUDYSSEY",
-                    &[
-                        ("MultEQ", &information.audyssey.multeq),
-                        ("Dynamic EQ", &information.audyssey.dynamic_eq),
-                        ("Dynamic Volume", &information.audyssey.dynamic_volume),
+                    .spacing(16),
+                    row![
+                        container(information_card(
+                            "AUDIO",
+                            &[
+                                ("Input", &information.audio.input_mode),
+                                ("Output", &information.audio.output),
+                                ("Signal", &information.audio.signal),
+                                ("Sound", &information.audio.sound),
+                                ("Rate", &information.audio.sample_rate),
+                            ]
+                        ))
+                        .width(Length::Fill)
+                        .height(Length::Fixed(DASHBOARD_INFORMATION_BOTTOM_ROW_HEIGHT))
+                        .style(design::panel),
+                        container(information_card(
+                            "VIDEO",
+                            &[
+                                ("Monitor", &information.video.monitor),
+                                ("HDMI in", &information.video.hdmi_input),
+                                ("HDMI out", &information.video.hdmi_output)
+                            ]
+                        ))
+                        .width(Length::Fill)
+                        .height(Length::Fixed(DASHBOARD_INFORMATION_BOTTOM_ROW_HEIGHT))
+                        .style(design::panel),
+                        container(information_card(
+                            "AUDYSSEY",
+                            &[
+                                ("MultEQ", &information.audyssey.multeq),
+                                ("Dynamic EQ", &information.audyssey.dynamic_eq),
+                                ("Dynamic Volume", &information.audyssey.dynamic_volume),
+                            ]
+                        ))
+                        .width(Length::Fill)
+                        .height(Length::Fixed(DASHBOARD_INFORMATION_BOTTOM_ROW_HEIGHT))
+                        .style(design::panel)
                     ]
-                ))
-                .width(Length::Fill)
-                .height(Length::Fixed(190.0))
-                .style(design::panel)
+                    .spacing(DASHBOARD_INFORMATION_ROW_GAP),
+                ]
+                .spacing(DASHBOARD_INFORMATION_ROW_GAP)
+                .width(Length::FillPortion(2)),
+                sound_mode_panel(
+                    capabilities,
+                    self.snapshot
+                        .surround_mode
+                        .value()
+                        .map(|mode| mode.as_str()),
+                    &self.configured,
+                ),
             ]
-            .spacing(16),
-            row![
-                container(information_card(
-                    "VIDEO",
-                    &[
-                        ("Monitor", &information.video.monitor),
-                        ("HDMI in", &information.video.hdmi_input),
-                        ("HDMI out", &information.video.hdmi_output)
-                    ]
-                ))
-                .width(Length::Fill)
-                .height(Length::Fixed(125.0))
-                .style(design::panel),
-                container(information_card(
-                    "AUDIO",
-                    &[
-                        ("Input", &information.audio.input_mode),
-                        ("Output", &information.audio.output),
-                        ("Signal", &information.audio.signal),
-                        ("Sound", &information.audio.sound),
-                        ("Rate", &information.audio.sample_rate),
-                    ]
-                ))
-                .width(Length::Fill)
-                .height(Length::Fixed(125.0))
-                .style(design::panel),
-            ]
-            .spacing(16),
+            .spacing(DASHBOARD_INFORMATION_ROW_GAP),
             volume_controls,
-            row![mute_controls, group_controls]
-                .width(Length::Fill)
-                .spacing(14)
-                .align_y(iced::Alignment::Center),
             quick_select_bar(
                 &self.quick_select,
                 quick_select_supported,
@@ -222,4 +246,99 @@ impl Gui {
         ]
         .spacing(10)
     }
+}
+
+fn sound_mode_panel<'a>(
+    capabilities: ModelCapabilities,
+    active: Option<&'a str>,
+    favorites: &'a ConfiguredReceivers,
+) -> Element<'a, Message> {
+    use denon_avr_domain::SoundModeCategory;
+    let categories = [
+        ("MOVIE", SoundModeCategory::Movie),
+        ("MUSIC", SoundModeCategory::Music),
+        ("GAME", SoundModeCategory::Game),
+        ("PURE", SoundModeCategory::Pure),
+    ];
+    let rows = categories
+        .into_iter()
+        .flat_map(|(category, kind)| {
+            capabilities
+                .sound_modes(kind)
+                .iter()
+                .enumerate()
+                .map(move |(index, mode)| (category, *mode, index == 0))
+        })
+        .collect::<Vec<_>>();
+    // A mode can appear in more than one organizational category. Select the
+    // first matching row so the receiver-reported `MS…` state lights exactly
+    // one radio button.
+    let selected = active.and_then(|active| rows.iter().position(|(_, mode, _)| *mode == active));
+    let table = rows.into_iter().enumerate().fold(
+        column![].spacing(2),
+        |table, (index, (category, mode, group_start))| {
+            let selected_row = selected == Some(index);
+            let row_style = if selected_row {
+                design::sound_mode_row_selected
+            } else if index.is_multiple_of(2) {
+                design::sound_mode_row_a
+            } else {
+                design::sound_mode_row_b
+            };
+            let favorite = favorites.is_sound_mode_favorite(mode);
+            table.push(
+                container(
+                    row![
+                        text(if group_start { category } else { "" })
+                            .size(9)
+                            .width(Length::Fixed(52.0)),
+                        text(mode).size(9).width(Length::Fill),
+                        button(text(if favorite { "♥" } else { "♡" }).size(13))
+                            .padding([0, 3])
+                            .style(if favorite {
+                                design::sound_mode_favorite_heart
+                            } else {
+                                design::sound_mode_inactive_heart
+                            })
+                            .on_press(Message::ToggleSoundModeFavorite(mode.into())),
+                        container(
+                            radio("", index, selected, |_| Message::SelectSurroundMode(
+                                mode.into()
+                            ))
+                            .size(12)
+                            .spacing(0)
+                            .style(design::sound_mode_radio),
+                        )
+                        .width(Length::Fixed(40.0))
+                        .padding(iced::Padding::ZERO.right(12)),
+                    ]
+                    .align_y(iced::Alignment::Center)
+                    .spacing(6),
+                )
+                .padding([3, 6])
+                .width(Length::Fill)
+                .style(row_style),
+            )
+        },
+    );
+    container(
+        column![
+            row![
+                text("SOUND MODE").size(14).color(iced::Color::WHITE),
+                text(active.unwrap_or("WAITING FOR RECEIVER STATUS"))
+                    .size(9)
+                    .color(design::MUTED),
+            ]
+            .width(Length::Fill)
+            .align_y(iced::Alignment::Center)
+            .spacing(8),
+            scrollable(table).height(Length::Fill).spacing(10),
+        ]
+        .spacing(8)
+        .padding(12),
+    )
+    .width(Length::Fill)
+    .height(Length::Fixed(SOUND_MODE_PANEL_HEIGHT))
+    .style(design::panel)
+    .into()
 }

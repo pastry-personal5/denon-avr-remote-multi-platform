@@ -1,6 +1,6 @@
 //! AVR command validation and framing.
 
-use denon_avr_domain::{MainZoneControl, MainZoneField, MuteState, PowerState};
+use denon_avr_domain::{MainZoneControl, MainZoneField, MuteState, PowerState, Zone2Control};
 use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -102,9 +102,17 @@ pub fn encode_control(control: &MainZoneControl) -> Result<AvrCommand, AvrProtoc
         MainZoneControl::Mute(MuteState::On) => AvrCommand::new("MUON"),
         MainZoneControl::Mute(MuteState::Off) => AvrCommand::new("MUOFF"),
         MainZoneControl::SurroundMode(value) => AvrCommand::new(format!("MS{}", value.as_str())),
-        MainZoneControl::ListeningModeGroup(value) => {
-            AvrCommand::new(format!("MS{}", value.command_suffix()))
-        }
+    }
+}
+
+pub fn zone2_power_query() -> AvrCommand {
+    AvrCommand("Z2?".into())
+}
+
+pub fn encode_zone2_control(control: Zone2Control) -> Result<AvrCommand, AvrProtocolError> {
+    match control {
+        Zone2Control::Power(PowerState::On) => AvrCommand::new("Z2ON"),
+        Zone2Control::Power(PowerState::Standby) => AvrCommand::new("Z2OFF"),
     }
 }
 
@@ -260,31 +268,20 @@ mod tests {
     }
 
     #[test]
-    fn encodes_remembered_listening_mode_groups_and_context_queries() {
-        use denon_avr_domain::ListeningModeGroup;
+    fn encodes_zone_2_controls_and_context_queries() {
+        use denon_avr_domain::Zone2Control;
+        assert_eq!(zone2_power_query().as_str(), "Z2?");
         assert_eq!(
-            encode_control(&MainZoneControl::ListeningModeGroup(
-                ListeningModeGroup::Movie
-            ))
-            .unwrap()
-            .as_str(),
-            "MSMOVIE"
+            encode_zone2_control(Zone2Control::Power(PowerState::On))
+                .unwrap()
+                .as_str(),
+            "Z2ON"
         );
         assert_eq!(
-            encode_control(&MainZoneControl::ListeningModeGroup(
-                ListeningModeGroup::Music
-            ))
-            .unwrap()
-            .as_str(),
-            "MSMUSIC"
-        );
-        assert_eq!(
-            encode_control(&MainZoneControl::ListeningModeGroup(
-                ListeningModeGroup::Game
-            ))
-            .unwrap()
-            .as_str(),
-            "MSGAME"
+            encode_zone2_control(Zone2Control::Power(PowerState::Standby))
+                .unwrap()
+                .as_str(),
+            "Z2OFF"
         );
         let queries = audio_context_query_commands();
         assert_eq!(queries[0].as_str(), "SI?");

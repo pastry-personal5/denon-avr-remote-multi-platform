@@ -6,7 +6,8 @@ use denon_avr_application::{
     ControllerHandle, ReceiverController, ReceiverEvent, ReceiverSelection,
 };
 use denon_avr_domain::{
-    MainZoneControl, QuickSelectEqCapabilities, QuickSelectSlot, SourceCatalogCapabilities,
+    MainZoneControl, PowerState, QuickSelectEqCapabilities, QuickSelectSlot,
+    SourceCatalogCapabilities,
 };
 use iced::futures::SinkExt;
 use iced::Subscription;
@@ -29,6 +30,7 @@ pub(crate) enum BridgeCommand {
     Refresh(u64),
     Disconnect(u64),
     Control(u64, MainZoneControl, Option<u64>),
+    ControlZone2(u64, PowerState),
     RefreshQuickSelectEq(u64),
     RefreshSourceCatalog(u64),
     RecallQuickSelect(u64, QuickSelectSlot, Option<u64>),
@@ -138,6 +140,7 @@ async fn run_bridge(
                     BridgeCommand::Refresh(id) => (id, handle.refresh().await),
                     BridgeCommand::Disconnect(id) => (id, handle.disconnect().await),
                     BridgeCommand::Control(id, control, version) => (id, handle.control(control, version).await),
+                    BridgeCommand::ControlZone2(id, power) => (id, handle.control_zone2(power).await),
                     BridgeCommand::RefreshQuickSelectEq(id) => (id, handle.refresh_quick_select_eq().await),
                     BridgeCommand::RefreshSourceCatalog(id) => (id, handle.refresh_source_catalog().await),
                     BridgeCommand::RecallQuickSelect(id, slot, version) => (id, handle.recall_quick_select(slot, version).await),
@@ -193,6 +196,7 @@ fn command_name(command: &BridgeCommand) -> &'static str {
         BridgeCommand::Refresh(..) => "refresh",
         BridgeCommand::Disconnect(..) => "disconnect",
         BridgeCommand::Control(..) => "control",
+        BridgeCommand::ControlZone2(..) => "control_zone2",
         BridgeCommand::RefreshQuickSelectEq(..) => "refresh_quick_select_eq",
         BridgeCommand::RefreshSourceCatalog(..) => "refresh_source_catalog",
         BridgeCommand::RecallQuickSelect(..) => "recall_quick_select",

@@ -5,7 +5,7 @@ use denon_avr_application::ports::{
 };
 use denon_avr_domain::{ConfiguredReceivers, ReceiverIdentity};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -32,6 +32,8 @@ impl Default for YamlConfigRepository {
 #[serde(deny_unknown_fields)]
 struct ConfigFile {
     receiver: ReceiverRecord,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    sound_mode_favorites: BTreeMap<String, BTreeSet<String>>,
 }
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -176,6 +178,7 @@ fn decode_config_file(file: ConfigFile) -> ConfiguredReceivers {
     ConfiguredReceivers {
         current: Some(name.clone()),
         receivers: BTreeMap::from([(name, identity)]),
+        sound_mode_favorites: file.sound_mode_favorites,
     }
 }
 fn encode_config_file(config: &ConfiguredReceivers) -> Result<ConfigFile, OperationError> {
@@ -210,6 +213,7 @@ fn encode_config_file(config: &ConfiguredReceivers) -> Result<ConfigFile, Operat
             model: optional_text(identity.model.clone()),
             friendly_name: optional_text(identity.friendly_name.clone()),
         },
+        sound_mode_favorites: config.sound_mode_favorites.clone(),
     })
 }
 fn read_config(path: &Path) -> Result<ConfiguredReceivers, OperationError> {
@@ -385,6 +389,7 @@ mod tests {
                 ("one".into(), ReceiverIdentity::ad_hoc("192.0.2.1")),
                 ("two".into(), ReceiverIdentity::ad_hoc("192.0.2.2")),
             ]),
+            ..ConfiguredReceivers::default()
         };
         let error =
             ConfigRepository::save(&YamlConfigRepository::new(path("multi")), &config).unwrap_err();

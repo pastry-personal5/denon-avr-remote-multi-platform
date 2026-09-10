@@ -7,8 +7,9 @@ use denon_avr_application::ports::{
 use denon_avr_domain::{
     AudioContextSnapshot, Confidence, ConnectionState, EqEvidence, EqFeature, EqState, EqStatus,
     FieldError, FieldErrorKind, Freshness, HttpInformationSnapshot, MainZoneEvent, MainZoneField,
-    MainZoneSnapshot, MainZoneValue, Observed, QuickSelectNameObservation,
+    MainZoneSnapshot, MainZoneValue, Observed, PowerState, QuickSelectNameObservation,
     QuickSelectRecallConfirmation, QuickSelectSlot, RawObservation, StateAuthority, SurroundMode,
+    Zone2Control,
 };
 use denon_avr_protocol::avr::AvrCommand;
 use denon_avr_protocol::avr::{eq_status_query, parse_eq_status, quick_select_command};
@@ -291,12 +292,17 @@ impl AsyncStatusGateway for AvrSession {
                 Some(AvrSessionEvent::Disconnected(_)) => {
                     Ok(SessionEvent::Connection(ConnectionState::Reconnecting))
                 }
-                Some(AvrSessionEvent::Line(line)) => Ok(match parse_main_zone_event(&line) {
-                    MainZoneEvent::Unknown(_) => {
-                        SessionEvent::MainZone(MainZoneEvent::Unknown(line))
+                Some(AvrSessionEvent::Line(line)) => {
+                    if let Ok(power) = denon_avr_protocol::avr::parse_zone2_power(&line) {
+                        return Ok(SessionEvent::Zone2Power(power));
                     }
-                    event => SessionEvent::MainZone(event),
-                }),
+                    Ok(match parse_main_zone_event(&line) {
+                        MainZoneEvent::Unknown(_) => {
+                            SessionEvent::MainZone(MainZoneEvent::Unknown(line))
+                        }
+                        event => SessionEvent::MainZone(event),
+                    })
+                }
                 None => Err(OperationError::new(
                     OperationErrorKind::Stopped,
                     "receiving AVR event",
@@ -471,6 +477,41 @@ impl ReceiverSession for AvrSession {
         control: denon_avr_domain::MainZoneControl,
     ) -> BoxFuture<'_, Result<(), OperationError>> {
         <Self as AsyncControlGateway>::execute_once(self, control)
+    }
+
+    fn query_zone2_power(&mut self) -> BoxFuture<'_, Result<PowerState, OperationError>> {
+        Box::pin(async move {
+            let response = self
+                .request_query("Z2?")
+                .await
+                .map_err(OperationError::from)?;
+            denon_avr_protocol::avr::parse_zone2_power(&response).map_err(|error| {
+                OperationError::new(
+                    OperationErrorKind::Malformed,
+                    "parsing Zone 2 power",
+                    error.to_string(),
+                )
+            })
+        })
+    }
+
+    fn execute_zone2_once(
+        &mut self,
+        control: Zone2Control,
+    ) -> BoxFuture<'_, Result<(), OperationError>> {
+        Box::pin(async move {
+            let command =
+                denon_avr_protocol::avr::encode_zone2_control(control).map_err(|error| {
+                    OperationError::new(
+                        OperationErrorKind::Malformed,
+                        "encoding Zone 2 control",
+                        error.to_string(),
+                    )
+                })?;
+            self.dispatch(command.as_str())
+                .await
+                .map_err(OperationError::from)
+        })
     }
 
     fn next_event(&mut self) -> BoxFuture<'_, Result<SessionEvent, OperationError>> {

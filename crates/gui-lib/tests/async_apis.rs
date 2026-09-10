@@ -363,6 +363,7 @@ async fn saved_receiver_startup_connects_and_refreshes_only_core_status() {
     let config = ConfiguredReceivers {
         current: Some("Denon AVC-X3800H".into()),
         receivers: [("Denon AVC-X3800H".into(), identity.clone())].into(),
+        ..ConfiguredReceivers::default()
     };
 
     let startup_task = update(&mut gui, Message::ConfigLoaded(Ok(config)));

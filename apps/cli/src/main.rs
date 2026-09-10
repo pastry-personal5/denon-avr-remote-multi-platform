@@ -332,6 +332,7 @@ fn save_identity(identity: &ReceiverIdentity) -> Result<(), String> {
         .save(&ConfiguredReceivers {
             current: Some(name.clone()),
             receivers: BTreeMap::from([(name, identity.clone())]),
+            ..ConfiguredReceivers::default()
         })
         .map_err(|error| error.to_string())
 }
