@@ -985,6 +985,18 @@ fn invalidate_snapshot(snapshot: &Arc<Mutex<MainZoneSnapshot>>) {
 }
 
 async fn publish_event(events: &mpsc::Sender<AvrSessionEvent>, event: AvrSessionEvent) -> bool {
+    // The AVR can emit an unsolicited burst (notably a series of MV lines
+    // while its volume is being changed). Those lines have already been
+    // applied to the shared authoritative snapshot, so notification delivery
+    // must not apply backpressure to the protocol reader or block subsequent
+    // commands. Lifecycle notifications remain lossless and ordered.
+    if matches!(event, AvrSessionEvent::Line(_)) {
+        return match events.try_send(event) {
+            Ok(()) => true,
+            Err(mpsc::error::TrySendError::Full(_)) => true,
+            Err(mpsc::error::TrySendError::Closed(_)) => false,
+        };
+    }
     events.send(event).await.is_ok()
 }
 
@@ -1145,6 +1157,9 @@ mod tests {
             let mut command = Vec::new();
             reader.read_until(b'\r', &mut command).await.unwrap();
             assert_eq!(command, b"MV?\r");
+            for _ in 0..64 {
+                reader.get_mut().write_all(b"MVMAX 615\r").await.unwrap();
+            }
             reader
                 .get_mut()
                 .write_all(b"MVMAX 615\rMV025\r")

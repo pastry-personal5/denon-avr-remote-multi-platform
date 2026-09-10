@@ -492,22 +492,29 @@ impl MainZoneSnapshot {
     }
 
     pub fn set_value(&mut self, value: MainZoneValue, authority: StateAuthority) {
+        let previous_value = match &value {
+            MainZoneValue::Power(_) => self.value(MainZoneField::Power),
+            MainZoneValue::Input(_) => self.value(MainZoneField::Input),
+            MainZoneValue::Volume(_) => self.value(MainZoneField::Volume),
+            MainZoneValue::Mute(_) => self.value(MainZoneField::Mute),
+            MainZoneValue::SurroundMode(_) => self.value(MainZoneField::SurroundMode),
+        };
         let invalidates_audio_context = matches!(
             &value,
             MainZoneValue::Input(_) | MainZoneValue::SurroundMode(_)
         );
         let category_invalidated = matches!(
-            &value,
-            MainZoneValue::Input(_) | MainZoneValue::SurroundMode(_)
-        ) && self.sound_mode_category.take().is_some();
-        let field = match &value {
-            MainZoneValue::Power(_) => MainZoneField::Power,
-            MainZoneValue::Input(_) => MainZoneField::Input,
-            MainZoneValue::Volume(_) => MainZoneField::Volume,
-            MainZoneValue::Mute(_) => MainZoneField::Mute,
-            MainZoneValue::SurroundMode(_) => MainZoneField::SurroundMode,
-        };
-        if self.value(field).as_ref() != Some(&value) || category_invalidated {
+            (&value, previous_value.as_ref()),
+            (MainZoneValue::Input(_), _) | (MainZoneValue::SurroundMode(_), None)
+        ) || matches!(
+            (&value, previous_value.as_ref()),
+            (MainZoneValue::SurroundMode(new), Some(MainZoneValue::SurroundMode(old)))
+                if new != old
+        );
+        if category_invalidated {
+            self.sound_mode_category = None;
+        }
+        if previous_value.as_ref() != Some(&value) || category_invalidated {
             self.resource_version = self.resource_version.saturating_add(1);
         }
         match value {
@@ -664,6 +671,23 @@ mod tests {
             snapshot.surround_mode.value().map(SurroundMode::as_str),
             Some("DTS NEURAL:X")
         );
+    }
+
+    #[test]
+    fn confirmed_category_survives_an_unchanged_authoritative_status_read() {
+        let mut snapshot = MainZoneSnapshot::default();
+        let mode = SurroundMode::new("DOLBY SURROUND").unwrap();
+        snapshot.set_value(
+            MainZoneValue::SurroundMode(mode.clone()),
+            StateAuthority::Authoritative,
+        );
+        snapshot.confirm_sound_mode_category(SoundModeCategory::Movie);
+
+        snapshot.set_value(
+            MainZoneValue::SurroundMode(mode),
+            StateAuthority::Authoritative,
+        );
+        assert_eq!(snapshot.sound_mode_category, Some(SoundModeCategory::Movie));
     }
 
     #[test]

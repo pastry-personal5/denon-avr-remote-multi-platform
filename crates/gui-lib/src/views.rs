@@ -232,7 +232,9 @@ impl Gui {
                         .surround_mode
                         .value()
                         .map(|mode| mode.as_str()),
-                    self.snapshot.sound_mode_category,
+                    self.snapshot
+                        .sound_mode_category
+                        .or(self.sound_mode_category_preference),
                     &self.configured,
                 ),
             ]

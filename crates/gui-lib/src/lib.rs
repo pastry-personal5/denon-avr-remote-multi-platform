@@ -23,6 +23,17 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+async fn save_sound_mode_config(
+    configuration: Arc<dyn AsyncConfigRepository>,
+    config: ConfiguredReceivers,
+) -> Result<ConfiguredReceivers, String> {
+    configuration
+        .save(&config)
+        .await
+        .map(|_| config)
+        .map_err(|error| error.to_string())
+}
+
 mod bridge;
 mod capture;
 pub mod components;
@@ -96,6 +107,13 @@ pub struct Gui {
     pub quick_select: QuickSelectSnapshot,
     pub eq_status: EqStatus,
     pub source_catalog: SourceCatalog,
+    /// The AVR reports only the detailed MS mode, not its UI category. Keep
+    /// the last requested category to disambiguate shared rows in the table.
+    sound_mode_category_preference: Option<SoundModeCategory>,
+    sound_mode_request_id: Option<u64>,
+    sound_mode_request_is_recall: bool,
+    sound_mode_save_in_flight: bool,
+    pending_sound_mode_config: Option<ConfiguredReceivers>,
     volume_command_pending: bool,
     /// Request identity is separate from the GUI-wide freshness counter:
     /// background catalog/status reads may legitimately advance that counter
@@ -146,6 +164,11 @@ impl Gui {
             quick_select: QuickSelectSnapshot::default(),
             eq_status: EqStatus::default(),
             source_catalog: SourceCatalog::default(),
+            sound_mode_category_preference: None,
+            sound_mode_request_id: None,
+            sound_mode_request_is_recall: false,
+            sound_mode_save_in_flight: false,
+            pending_sound_mode_config: None,
             volume_command_pending: false,
             volume_command_request_id: None,
             status_confirmed_generation: None,
@@ -339,6 +362,9 @@ impl Gui {
             Message::CommandFinished(Err(error)) => {
                 self.volume_command_pending = false;
                 self.volume_command_request_id = None;
+                self.sound_mode_category_preference = None;
+                self.sound_mode_request_id = None;
+                self.sound_mode_request_is_recall = false;
                 self.announce(format!("Operation failed: {error}"));
                 Task::none()
             }
@@ -438,6 +464,8 @@ impl Gui {
                 self.invalidate_quick_select_eq();
                 self.volume_command_pending = false;
                 self.volume_command_request_id = None;
+                self.sound_mode_category_preference = None;
+                self.sound_mode_request_id = None;
                 self.status_confirmed_generation = None;
                 let id = self.next_request();
                 self.announce(format!(
@@ -499,6 +527,9 @@ impl Gui {
                         ) {
                             self.snapshot.invalidate();
                             self.zone2.invalidate();
+                            self.sound_mode_category_preference = None;
+                            self.sound_mode_request_id = None;
+                            self.sound_mode_request_is_recall = false;
                             self.volume_command_pending = false;
                             self.volume_command_request_id = None;
                         }
@@ -568,6 +599,23 @@ impl Gui {
                             self.volume_command_pending = false;
                             self.volume_command_request_id = None;
                         }
+                        if self.sound_mode_request_id == Some(event_request_id) {
+                            let is_recall = self.sound_mode_request_is_recall;
+                            self.sound_mode_request_id = None;
+                            self.sound_mode_request_is_recall = false;
+                            let keep_preference = matches!(
+                                &result,
+                                denon_avr_application::ControlResult::Confirmed { .. }
+                                    | denon_avr_application::ControlResult::NoOp { .. }
+                            ) || (is_recall
+                                && matches!(
+                                    &result,
+                                    denon_avr_application::ControlResult::Unconfirmed(_)
+                                ));
+                            if !keep_preference {
+                                self.sound_mode_category_preference = None;
+                            }
+                        }
                         self.announce(feedback::control_message(&result))
                     }
                     ReceiverEvent::FieldError { field, error } => {
@@ -576,6 +624,9 @@ impl Gui {
                     ReceiverEvent::Diagnostic(diagnostic) => {
                         self.volume_command_pending = false;
                         self.volume_command_request_id = None;
+                        self.sound_mode_category_preference = None;
+                        self.sound_mode_request_id = None;
+                        self.sound_mode_request_is_recall = false;
                         self.announce(format!("Diagnostic: {diagnostic:?}"))
                     }
                     _ => {}
@@ -673,12 +724,14 @@ impl Gui {
                 }
                 Task::none()
             }
-            Message::SelectSoundModeCategory(category) => {
-                self.control(MainZoneControl::RecallSoundModeCategory(category))
-            }
+            Message::SelectSoundModeCategory(category) => self
+                .control_sound_mode(category, MainZoneControl::RecallSoundModeCategory(category)),
             Message::SelectSurroundMode(category, value) => {
                 match denon_avr_domain::SurroundMode::new(value) {
-                    Ok(mode) => self.control(MainZoneControl::SelectSoundMode { category, mode }),
+                    Ok(mode) => self.control_sound_mode(
+                        category,
+                        MainZoneControl::SelectSoundMode { category, mode },
+                    ),
                     Err(error) => {
                         self.announce(error);
                         Task::none()
@@ -700,23 +753,37 @@ impl Gui {
                     if favorite { "Saving" } else { "Removing" },
                     mode
                 ));
+                // Publish the new preference immediately so subsequent rapid
+                // clicks build on it instead of cloning a stale committed
+                // configuration. Persist writes are serialized below.
+                self.configured = config.clone();
+                if self.sound_mode_save_in_flight {
+                    self.pending_sound_mode_config = Some(config);
+                    return Task::none();
+                }
+                self.sound_mode_save_in_flight = true;
                 Task::perform(
-                    async move {
-                        configuration
-                            .save(&config)
-                            .await
-                            .map(|_| config)
-                            .map_err(|error| error.to_string())
-                    },
+                    save_sound_mode_config(configuration, config),
                     Message::SoundModeFavoritesSaved,
                 )
             }
             Message::SoundModeFavoritesSaved(Ok(config)) => {
                 self.configured = config;
                 self.announce("Sound mode favorites saved.");
+                if let Some(next) = self.pending_sound_mode_config.take() {
+                    self.configured = next.clone();
+                    let configuration = Arc::clone(&self.configuration);
+                    return Task::perform(
+                        save_sound_mode_config(configuration, next),
+                        Message::SoundModeFavoritesSaved,
+                    );
+                }
+                self.sound_mode_save_in_flight = false;
                 Task::none()
             }
             Message::SoundModeFavoritesSaved(Err(error)) => {
+                self.sound_mode_save_in_flight = false;
+                self.pending_sound_mode_config = None;
                 self.announce(format!("Could not save sound mode favorites: {error}"));
                 Task::none()
             }
@@ -882,6 +949,24 @@ impl Gui {
 
     fn control(&mut self, control: MainZoneControl) -> Task<Message> {
         let id = self.next_request();
+        self.announce("Command pending; waiting for receiver confirmation…");
+        self.command(BridgeCommand::Control(
+            id,
+            control,
+            Some(self.snapshot.resource_version()),
+        ))
+    }
+
+    fn control_sound_mode(
+        &mut self,
+        category: SoundModeCategory,
+        control: MainZoneControl,
+    ) -> Task<Message> {
+        let id = self.next_request();
+        self.sound_mode_category_preference = Some(category);
+        self.sound_mode_request_id = Some(id);
+        self.sound_mode_request_is_recall =
+            matches!(control, MainZoneControl::RecallSoundModeCategory(_));
         self.announce("Command pending; waiting for receiver confirmation…");
         self.command(BridgeCommand::Control(
             id,

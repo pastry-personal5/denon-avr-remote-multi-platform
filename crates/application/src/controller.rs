@@ -574,8 +574,9 @@ impl<F: SessionFactory> State<F> {
                     Self::emit(events, ReceiverEvent::Zone2Snapshot(self.zone2.clone())).await;
                 }
                 Ok(SessionEvent::MainZone(event)) => {
+                    let before = self.snapshot.resource_version();
                     let refresh_information = matches!(
-                        event,
+                        &event,
                         MainZoneEvent::Changed(MainZoneValue::Input(_))
                             | MainZoneEvent::Changed(MainZoneValue::SurroundMode(_))
                             | MainZoneEvent::Changed(MainZoneValue::Power(
@@ -583,8 +584,15 @@ impl<F: SessionFactory> State<F> {
                             ))
                     );
                     self.snapshot.apply_event(event);
-                    Self::emit(events, ReceiverEvent::Snapshot(self.snapshot.clone())).await;
-                    if refresh_information {
+                    // Denon sends a large burst of unsolicited diagnostic and
+                    // repeated status lines after commands. Do not enqueue a
+                    // UI snapshot for unknown or unchanged lines: doing so can
+                    // fill the bounded event channel while a control waits for
+                    // confirmation and deadlock the serialized coordinator.
+                    if self.snapshot.resource_version() != before {
+                        Self::emit(events, ReceiverEvent::Snapshot(self.snapshot.clone())).await;
+                    }
+                    if refresh_information && self.snapshot.resource_version() != before {
                         let _ = self.refresh_http_information(events).await;
                     }
                 }
@@ -948,6 +956,7 @@ impl<F: SessionFactory> State<F> {
             }
         }
         let field = control_field(&control);
+        let previous_surround_mode = self.snapshot.surround_mode.value().cloned();
         let Some(s) = self.session.as_mut() else {
             return ControlResult::Rejected(stopped());
         };
@@ -965,10 +974,12 @@ impl<F: SessionFactory> State<F> {
         }
         match tokio::time::timeout(self.config.confirmation_timeout, self.refresh(events)).await {
             Ok(Ok(()))
-                if self
-                    .snapshot
-                    .value(field)
-                    .is_some_and(|v| control_matches(&control, &v, &capabilities)) =>
+                if self.snapshot.value(field).is_some_and(|v| {
+                    control_matches(&control, &v, &capabilities)
+                        && (!matches!(control, MainZoneControl::RecallSoundModeCategory(_))
+                            || previous_surround_mode.as_ref()
+                                != self.snapshot.surround_mode.value())
+                }) =>
             {
                 if let Some(category) = sound_mode_category_from_control(&control) {
                     // `refresh` has just queried `MS?` authoritatively. Pair
@@ -1470,13 +1481,9 @@ mod tests {
 
     #[tokio::test]
     async fn refresh_completes_when_session_events_are_continuous() {
-        let config = ControllerConfig {
-            // The flood emits one UI event for every drained session event.
-            // Keep this larger than a single bounded drain batch.
-            queue_capacity: 128,
-            ..ControllerConfig::default()
-        };
-        let handle = ReceiverController::spawn(EventFloodFactory, config);
+        // The default queue must remain safe under a receiver's unsolicited
+        // event burst; unknown and unchanged lines are intentionally coalesced.
+        let handle = ReceiverController::spawn(EventFloodFactory, ControllerConfig::default());
 
         handle.select(selection()).await.unwrap();
         let reply = tokio::time::timeout(Duration::from_millis(250), handle.refresh())

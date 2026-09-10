@@ -101,6 +101,7 @@ pub fn execute_main_zone_control(
         ControlAdmission::Rejected(error) => return ControlOutcome::Rejected(error),
         ControlAdmission::Unsupported(message) => return ControlOutcome::Unsupported(message),
     }
+    let previous_surround_mode = preflight.surround_mode.value().cloned();
     if let Err(error) = status.execute_once(control.clone()) {
         return ControlOutcome::TransportFailure(error);
     }
@@ -113,7 +114,11 @@ pub fn execute_main_zone_control(
     let confirmed = crate::main_zone_status::query_main_zone_status(status);
     if confirmed
         .value(control_field(&control))
-        .is_some_and(|value| control_matches(&control, &value, capabilities))
+        .is_some_and(|value| {
+            control_matches(&control, &value, capabilities)
+                && (!matches!(control, MainZoneControl::RecallSoundModeCategory(_))
+                    || previous_surround_mode.as_ref() != confirmed.surround_mode.value())
+        })
     {
         ControlOutcome::Confirmed(confirmed)
     } else {
@@ -138,6 +143,7 @@ pub async fn execute_main_zone_control_async(
         ControlAdmission::Rejected(error) => return ControlOutcome::Rejected(error),
         ControlAdmission::Unsupported(message) => return ControlOutcome::Unsupported(message),
     }
+    let previous_surround_mode = preflight.surround_mode.value().cloned();
     if let Err(error) = status.execute_once(control.clone()).await {
         return ControlOutcome::TransportFailure(error);
     }
@@ -150,7 +156,11 @@ pub async fn execute_main_zone_control_async(
     let confirmed = crate::main_zone_status::query_main_zone_status_async(status).await;
     if confirmed
         .value(control_field(&control))
-        .is_some_and(|value| control_matches(&control, &value, capabilities))
+        .is_some_and(|value| {
+            control_matches(&control, &value, capabilities)
+                && (!matches!(control, MainZoneControl::RecallSoundModeCategory(_))
+                    || previous_surround_mode.as_ref() != confirmed.surround_mode.value())
+        })
     {
         ControlOutcome::Confirmed(confirmed)
     } else {
