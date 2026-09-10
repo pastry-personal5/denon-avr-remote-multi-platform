@@ -131,6 +131,7 @@ pub struct Gui {
     capture_scenario: Option<String>,
     launch_ready: bool,
     launch_frame: u8,
+    status_wait_ticks: u16,
     validated_quick_select_eq: Option<QuickSelectEqCapabilities>,
     validated_source_catalog: Option<SourceCatalogCapabilities>,
     bridge: ControllerBridge,
@@ -181,6 +182,7 @@ impl Gui {
             capture_scenario: None,
             launch_ready: false,
             launch_frame: 0,
+            status_wait_ticks: 0,
             validated_quick_select_eq,
             validated_source_catalog,
             bridge,
@@ -317,6 +319,23 @@ impl Gui {
         ModelCapabilities::for_model(model)
             .with_validated_quick_select_eq(self.validated_quick_select_eq.unwrap_or_default())
             .with_validated_source_catalog(self.validated_source_catalog.unwrap_or_default())
+    }
+
+    fn status_waiting(&self) -> bool {
+        const STATUS_WAIT_LIMIT_TICKS: u16 = 28; // 5 seconds at 180 ms
+        fn not_queried<T>(field: &FieldStatus<T>) -> bool {
+            matches!(field, FieldStatus::Unavailable(error) if error.message == "not queried")
+        }
+        self.status_wait_ticks < STATUS_WAIT_LIMIT_TICKS
+            && [
+                not_queried(&self.snapshot.power),
+                not_queried(&self.snapshot.input),
+                not_queried(&self.snapshot.volume),
+                not_queried(&self.snapshot.mute),
+                not_queried(&self.snapshot.surround_mode),
+            ]
+            .into_iter()
+            .any(|waiting| waiting)
     }
 
     fn invalidate_quick_select_eq(&mut self) {
@@ -461,6 +480,7 @@ impl Gui {
                 self.route = Route::Dashboard;
                 self.snapshot.invalidate();
                 self.zone2.invalidate();
+                self.status_wait_ticks = 0;
                 self.invalidate_quick_select_eq();
                 self.volume_command_pending = false;
                 self.volume_command_request_id = None;
@@ -527,6 +547,7 @@ impl Gui {
                         ) {
                             self.snapshot.invalidate();
                             self.zone2.invalidate();
+                            self.status_wait_ticks = 0;
                             self.sound_mode_category_preference = None;
                             self.sound_mode_request_id = None;
                             self.sound_mode_request_is_recall = false;
@@ -722,6 +743,7 @@ impl Gui {
                 if !self.launch_ready {
                     self.launch_frame = self.launch_frame.wrapping_add(1);
                 }
+                self.status_wait_ticks = self.status_wait_ticks.saturating_add(1);
                 Task::none()
             }
             Message::SelectSoundModeCategory(category) => self
@@ -1328,10 +1350,10 @@ pub fn subscription(gui: &Gui) -> Subscription<Message> {
             .subscription()
             .map(|event| Message::Bridge(Box::new(event))),
         iced::keyboard::listen().map(Message::Keyboard),
-        if gui.launch_ready {
+        if gui.launch_ready && !gui.status_waiting() {
             Subscription::none()
         } else {
-            iced::time::every(Duration::from_millis(140)).map(|_| Message::LaunchTick)
+            iced::time::every(Duration::from_millis(180)).map(|_| Message::LaunchTick)
         },
     ])
 }

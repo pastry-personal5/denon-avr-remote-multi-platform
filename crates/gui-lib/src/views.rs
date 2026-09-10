@@ -7,12 +7,20 @@ impl Gui {
     pub(super) fn dashboard(&self) -> iced::widget::Column<'_, Message> {
         let capabilities = self.selected_capabilities();
         let writable = capabilities.writable;
+        let waiting = self.status_waiting();
+        let frame = self.status_wait_ticks;
         let input = self
             .snapshot
             .input
             .value()
             .map(ToString::to_string)
-            .unwrap_or_else(|| "Unavailable".into());
+            .unwrap_or_else(|| {
+                if waiting {
+                    waiting_dots(frame).into()
+                } else {
+                    String::new()
+                }
+            });
         let power_action = (writable
             && main_zone_power_control(self.snapshot.power.value()).is_some())
         .then_some(Message::ToggleMainZonePower);
@@ -28,6 +36,8 @@ impl Gui {
             zone2_popup_action,
             &input,
             self.source_catalog.clone(),
+            waiting,
+            frame,
         );
         if self.snapshot.power.value() == Some(&PowerState::Standby) {
             return column![container(stack![
@@ -41,7 +51,16 @@ impl Gui {
             .height(Length::Fixed(600.0))];
         }
         if self.snapshot.power.value() != Some(&PowerState::On) {
-            let (title, detail, action) = power_recovery(&self.lifecycle, &self.snapshot);
+            let (title, detail, action) = if waiting {
+                (
+                    format!("WAITING {}", waiting_dots(frame)),
+                    String::new(),
+                    None,
+                )
+            } else {
+                let (title, detail, action) = power_recovery(&self.lifecycle, &self.snapshot);
+                (title.to_owned(), detail, action)
+            };
             let action: Element<'_, Message> = action.map_or_else(
                 || space().into(),
                 |(label, message)| components::action(label, message).into(),
@@ -194,7 +213,9 @@ impl Gui {
                                 ("Signal", &information.audio.signal),
                                 ("Sound", &information.audio.sound),
                                 ("Rate", &information.audio.sample_rate),
-                            ]
+                            ],
+                            waiting,
+                            frame,
                         ))
                         .width(Length::Fill)
                         .height(Length::Fixed(DASHBOARD_INFORMATION_BOTTOM_ROW_HEIGHT))
@@ -205,7 +226,9 @@ impl Gui {
                                 ("Monitor", &information.video.monitor),
                                 ("HDMI in", &information.video.hdmi_input),
                                 ("HDMI out", &information.video.hdmi_output)
-                            ]
+                            ],
+                            waiting,
+                            frame,
                         ))
                         .width(Length::Fill)
                         .height(Length::Fixed(DASHBOARD_INFORMATION_BOTTOM_ROW_HEIGHT))
@@ -216,7 +239,9 @@ impl Gui {
                                 ("MultEQ", &information.audyssey.multeq),
                                 ("Dynamic EQ", &information.audyssey.dynamic_eq),
                                 ("Dynamic Volume", &information.audyssey.dynamic_volume),
-                            ]
+                            ],
+                            waiting,
+                            frame,
                         ))
                         .width(Length::Fill)
                         .height(Length::Fixed(DASHBOARD_INFORMATION_BOTTOM_ROW_HEIGHT))
@@ -236,6 +261,8 @@ impl Gui {
                         .sound_mode_category
                         .or(self.sound_mode_category_preference),
                     &self.configured,
+                    waiting,
+                    frame,
                 ),
             ]
             .spacing(DASHBOARD_INFORMATION_ROW_GAP),
@@ -256,6 +283,8 @@ fn sound_mode_panel<'a>(
     active: Option<&'a str>,
     selected_category: Option<SoundModeCategory>,
     favorites: &'a ConfiguredReceivers,
+    waiting: bool,
+    frame: u16,
 ) -> Element<'a, Message> {
     use denon_avr_domain::SoundModeCategory;
     let categories = [
@@ -349,9 +378,16 @@ fn sound_mode_panel<'a>(
         column![
             row![
                 text("SOUND MODE").size(14).color(iced::Color::WHITE),
-                text(active.unwrap_or("WAITING FOR RECEIVER STATUS"))
-                    .size(9)
-                    .color(design::MUTED),
+                text(active.map_or_else(
+                    || if waiting {
+                        format!("WAITING {}", waiting_dots(frame))
+                    } else {
+                        String::new()
+                    },
+                    str::to_owned,
+                ))
+                .size(9)
+                .color(design::MUTED),
             ]
             .width(Length::Fill)
             .align_y(iced::Alignment::Center)

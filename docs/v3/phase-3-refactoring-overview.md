@@ -10,6 +10,15 @@ root `src/` copy has been removed, leaving `crates/` for reusable layers and
 `apps/` for delivery/composition. Receiver wire behavior, YAML receiver data,
 CLI grammar, bounded I/O, and diagnostic read-only behavior are unchanged.
 
+## Remaining work
+
+This phase is implemented but not finished from a product-validation
+perspective. Receiver control and monitoring are functional, yet still
+imperfect across models and connection conditions. Follow-up work remains for
+live-receiver validation, status freshness/recovery, and edge cases in command
+acknowledgement and unsolicited updates. These limitations should be treated
+as known gaps rather than release-quality guarantees.
+
 ## Changes
 
 - Application session factory, live session, and event contracts have one

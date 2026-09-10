@@ -150,11 +150,13 @@ pub(crate) fn dashboard_header(
     zone2_popup_action: Option<Message>,
     source: &str,
     catalog: SourceCatalog,
+    waiting: bool,
+    frame: u16,
 ) -> Element<'static, Message> {
     let (icon, color) = match power {
         Some(PowerState::On) => ("⏻", design::SUCCESS),
         Some(PowerState::Standby) => ("⏻", design::MUTED),
-        None => ("?", design::WARNING),
+        None => (if waiting { "·" } else { "" }, design::MUTED),
     };
     let power_button = match power_action.clone() {
         Some(action) => button(text(icon).size(24).color(color))
@@ -171,7 +173,8 @@ pub(crate) fn dashboard_header(
             match state {
                 Some(PowerState::On) => "ON",
                 Some(PowerState::Standby) => "STANDBY",
-                None => "UNAVAILABLE",
+                None if waiting => waiting_dots(frame),
+                None => "",
             }
         )
     };
@@ -382,13 +385,18 @@ pub(crate) fn source_is_picker_entry(source: &str) -> bool {
 pub(crate) fn information_card<'a>(
     title: &'a str,
     values: &[(&'a str, &'a FieldStatus<String>)],
+    waiting: bool,
+    frame: u16,
 ) -> iced::widget::Column<'a, Message> {
     let content = values
         .iter()
         .fold(column![].spacing(5), |column, (label, value)| {
             let displayed = match value {
                 FieldStatus::Value(value) => value.as_str(),
-                FieldStatus::Unavailable(_) => "Unavailable",
+                FieldStatus::Unavailable(error) if waiting && error.message == "not queried" => {
+                    waiting_dots(frame)
+                }
+                FieldStatus::Unavailable(_) => "",
             };
             column.push(
                 row![
@@ -406,6 +414,10 @@ pub(crate) fn information_card<'a>(
             .center_x(Length::Fill),
         content.padding(10),
     ]
+}
+
+pub(crate) fn waiting_dots(frame: u16) -> &'static str {
+    ["·  ", "·· ", "···", " ··"][(frame as usize / 2) % 4]
 }
 
 #[allow(dead_code)]
