@@ -2,7 +2,7 @@
 
 CARGO ?= cargo
 
-.PHONY: help format format-check check test build run run-gui run-release run-diagnostics run-diagnostics-http capture-visual-baselines visual-baselines clippy boundary clean
+.PHONY: help format format-check check test build run run-gui run-release run-diagnostics run-diagnostics-http package-macos capture-visual-baselines visual-baselines clippy boundary clean
 
 help: ## Show available developer commands
 	@echo "Available targets:"
@@ -47,6 +47,9 @@ capture-visual-baselines: ## Capture every deterministic GUI baseline (use CAPTU
 
 run-release: ## Run the CLI with release optimizations (use ARGS="...")
 	$(CARGO) run --release -p denon-avr-cli --bin denon-avr-remote -- $(ARGS)
+
+package-macos: ## Build the unsigned Apple Silicon macOS app and DMG
+	tools/package-macos.sh
 
 clippy: ## Run Clippy with warnings treated as errors
 	$(CARGO) clippy --all-targets -- -D warnings

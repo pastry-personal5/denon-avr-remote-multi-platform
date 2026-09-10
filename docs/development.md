@@ -23,6 +23,7 @@ make run-diagnostics ARGS="HOST TIMEOUT-MS MODEL FIRMWARE"
                       # run the read-only Telnet diagnostics probe
 make run-diagnostics-http ARGS="HOST TIMEOUT-MS MODEL FIRMWARE [PORT]"
                       # run the read-only HTTP AppCommand evidence probe
+make package-macos       # build the unsigned Apple Silicon .app and .dmg
 cargo run -p denon-avr-diagnostics --bin source-catalog-probe -- \
   http://HOST:8080/goform/AppCommand.xml TIMEOUT-MS MODEL FIRMWARE SCENARIO
                       # diagnostic-only candidate source-catalog read; no writes
@@ -34,6 +35,13 @@ make capture-visual-baselines CAPTURES=target/visual-captures
 make visual-baselines PLATFORM=linux CAPTURES=target/visual-captures/linux
                       # compare all captured PNGs to committed Linux baselines
 ```
+
+On an Apple Silicon Mac, `make package-macos` writes
+`target/release/macos/Denon AVR Remote.app` and
+`target/release/macos/Denon-AVR-Remote-<version>-arm64.dmg`. The release is
+unsigned and unnotarized; macOS Gatekeeper may require right-clicking the app
+and choosing Open on its first launch. See the [Phase 4 overview](v3/phase-4-macos-bundle-overview.md)
+for prerequisites and configuration details.
 
 Equivalent Cargo commands are documented by the Makefile. Do not run live
 receiver validation as part of ordinary unit-test work.

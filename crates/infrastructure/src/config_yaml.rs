@@ -26,8 +26,30 @@ impl YamlConfigRepository {
 }
 impl Default for YamlConfigRepository {
     fn default() -> Self {
-        Self::new("config/denon-avr-remote.yaml")
+        Self::new(default_config_path())
     }
+}
+
+#[cfg(target_os = "macos")]
+fn default_config_path() -> PathBuf {
+    env_path("HOME")
+        .unwrap_or_else(|| PathBuf::from("~"))
+        .join("Library")
+        .join("Application Support")
+        .join("Denon AVR Remote")
+        .join("denon-avr-remote.yaml")
+}
+
+#[cfg(not(target_os = "macos"))]
+fn default_config_path() -> PathBuf {
+    PathBuf::from("config/denon-avr-remote.yaml")
+}
+
+#[cfg(target_os = "macos")]
+fn env_path(variable: &str) -> Option<PathBuf> {
+    std::env::var_os(variable)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -533,5 +555,14 @@ mod tests {
         assert!(!config.is_sound_mode_favorite(SoundModeCategory::Music, "DTS NEURAL:X"));
 
         let _ = fs::remove_file(path);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn default_repository_keeps_repository_relative_development_path() {
+        assert_eq!(
+            YamlConfigRepository::default().path(),
+            Path::new("config/denon-avr-remote.yaml")
+        );
     }
 }
