@@ -51,9 +51,10 @@ pub fn admit_main_zone_control(
             "the selected receiver does not support this validated control".into(),
         );
     }
-    if preflight
-        .value(control_field(control))
-        .is_some_and(|value| control_matches(control, &value, capabilities))
+    if !matches!(control, MainZoneControl::RecallSoundModeCategory(_))
+        && preflight
+            .value(control_field(control))
+            .is_some_and(|value| control_matches(control, &value, capabilities))
     {
         ControlAdmission::NoOp
     } else {
@@ -170,6 +171,10 @@ pub(crate) fn control_field(control: &MainZoneControl) -> denon_avr_domain::Main
         MainZoneControl::Volume(_) => denon_avr_domain::MainZoneField::Volume,
         MainZoneControl::Mute(_) => denon_avr_domain::MainZoneField::Mute,
         MainZoneControl::SurroundMode(_) => denon_avr_domain::MainZoneField::SurroundMode,
+        MainZoneControl::SelectSoundMode { .. } => denon_avr_domain::MainZoneField::SurroundMode,
+        MainZoneControl::RecallSoundModeCategory(_) => {
+            denon_avr_domain::MainZoneField::SurroundMode
+        }
     }
 }
 
@@ -195,6 +200,14 @@ pub(crate) fn control_matches(
             MainZoneControl::SurroundMode(expected),
             denon_avr_domain::MainZoneValue::SurroundMode(actual),
         ) => expected == actual,
+        (
+            MainZoneControl::SelectSoundMode { mode: expected, .. },
+            denon_avr_domain::MainZoneValue::SurroundMode(actual),
+        ) => expected == actual,
+        (
+            MainZoneControl::RecallSoundModeCategory(_),
+            denon_avr_domain::MainZoneValue::SurroundMode(_),
+        ) => true,
         _ => false,
     }
 }
@@ -220,6 +233,25 @@ mod tests {
                 kind: OperationErrorKind::Conflict,
                 ..
             })
+        ));
+    }
+
+    #[test]
+    fn category_recall_is_dispatched_and_confirmed_by_the_recalled_mode() {
+        let snapshot = MainZoneSnapshot::default();
+        let capabilities = ModelCapabilities::for_model(Model::AvrX3800h);
+        let control =
+            MainZoneControl::RecallSoundModeCategory(denon_avr_domain::SoundModeCategory::Music);
+        assert_eq!(
+            admit_main_zone_control(&snapshot, &capabilities, &control, None),
+            ControlAdmission::Dispatch
+        );
+        assert!(control_matches(
+            &control,
+            &denon_avr_domain::MainZoneValue::SurroundMode(
+                denon_avr_domain::SurroundMode::new("JAZZ CLUB").unwrap()
+            ),
+            &capabilities,
         ));
     }
 }

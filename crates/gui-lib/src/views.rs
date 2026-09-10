@@ -232,6 +232,7 @@ impl Gui {
                         .surround_mode
                         .value()
                         .map(|mode| mode.as_str()),
+                    self.snapshot.sound_mode_category,
                     &self.configured,
                 ),
             ]
@@ -251,6 +252,7 @@ impl Gui {
 fn sound_mode_panel<'a>(
     capabilities: ModelCapabilities,
     active: Option<&'a str>,
+    selected_category: Option<SoundModeCategory>,
     favorites: &'a ConfiguredReceivers,
 ) -> Element<'a, Message> {
     use denon_avr_domain::SoundModeCategory;
@@ -267,16 +269,18 @@ fn sound_mode_panel<'a>(
                 .sound_modes(kind)
                 .iter()
                 .enumerate()
-                .map(move |(index, mode)| (category, *mode, index == 0))
+                .map(move |(index, mode)| (category, kind, *mode, index == 0))
         })
         .collect::<Vec<_>>();
     // A mode can appear in more than one organizational category. Select the
     // first matching row so the receiver-reported `MS…` state lights exactly
     // one radio button.
-    let selected = active.and_then(|active| rows.iter().position(|(_, mode, _)| *mode == active));
+    let selected = selected_sound_mode_index(&rows, active, selected_category);
+    let current_category =
+        selected.and_then(|index| rows.get(index).map(|(_, category, _, _)| *category));
     let table = rows.into_iter().enumerate().fold(
         column![].spacing(2),
-        |table, (index, (category, mode, group_start))| {
+        |table, (index, (category, kind, mode, group_start))| {
             let selected_row = selected == Some(index);
             let row_style = if selected_row {
                 design::sound_mode_row_selected
@@ -285,13 +289,30 @@ fn sound_mode_panel<'a>(
             } else {
                 design::sound_mode_row_b
             };
-            let favorite = favorites.is_sound_mode_favorite(mode);
+            let favorite = favorites.is_sound_mode_favorite(kind, mode);
+            let category_control: Element<'_, Message> = if group_start {
+                button(
+                    text(category)
+                        .size(9)
+                        .width(Length::Fill)
+                        .align_x(iced::alignment::Horizontal::Center),
+                )
+                .padding([3, 5])
+                .style(if current_category == Some(kind) {
+                    design::primary
+                } else {
+                    design::secondary
+                })
+                .on_press(Message::SelectSoundModeCategory(kind))
+                .width(Length::Fixed(52.0))
+                .into()
+            } else {
+                container(text("")).width(Length::Fixed(52.0)).into()
+            };
             table.push(
                 container(
                     row![
-                        text(if group_start { category } else { "" })
-                            .size(9)
-                            .width(Length::Fixed(52.0)),
+                        category_control,
                         text(mode).size(9).width(Length::Fill),
                         button(text(if favorite { "♥" } else { "♡" }).size(13))
                             .padding([0, 3])
@@ -300,9 +321,10 @@ fn sound_mode_panel<'a>(
                             } else {
                                 design::sound_mode_inactive_heart
                             })
-                            .on_press(Message::ToggleSoundModeFavorite(mode.into())),
+                            .on_press(Message::ToggleSoundModeFavorite(kind, mode.into())),
                         container(
                             radio("", index, selected, |_| Message::SelectSurroundMode(
+                                kind,
                                 mode.into()
                             ))
                             .size(12)
@@ -341,4 +363,45 @@ fn sound_mode_panel<'a>(
     .height(Length::Fixed(SOUND_MODE_PANEL_HEIGHT))
     .style(design::panel)
     .into()
+}
+
+fn selected_sound_mode_index(
+    rows: &[(&str, SoundModeCategory, &str, bool)],
+    active: Option<&str>,
+    selected_category: Option<SoundModeCategory>,
+) -> Option<usize> {
+    active
+        .zip(selected_category)
+        .and_then(|(active, selected_category)| {
+            rows.iter().position(|(_, category, mode, _)| {
+                *mode == active && selected_category == *category
+            })
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detailed_mode_radio_respects_the_clicked_category_when_mode_is_shared() {
+        let rows = [
+            ("MOVIE", SoundModeCategory::Movie, "DOLBY SURROUND", true),
+            ("MUSIC", SoundModeCategory::Music, "DOLBY SURROUND", true),
+        ];
+        assert_eq!(
+            selected_sound_mode_index(
+                &rows,
+                Some("DOLBY SURROUND"),
+                Some(SoundModeCategory::Music),
+            ),
+            Some(1)
+        );
+        // Receiver status carries the detailed mode but no category. A radio
+        // is active only after the controller reports the confirmed pair.
+        assert_eq!(
+            selected_sound_mode_index(&rows, Some("DOLBY SURROUND"), None),
+            None
+        );
+    }
 }

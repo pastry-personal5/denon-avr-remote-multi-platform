@@ -1,6 +1,25 @@
 //! Receiver identity and configuration types.
 
+use super::SoundModeCategory;
 use std::collections::{BTreeMap, BTreeSet};
+
+/// A single row in the Sound Mode table. The category is part of the identity
+/// because one detailed mode can intentionally appear under several groups.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SoundModeFavorite {
+    pub category: SoundModeCategory,
+    pub mode: String,
+}
+
+impl SoundModeFavorite {
+    pub fn new(category: SoundModeCategory, mode: impl Into<String>) -> Result<Self, &'static str> {
+        let mode = mode.into();
+        if mode.trim().is_empty() {
+            return Err("sound mode favorite must not be empty");
+        }
+        Ok(Self { category, mode })
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReceiverIdentity {
@@ -25,7 +44,7 @@ pub struct ConfiguredReceivers {
     pub receivers: BTreeMap<String, ReceiverIdentity>,
     /// User-owned, per-receiver sound mode favorites. Receiver state never
     /// writes this collection; it is presentation preference only.
-    pub sound_mode_favorites: BTreeMap<String, BTreeSet<String>>,
+    pub sound_mode_favorites: BTreeMap<String, BTreeSet<SoundModeFavorite>>,
 }
 
 impl ConfiguredReceivers {
@@ -63,14 +82,23 @@ impl ConfiguredReceivers {
         Ok(())
     }
 
-    pub fn is_sound_mode_favorite(&self, mode: &str) -> bool {
+    pub fn is_sound_mode_favorite(&self, category: SoundModeCategory, mode: &str) -> bool {
         self.current
             .as_ref()
             .and_then(|name| self.sound_mode_favorites.get(name))
-            .is_some_and(|favorites| favorites.contains(mode))
+            .is_some_and(|favorites| {
+                favorites.contains(&SoundModeFavorite {
+                    category,
+                    mode: mode.to_owned(),
+                })
+            })
     }
 
-    pub fn toggle_current_sound_mode_favorite(&mut self, mode: &str) -> Result<bool, String> {
+    pub fn toggle_current_sound_mode_favorite(
+        &mut self,
+        category: SoundModeCategory,
+        mode: &str,
+    ) -> Result<bool, String> {
         let name = self
             .current
             .clone()
@@ -79,11 +107,12 @@ impl ConfiguredReceivers {
             return Err("current receiver is not configured".into());
         }
         let favorites = self.sound_mode_favorites.entry(name.clone()).or_default();
-        let favorite = if favorites.contains(mode) {
-            favorites.remove(mode);
+        let favorite = SoundModeFavorite::new(category, mode).map_err(str::to_owned)?;
+        let favorite = if favorites.contains(&favorite) {
+            favorites.remove(&favorite);
             false
         } else {
-            favorites.insert(mode.to_owned());
+            favorites.insert(favorite);
             true
         };
         if favorites.is_empty() {
@@ -135,13 +164,14 @@ mod tests {
         };
 
         assert!(configured
-            .toggle_current_sound_mode_favorite("DTS NEURAL:X")
+            .toggle_current_sound_mode_favorite(SoundModeCategory::Movie, "DTS NEURAL:X")
             .unwrap());
-        assert!(configured.is_sound_mode_favorite("DTS NEURAL:X"));
+        assert!(configured.is_sound_mode_favorite(SoundModeCategory::Movie, "DTS NEURAL:X"));
+        assert!(!configured.is_sound_mode_favorite(SoundModeCategory::Music, "DTS NEURAL:X"));
         assert!(!configured
-            .toggle_current_sound_mode_favorite("DTS NEURAL:X")
+            .toggle_current_sound_mode_favorite(SoundModeCategory::Movie, "DTS NEURAL:X")
             .unwrap());
-        assert!(!configured.is_sound_mode_favorite("DTS NEURAL:X"));
+        assert!(!configured.is_sound_mode_favorite(SoundModeCategory::Movie, "DTS NEURAL:X"));
         assert!(configured.sound_mode_favorites.is_empty());
     }
 }

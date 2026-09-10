@@ -970,6 +970,13 @@ impl<F: SessionFactory> State<F> {
                     .value(field)
                     .is_some_and(|v| control_matches(&control, &v, &capabilities)) =>
             {
+                if let Some(category) = sound_mode_category_from_control(&control) {
+                    // `refresh` has just queried `MS?` authoritatively. Pair
+                    // that reported detailed mode with the category that was
+                    // actually dispatched, then publish the confirmed pair.
+                    self.snapshot.confirm_sound_mode_category(category);
+                    Self::emit(events, ReceiverEvent::Snapshot(self.snapshot.clone())).await;
+                }
                 if crate::http_information::may_have_changed(&control) {
                     let _ = self.refresh_http_information(events).await;
                 }
@@ -992,6 +999,15 @@ impl<F: SessionFactory> State<F> {
     }
     async fn emit(events: &mpsc::Sender<ReceiverEvent>, event: ReceiverEvent) {
         let _ = events.send(event).await;
+    }
+}
+fn sound_mode_category_from_control(
+    control: &MainZoneControl,
+) -> Option<denon_avr_domain::SoundModeCategory> {
+    match control {
+        MainZoneControl::SelectSoundMode { category, .. }
+        | MainZoneControl::RecallSoundModeCategory(category) => Some(*category),
+        _ => None,
     }
 }
 fn stopped() -> OperationError {

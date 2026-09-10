@@ -197,6 +197,12 @@ impl ModelCapabilities {
             }
             MainZoneControl::Input(value) => self.inputs.contains(&value.as_str()),
             MainZoneControl::SurroundMode(value) => self.surround_modes.contains(&value.as_str()),
+            MainZoneControl::SelectSoundMode { mode, .. } => {
+                self.surround_modes.contains(&mode.as_str())
+            }
+            MainZoneControl::RecallSoundModeCategory(_) => {
+                matches!(self.model, Model::AvrX3800h)
+            }
         }
     }
 

@@ -1,6 +1,8 @@
 //! AVR command validation and framing.
 
-use denon_avr_domain::{MainZoneControl, MainZoneField, MuteState, PowerState, Zone2Control};
+use denon_avr_domain::{
+    MainZoneControl, MainZoneField, MuteState, PowerState, SoundModeCategory, Zone2Control,
+};
 use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -102,6 +104,17 @@ pub fn encode_control(control: &MainZoneControl) -> Result<AvrCommand, AvrProtoc
         MainZoneControl::Mute(MuteState::On) => AvrCommand::new("MUON"),
         MainZoneControl::Mute(MuteState::Off) => AvrCommand::new("MUOFF"),
         MainZoneControl::SurroundMode(value) => AvrCommand::new(format!("MS{}", value.as_str())),
+        MainZoneControl::SelectSoundMode { mode, .. } => {
+            AvrCommand::new(format!("MS{}", mode.as_str()))
+        }
+        MainZoneControl::RecallSoundModeCategory(category) => AvrCommand::new(match category {
+            SoundModeCategory::Movie => "MSMOVIE",
+            SoundModeCategory::Music => "MSMUSIC",
+            SoundModeCategory::Game => "MSGAME",
+            // Denon's documented protocol exposes PURE DIRECT as the Pure
+            // button's recallable control rather than a separate `MSPURE`.
+            SoundModeCategory::Pure => "MSPURE DIRECT",
+        }),
     }
 }
 
@@ -205,7 +218,8 @@ mod tests {
     #[test]
     fn encodes_typed_main_zone_controls() {
         use denon_avr_domain::{
-            Input, MainZoneControl, MuteState, PowerState, SurroundMode, VolumeLevel,
+            Input, MainZoneControl, MuteState, PowerState, SoundModeCategory, SurroundMode,
+            VolumeLevel,
         };
         assert_eq!(
             encode_control(&MainZoneControl::Power(PowerState::On))
@@ -244,6 +258,47 @@ mod tests {
             .unwrap()
             .as_str(),
             "MSSTEREO"
+        );
+        assert_eq!(
+            encode_control(&MainZoneControl::SelectSoundMode {
+                category: SoundModeCategory::Game,
+                mode: SurroundMode::new("VIDEO GAME").unwrap(),
+            })
+            .unwrap()
+            .as_str(),
+            "MSVIDEO GAME"
+        );
+        assert_eq!(
+            encode_control(&MainZoneControl::RecallSoundModeCategory(
+                SoundModeCategory::Movie
+            ))
+            .unwrap()
+            .as_str(),
+            "MSMOVIE"
+        );
+        assert_eq!(
+            encode_control(&MainZoneControl::RecallSoundModeCategory(
+                SoundModeCategory::Music
+            ))
+            .unwrap()
+            .as_str(),
+            "MSMUSIC"
+        );
+        assert_eq!(
+            encode_control(&MainZoneControl::RecallSoundModeCategory(
+                SoundModeCategory::Game
+            ))
+            .unwrap()
+            .as_str(),
+            "MSGAME"
+        );
+        assert_eq!(
+            encode_control(&MainZoneControl::RecallSoundModeCategory(
+                SoundModeCategory::Pure
+            ))
+            .unwrap()
+            .as_str(),
+            "MSPURE DIRECT"
         );
     }
 

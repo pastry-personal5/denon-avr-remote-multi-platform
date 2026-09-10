@@ -84,12 +84,33 @@ impl fmt::Display for SurroundMode {
 /// Presentation-only organization for the receiver's individual sound modes.
 /// It is deliberately not a control: selecting a mode always sends its exact
 /// `MS…` value, never the old category-recall command.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SoundModeCategory {
     Movie,
     Music,
     Game,
     Pure,
+}
+
+impl SoundModeCategory {
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::Movie => "movie",
+            Self::Music => "music",
+            Self::Game => "game",
+            Self::Pure => "pure",
+        }
+    }
+
+    pub fn from_key(value: &str) -> Option<Self> {
+        match value {
+            "movie" => Some(Self::Movie),
+            "music" => Some(Self::Music),
+            "game" => Some(Self::Game),
+            "pure" => Some(Self::Pure),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -282,6 +303,16 @@ pub enum MainZoneControl {
     Volume(VolumeLevel),
     Mute(MuteState),
     SurroundMode(SurroundMode),
+    /// Select an individual table row. Its category remains part of the
+    /// presentation state after the AVR confirms the exact detailed mode.
+    SelectSoundMode {
+        category: SoundModeCategory,
+        mode: SurroundMode,
+    },
+    /// Recall the receiver-owned mode remembered for this Sound Mode group.
+    /// The resulting detailed mode is confirmed from an authoritative `MS?`
+    /// read rather than predicted by the application.
+    RecallSoundModeCategory(SoundModeCategory),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -400,6 +431,10 @@ pub struct MainZoneSnapshot {
     pub volume: FieldStatus<Volume>,
     pub mute: FieldStatus<MuteState>,
     pub surround_mode: FieldStatus<SurroundMode>,
+    /// Category paired with `surround_mode` only after a category-aware
+    /// control is confirmed. AVR `MS?` status supplies the detailed mode but
+    /// does not independently identify a category.
+    pub sound_mode_category: Option<SoundModeCategory>,
     pub freshness: Freshness,
     pub authority: StateAuthority,
     resource_version: u64,
@@ -415,6 +450,7 @@ impl Default for MainZoneSnapshot {
             volume: FieldStatus::Unavailable(not_queried()),
             mute: FieldStatus::Unavailable(not_queried()),
             surround_mode: FieldStatus::Unavailable(not_queried()),
+            sound_mode_category: None,
             freshness: Freshness::Unknown,
             authority: StateAuthority::Unconfirmed,
             resource_version: 0,
@@ -460,6 +496,10 @@ impl MainZoneSnapshot {
             &value,
             MainZoneValue::Input(_) | MainZoneValue::SurroundMode(_)
         );
+        let category_invalidated = matches!(
+            &value,
+            MainZoneValue::Input(_) | MainZoneValue::SurroundMode(_)
+        ) && self.sound_mode_category.take().is_some();
         let field = match &value {
             MainZoneValue::Power(_) => MainZoneField::Power,
             MainZoneValue::Input(_) => MainZoneField::Input,
@@ -467,7 +507,7 @@ impl MainZoneSnapshot {
             MainZoneValue::Mute(_) => MainZoneField::Mute,
             MainZoneValue::SurroundMode(_) => MainZoneField::SurroundMode,
         };
-        if self.value(field).as_ref() != Some(&value) {
+        if self.value(field).as_ref() != Some(&value) || category_invalidated {
             self.resource_version = self.resource_version.saturating_add(1);
         }
         match value {
@@ -526,6 +566,16 @@ impl MainZoneSnapshot {
     pub fn apply_authoritative_event(&mut self, event: MainZoneEvent) {
         if let MainZoneEvent::Changed(value) = event {
             self.set_value(value, StateAuthority::Authoritative);
+        }
+    }
+
+    /// Records the category supplied by a successfully confirmed UI control.
+    /// This does not manufacture an AVR status value: callers must first have
+    /// an authoritative detailed surround-mode observation.
+    pub fn confirm_sound_mode_category(&mut self, category: SoundModeCategory) {
+        if self.surround_mode.value().is_some() && self.sound_mode_category != Some(category) {
+            self.sound_mode_category = Some(category);
+            self.resource_version = self.resource_version.saturating_add(1);
         }
     }
 
@@ -594,6 +644,26 @@ mod tests {
         assert!(state.power.value().is_none());
         state.invalidate();
         assert_eq!(state.freshness, Freshness::Invalidated);
+    }
+
+    #[test]
+    fn confirmed_category_is_cleared_by_later_receiver_status() {
+        let mut snapshot = MainZoneSnapshot::default();
+        snapshot.set_value(
+            MainZoneValue::SurroundMode(SurroundMode::new("DOLBY SURROUND").unwrap()),
+            StateAuthority::Authoritative,
+        );
+        snapshot.confirm_sound_mode_category(SoundModeCategory::Movie);
+        assert_eq!(snapshot.sound_mode_category, Some(SoundModeCategory::Movie));
+
+        snapshot.apply_event(MainZoneEvent::Changed(MainZoneValue::SurroundMode(
+            SurroundMode::new("DTS NEURAL:X").unwrap(),
+        )));
+        assert_eq!(snapshot.sound_mode_category, None);
+        assert_eq!(
+            snapshot.surround_mode.value().map(SurroundMode::as_str),
+            Some("DTS NEURAL:X")
+        );
     }
 
     #[test]

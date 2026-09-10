@@ -12,8 +12,8 @@ use denon_avr_domain::{
     ChannelSlot, ChannelSlotState, ConfiguredReceivers, EqStatus, FieldStatus, Input,
     MainZoneControl, MainZoneSnapshot, MainZoneValue, Model, ModelCapabilities, MuteState,
     PowerState, QuickSelectEqCapabilities, QuickSelectSlot, QuickSelectSnapshot, ReceiverIdentity,
-    SourceCatalog, SourceCatalogCapabilities, SourceVisibility, StateAuthority, SurroundMode,
-    Volume, Zone2Snapshot,
+    SoundModeCategory, SourceCatalog, SourceCatalogCapabilities, SourceVisibility, StateAuthority,
+    SurroundMode, Volume, Zone2Snapshot,
 };
 use iced::widget::{column, container, row, scrollable, space, stack, text, text_input};
 use iced::{Element, Length, Subscription, Task};
@@ -673,18 +673,21 @@ impl Gui {
                 }
                 Task::none()
             }
-            Message::SelectSurroundMode(value) => {
+            Message::SelectSoundModeCategory(category) => {
+                self.control(MainZoneControl::RecallSoundModeCategory(category))
+            }
+            Message::SelectSurroundMode(category, value) => {
                 match denon_avr_domain::SurroundMode::new(value) {
-                    Ok(mode) => self.control(MainZoneControl::SurroundMode(mode)),
+                    Ok(mode) => self.control(MainZoneControl::SelectSoundMode { category, mode }),
                     Err(error) => {
                         self.announce(error);
                         Task::none()
                     }
                 }
             }
-            Message::ToggleSoundModeFavorite(mode) => {
+            Message::ToggleSoundModeFavorite(category, mode) => {
                 let mut config = self.configured.clone();
-                let favorite = match config.toggle_current_sound_mode_favorite(&mode) {
+                let favorite = match config.toggle_current_sound_mode_favorite(category, &mode) {
                     Ok(favorite) => favorite,
                     Err(error) => {
                         self.announce(error);

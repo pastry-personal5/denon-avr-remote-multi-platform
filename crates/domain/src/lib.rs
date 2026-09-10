@@ -37,7 +37,9 @@ pub use quick_select::{
     QuickSelectSlot, QuickSelectSnapshot, QuickSelectSummary, Registered,
 };
 pub use quick_select_names::{QuickSelectNameObservation, QuickSelectNameResponseEvidence};
-pub use receiver::{ConfiguredReceivers, DiscoveredReceiver, ReceiverEndpoint, ReceiverIdentity};
+pub use receiver::{
+    ConfiguredReceivers, DiscoveredReceiver, ReceiverEndpoint, ReceiverIdentity, SoundModeFavorite,
+};
 pub use source_catalog::{
     CatalogResponseEvidence, SourceCatalog, SourceCatalogObservation, SourceEntry, SourceId,
     SourceVisibility,

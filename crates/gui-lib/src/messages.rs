@@ -2,7 +2,7 @@
 
 use crate::{BridgeEvent, ContrastPreference, MotionPreference, Route};
 use denon_avr_application::ReceiverSelection;
-use denon_avr_domain::{ConfiguredReceivers, PowerState, QuickSelectSlot};
+use denon_avr_domain::{ConfiguredReceivers, PowerState, QuickSelectSlot, SoundModeCategory};
 use std::path::PathBuf;
 
 #[derive(Debug, Clone)]
@@ -37,8 +37,9 @@ pub enum Message {
     AdjustVolume(f32),
     HideVolumeValue(u64),
     LaunchTick,
-    SelectSurroundMode(String),
-    ToggleSoundModeFavorite(String),
+    SelectSoundModeCategory(SoundModeCategory),
+    SelectSurroundMode(SoundModeCategory, String),
+    ToggleSoundModeFavorite(SoundModeCategory, String),
     SoundModeFavoritesSaved(Result<ConfiguredReceivers, String>),
     OpenSourcePicker,
     CloseSourcePicker,

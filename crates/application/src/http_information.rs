@@ -38,6 +38,8 @@ pub(crate) fn may_have_changed(control: &MainZoneControl) -> bool {
         control,
         MainZoneControl::Input(_)
             | MainZoneControl::SurroundMode(_)
+            | MainZoneControl::SelectSoundMode { .. }
+            | MainZoneControl::RecallSoundModeCategory(_)
             | MainZoneControl::Power(denon_avr_domain::PowerState::On)
     )
 }
