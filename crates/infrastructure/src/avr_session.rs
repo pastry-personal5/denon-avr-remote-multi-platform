@@ -1,9 +1,8 @@
 //! Persistent asynchronous AVR TCP sessions.
 
-use denon_avr_application::controller::{ReceiverSession, SessionEvent as ControllerSessionEvent};
-use denon_avr_application::{
+use denon_avr_application::ports::{
     AsyncControlGateway, AsyncStatusGateway, BoxFuture, OperationError, OperationErrorKind,
-    SessionEvent, SourceCatalogReader,
+    ReceiverSession, SessionEvent, SessionFactory, SourceCatalogReader,
 };
 use denon_avr_domain::{
     AudioContextSnapshot, Confidence, ConnectionState, EqEvidence, EqFeature, EqState, EqStatus,
@@ -131,7 +130,7 @@ pub struct AvrSessionFactory {
     pub config: AvrSessionConfig,
 }
 
-impl denon_avr_application::SessionFactory for AvrSessionFactory {
+impl SessionFactory for AvrSessionFactory {
     fn connect(
         &self,
         identity: denon_avr_domain::ReceiverIdentity,
@@ -474,13 +473,8 @@ impl ReceiverSession for AvrSession {
         <Self as AsyncControlGateway>::execute_once(self, control)
     }
 
-    fn next_event(&mut self) -> BoxFuture<'_, Result<ControllerSessionEvent, OperationError>> {
-        Box::pin(async move {
-            match <Self as AsyncStatusGateway>::next_event(self).await? {
-                SessionEvent::Connection(state) => Ok(ControllerSessionEvent::Connection(state)),
-                SessionEvent::MainZone(event) => Ok(ControllerSessionEvent::MainZone(event)),
-            }
-        })
+    fn next_event(&mut self) -> BoxFuture<'_, Result<SessionEvent, OperationError>> {
+        Box::pin(async move { <Self as AsyncStatusGateway>::next_event(self).await })
     }
 
     fn close(&mut self) -> BoxFuture<'_, Result<(), OperationError>> {

@@ -1,6 +1,6 @@
 //! SSDP discovery for Denon/HEOS receivers.
 
-use denon_avr_application::{
+use denon_avr_application::ports::{
     AsyncReceiverDiscovery, BoxFuture, OperationError, OperationErrorKind, ReceiverDiscovery,
 };
 use denon_avr_domain::DiscoveredReceiver;

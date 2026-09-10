@@ -666,7 +666,6 @@ dependencies = [
  "denon-avr-application",
  "denon-avr-domain",
  "denon-avr-infrastructure",
- "denon-avr-protocol",
 ]
 
 [[package]]
@@ -704,7 +703,6 @@ dependencies = [
  "crc32fast",
  "denon-avr-application",
  "denon-avr-domain",
- "denon-avr-infrastructure",
  "flate2",
  "iced",
  "iced_runtime",

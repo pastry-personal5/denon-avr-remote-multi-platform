@@ -38,10 +38,10 @@ Phase 7 delivers:
   read-only `GetAudioInfo`, `GetInputSignal`, and `GetActiveSpeaker`
   operations.
 - A typed, read-only AppCommand XML protocol
-  (`src/protocol/app_command.rs`) and a bounded synchronous HTTP adapter
-  (`src/infrastructure/app_command_http.rs`).
+  (`crates/protocol/src/app_command.rs`) and a bounded synchronous HTTP adapter
+  (`crates/infrastructure/src/app_command_http.rs`).
 - Audio-context query primitives and an `AudioContextSnapshot` that feed the
-  session snapshot (`src/domain/audio_context.rs`, application ports).
+  session snapshot (`crates/domain/src/audio_context.rs`, application ports).
 - Parser/framing fixtures and a validation-record template for live X3800H
   correlation runs.
 
@@ -63,11 +63,11 @@ Out of scope:
   query.
 - `tools/x3800h-http-info-probe.rs`: HTTP probe with raw XML and
   per-parameter `name`/`control`/value output.
-- `src/protocol/app_command.rs`: request construction from typed read-only
+- `crates/protocol/src/app_command.rs`: request construction from typed read-only
   query objects and a lossless response parser.
-- `src/infrastructure/app_command_http.rs`: bounded HTTP client with one
+- `crates/infrastructure/src/app_command_http.rs`: bounded HTTP client with one
   connection per exchange and explicit framing and size limits.
-- `src/domain/audio_context.rs`: `AudioContextSnapshot`, `Observed<T>`,
+- `crates/domain/src/audio_context.rs`: `AudioContextSnapshot`, `Observed<T>`,
   `Observation<T>`, `Provenance`, `Confidence`, and `RawObservation`.
 - `query_audio_context` on the `ReceiverSession` boundary, implemented by the
   synchronous TCP adapter and the persistent AVR session, and exposed through

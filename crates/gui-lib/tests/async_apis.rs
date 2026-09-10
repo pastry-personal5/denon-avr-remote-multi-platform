@@ -1,7 +1,6 @@
-use denon_avr_application::controller::SessionEvent;
-use denon_avr_application::{
+use denon_avr_application::ports::{
     AsyncConfigRepository, AsyncReceiverDiscovery, BoxFuture, OperationError, ReceiverSession,
-    SessionFactory,
+    SessionEvent, SessionFactory,
 };
 use denon_avr_domain::{
     AudioContextSnapshot, ConfiguredReceivers, DiscoveredReceiver, Input, MainZoneControl,

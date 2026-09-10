@@ -16,6 +16,51 @@ pub enum ControlOutcome {
     TransportFailure(OperationError),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ControlAdmission {
+    Dispatch,
+    NoOp,
+    Rejected(OperationError),
+    Unsupported(String),
+}
+
+/// Evaluates optimistic concurrency, capability support, and idempotence from
+/// an already-authoritative snapshot without performing I/O. Delivery layers
+/// use this for previews; dispatch use cases apply it immediately before the
+/// single permitted write.
+pub fn admit_main_zone_control(
+    preflight: &MainZoneSnapshot,
+    capabilities: &ModelCapabilities,
+    control: &MainZoneControl,
+    expected_version: Option<u64>,
+) -> ControlAdmission {
+    if let Some(expected_version) = expected_version {
+        if preflight.resource_version() != expected_version {
+            return ControlAdmission::Rejected(OperationError::new(
+                OperationErrorKind::Conflict,
+                "checking resource version",
+                format!(
+                    "expected {expected_version}, current {}",
+                    preflight.resource_version()
+                ),
+            ));
+        }
+    }
+    if !capabilities.supports_control(control) {
+        return ControlAdmission::Unsupported(
+            "the selected receiver does not support this validated control".into(),
+        );
+    }
+    if preflight
+        .value(control_field(control))
+        .is_some_and(|value| control_matches(control, &value, capabilities))
+    {
+        ControlAdmission::NoOp
+    } else {
+        ControlAdmission::Dispatch
+    }
+}
+
 /// One-shot admission policy used by the CLI. It performs the authoritative
 /// preflight and emits at most one state-changing dispatch; confirmation is
 /// intentionally left to a later status query.
@@ -26,26 +71,11 @@ pub fn dispatch_main_zone_control(
     expected_version: u64,
 ) -> ControlOutcome {
     let preflight = crate::main_zone_status::query_main_zone_status(status);
-    if preflight.resource_version() != expected_version {
-        return ControlOutcome::Rejected(OperationError::new(
-            OperationErrorKind::Conflict,
-            "checking resource version",
-            format!(
-                "expected {expected_version}, current {}",
-                preflight.resource_version()
-            ),
-        ));
-    }
-    if !capabilities.supports_control(&control) {
-        return ControlOutcome::Unsupported(
-            "the selected receiver does not support this validated control".into(),
-        );
-    }
-    if preflight
-        .value(control_field(&control))
-        .is_some_and(|value| control_matches(&control, &value, capabilities))
-    {
-        return ControlOutcome::NoOp(preflight);
+    match admit_main_zone_control(&preflight, capabilities, &control, Some(expected_version)) {
+        ControlAdmission::Dispatch => {}
+        ControlAdmission::NoOp => return ControlOutcome::NoOp(preflight),
+        ControlAdmission::Rejected(error) => return ControlOutcome::Rejected(error),
+        ControlAdmission::Unsupported(message) => return ControlOutcome::Unsupported(message),
     }
     match status.execute_once(control) {
         Ok(()) => ControlOutcome::Unconfirmed(OperationError::new(
@@ -64,24 +94,11 @@ pub fn execute_main_zone_control(
     expected_version: u64,
 ) -> ControlOutcome {
     let preflight = crate::main_zone_status::query_main_zone_status(status);
-    if preflight.resource_version() != expected_version {
-        return ControlOutcome::Rejected(OperationError::new(
-            OperationErrorKind::Conflict,
-            "checking resource version",
-            format!(
-                "expected {expected_version}, current {}",
-                preflight.resource_version()
-            ),
-        ));
-    }
-    if !capabilities.supports_control(&control) {
-        return ControlOutcome::Unsupported(
-            "the selected receiver does not support this validated control".into(),
-        );
-    }
-    if matches!(preflight.value(control_field(&control)), Some(ref value) if control_matches(&control, value, capabilities))
-    {
-        return ControlOutcome::NoOp(preflight);
+    match admit_main_zone_control(&preflight, capabilities, &control, Some(expected_version)) {
+        ControlAdmission::Dispatch => {}
+        ControlAdmission::NoOp => return ControlOutcome::NoOp(preflight),
+        ControlAdmission::Rejected(error) => return ControlOutcome::Rejected(error),
+        ControlAdmission::Unsupported(message) => return ControlOutcome::Unsupported(message),
     }
     if let Err(error) = status.execute_once(control.clone()) {
         return ControlOutcome::TransportFailure(error);
@@ -114,24 +131,11 @@ pub async fn execute_main_zone_control_async(
     expected_version: u64,
 ) -> ControlOutcome {
     let preflight = crate::main_zone_status::query_main_zone_status_async(status).await;
-    if preflight.resource_version() != expected_version {
-        return ControlOutcome::Rejected(OperationError::new(
-            OperationErrorKind::Conflict,
-            "checking resource version",
-            format!(
-                "expected {expected_version}, current {}",
-                preflight.resource_version()
-            ),
-        ));
-    }
-    if !capabilities.supports_control(&control) {
-        return ControlOutcome::Unsupported(
-            "the selected receiver does not support this validated control".into(),
-        );
-    }
-    if matches!(preflight.value(control_field(&control)), Some(ref value) if control_matches(&control, value, capabilities))
-    {
-        return ControlOutcome::NoOp(preflight);
+    match admit_main_zone_control(&preflight, capabilities, &control, Some(expected_version)) {
+        ControlAdmission::Dispatch => {}
+        ControlAdmission::NoOp => return ControlOutcome::NoOp(preflight),
+        ControlAdmission::Rejected(error) => return ControlOutcome::Rejected(error),
+        ControlAdmission::Unsupported(message) => return ControlOutcome::Unsupported(message),
     }
     if let Err(error) = status.execute_once(control.clone()).await {
         return ControlOutcome::TransportFailure(error);
@@ -157,7 +161,9 @@ pub async fn execute_main_zone_control_async(
     }
 }
 
-fn control_field(control: &MainZoneControl) -> denon_avr_domain::MainZoneField {
+/// Maps a control to the authoritative Main Zone field used for preflight and
+/// confirmation. Shared by synchronous, asynchronous, and coordinated flows.
+pub(crate) fn control_field(control: &MainZoneControl) -> denon_avr_domain::MainZoneField {
     match control {
         MainZoneControl::Power(_) => denon_avr_domain::MainZoneField::Power,
         MainZoneControl::Input(_) => denon_avr_domain::MainZoneField::Input,
@@ -168,7 +174,7 @@ fn control_field(control: &MainZoneControl) -> denon_avr_domain::MainZoneField {
     }
 }
 
-fn control_matches(
+pub(crate) fn control_matches(
     control: &MainZoneControl,
     value: &denon_avr_domain::MainZoneValue,
     capabilities: &ModelCapabilities,
@@ -197,5 +203,61 @@ fn control_matches(
             .listening_modes(*group)
             .contains(&actual.as_str()),
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use denon_avr_domain::{
+        ListeningModeGroup, MainZoneValue, Model, StateAuthority, SurroundMode,
+    };
+
+    #[test]
+    fn admission_does_not_treat_every_listening_group_as_a_no_op() {
+        let mut snapshot = MainZoneSnapshot::default();
+        snapshot.set_value(
+            MainZoneValue::SurroundMode(SurroundMode::new("ROCK ARENA").unwrap()),
+            StateAuthority::Authoritative,
+        );
+        let capabilities = ModelCapabilities::for_model(Model::AvrX3800h);
+
+        assert_eq!(
+            admit_main_zone_control(
+                &snapshot,
+                &capabilities,
+                &MainZoneControl::ListeningModeGroup(ListeningModeGroup::Music),
+                None,
+            ),
+            ControlAdmission::NoOp
+        );
+        assert_eq!(
+            admit_main_zone_control(
+                &snapshot,
+                &capabilities,
+                &MainZoneControl::ListeningModeGroup(ListeningModeGroup::Movie),
+                None,
+            ),
+            ControlAdmission::Dispatch
+        );
+    }
+
+    #[test]
+    fn admission_rejects_stale_resource_versions_before_dispatch() {
+        let snapshot = MainZoneSnapshot::default();
+        let capabilities = ModelCapabilities::for_model(Model::AvrX3800h);
+        let result = admit_main_zone_control(
+            &snapshot,
+            &capabilities,
+            &MainZoneControl::Power(denon_avr_domain::PowerState::On),
+            Some(snapshot.resource_version().saturating_add(1)),
+        );
+        assert!(matches!(
+            result,
+            ControlAdmission::Rejected(OperationError {
+                kind: OperationErrorKind::Conflict,
+                ..
+            })
+        ));
     }
 }

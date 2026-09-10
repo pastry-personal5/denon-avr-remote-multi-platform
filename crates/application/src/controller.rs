@@ -1,11 +1,15 @@
 //! Application-owned receiver lifecycle and control coordinator.
 
-use super::ports::{BoxFuture, OperationError, OperationErrorKind};
+use super::ports::{
+    BoxFuture, OperationError, OperationErrorKind, ReceiverSession, SessionEvent, SessionFactory,
+};
+use crate::main_zone_control::{
+    admit_main_zone_control, control_field, control_matches, ControlAdmission,
+};
 use denon_avr_domain::{
-    AudioContextSnapshot, ConnectionState, DiscoveredReceiver, EqStatus, HttpInformationSnapshot,
-    MainZoneControl, MainZoneEvent, MainZoneField, MainZoneSnapshot, MainZoneValue, Model,
-    ModelCapabilities, QuickSelectEqCapabilities, QuickSelectNameObservation,
-    QuickSelectRecallConfirmation, QuickSelectRecallOutcome, QuickSelectSlot, QuickSelectSnapshot,
+    ConnectionState, DiscoveredReceiver, EqStatus, MainZoneControl, MainZoneEvent, MainZoneField,
+    MainZoneSnapshot, MainZoneValue, Model, ModelCapabilities, QuickSelectEqCapabilities,
+    QuickSelectNameObservation, QuickSelectRecallOutcome, QuickSelectSlot, QuickSelectSnapshot,
     ReceiverIdentity, SourceCatalog, SourceCatalogCapabilities, SourceCatalogObservation,
     StateAuthority,
 };
@@ -14,90 +18,6 @@ use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 
 const MAX_SESSION_EVENTS_PER_DRAIN: usize = 32;
-
-/// A typed session boundary. Protocol commands never cross into application code.
-pub trait ReceiverSession: Send {
-    fn query_field(
-        &mut self,
-        field: MainZoneField,
-    ) -> BoxFuture<'_, Result<MainZoneValue, OperationError>>;
-    fn execute_once(
-        &mut self,
-        control: MainZoneControl,
-    ) -> BoxFuture<'_, Result<(), OperationError>>;
-    fn query_audio_context(&mut self) -> BoxFuture<'_, AudioContextSnapshot>;
-    fn next_event(&mut self) -> BoxFuture<'_, Result<SessionEvent, OperationError>>;
-    fn close(&mut self) -> BoxFuture<'_, Result<(), OperationError>>;
-    fn recall_quick_select(
-        &mut self,
-        _slot: QuickSelectSlot,
-    ) -> BoxFuture<'_, Result<QuickSelectRecallConfirmation, OperationError>> {
-        Box::pin(async {
-            Err(OperationError::new(
-                OperationErrorKind::Unsupported,
-                "Quick Select",
-                "Quick Select protocol is not validated",
-            ))
-        })
-    }
-    fn query_eq_status(&mut self) -> BoxFuture<'_, Result<EqStatus, OperationError>> {
-        Box::pin(async {
-            Err(OperationError::new(
-                OperationErrorKind::Unsupported,
-                "EQ status",
-                "EQ protocol is not validated",
-            ))
-        })
-    }
-    fn refresh_source_catalog(
-        &mut self,
-    ) -> BoxFuture<'_, Result<SourceCatalogObservation, OperationError>> {
-        Box::pin(async {
-            Err(OperationError::new(
-                OperationErrorKind::Unsupported,
-                "source catalog",
-                "source catalog protocol is not validated",
-            ))
-        })
-    }
-    fn refresh_quick_select_names(
-        &mut self,
-    ) -> BoxFuture<'_, Result<QuickSelectNameObservation, OperationError>> {
-        Box::pin(async {
-            Err(OperationError::new(
-                OperationErrorKind::Unsupported,
-                "Quick Select names",
-                "Quick Select name protocol is not validated",
-            ))
-        })
-    }
-    fn refresh_http_information(
-        &mut self,
-    ) -> BoxFuture<'_, Result<HttpInformationSnapshot, OperationError>> {
-        Box::pin(async {
-            Err(OperationError::new(
-                OperationErrorKind::Unsupported,
-                "HTTP information",
-                "receiver has no validated HTTP information capability",
-            ))
-        })
-    }
-}
-pub trait SessionFactory: Send + Sync + 'static {
-    fn connect(
-        &self,
-        identity: ReceiverIdentity,
-    ) -> BoxFuture<'_, Result<Box<dyn ReceiverSession>, OperationError>>;
-}
-
-impl<T: SessionFactory + ?Sized> SessionFactory for Arc<T> {
-    fn connect(
-        &self,
-        identity: ReceiverIdentity,
-    ) -> BoxFuture<'_, Result<Box<dyn ReceiverSession>, OperationError>> {
-        (**self).connect(identity)
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReceiverSelection {
@@ -115,11 +35,6 @@ impl ReceiverSelection {
             Self::Discovered(r) => r.identity(),
         }
     }
-}
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SessionEvent {
-    Connection(ConnectionState),
-    MainZone(MainZoneEvent),
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReceiverCommand {
@@ -562,11 +477,12 @@ impl<F: SessionFactory> State<F> {
     }
 
     fn invalidate_quick_select_eq(&mut self) {
-        self.quick_select.invalidate();
-        self.eq_status.invalidate();
-        self.quick_select_names_observation = None;
-        self.quick_select.generation = self.generation;
-        self.eq_status.generation = self.generation;
+        crate::quick_select::invalidate(
+            &mut self.quick_select,
+            &mut self.eq_status,
+            &mut self.quick_select_names_observation,
+            self.generation,
+        );
     }
 
     fn invalidate_source_catalog(&mut self) {
@@ -731,41 +647,17 @@ impl<F: SessionFactory> State<F> {
             .ok_or_else(stopped)?
             .refresh_http_information()
             .await;
-        match result {
-            Ok(mut information) => {
-                information.generation = self.generation;
-                self.snapshot.set_http_information(information);
-                Self::emit(events, ReceiverEvent::Snapshot(self.snapshot.clone())).await;
-                Ok(())
-            }
-            Err(error) => {
-                // Keep last useful information for this connection. HTTP is an
-                // enhancement, never a reason to invalidate Telnet status.
-                let mut information = previous;
-                information.generation = self.generation;
-                information.freshness = if information.observed_at.is_some() {
-                    denon_avr_domain::Freshness::Partial
-                } else {
-                    denon_avr_domain::Freshness::Unknown
-                };
-                information.error = Some(error.to_string());
-                self.snapshot.set_http_information(information);
-                Self::emit(events, ReceiverEvent::Snapshot(self.snapshot.clone())).await;
-                Err(error)
-            }
-        }
+        let (information, outcome) =
+            crate::http_information::merge_refresh(previous, self.generation, result);
+        self.snapshot.set_http_information(information);
+        Self::emit(events, ReceiverEvent::Snapshot(self.snapshot.clone())).await;
+        outcome
     }
     async fn refresh_source_catalog(
         &mut self,
         events: &mpsc::Sender<ReceiverEvent>,
     ) -> Result<(), OperationError> {
-        if !self.capabilities().source_catalog_read {
-            return Err(OperationError::new(
-                OperationErrorKind::Unsupported,
-                "source catalog",
-                "selected receiver has no validated source catalog capability",
-            ));
-        }
+        crate::source_catalog::ensure_supported(&self.capabilities())?;
         if self.session.is_none() {
             self.connect(events).await?;
         }
@@ -776,105 +668,51 @@ impl<F: SessionFactory> State<F> {
             .ok_or_else(stopped)?
             .refresh_source_catalog()
             .await;
-        match result {
-            Ok(mut observation) => {
-                if observation.response_evidence
-                    == denon_avr_domain::CatalogResponseEvidence::Unsupported
-                    && previous.generation == self.generation
-                {
-                    // An absent candidate function is not proof that labels
-                    // or visibility were reset. Keep the last confirmed
-                    // catalog for this connection and surface the evidence.
-                    self.source_catalog = previous;
-                    self.source_catalog.freshness = denon_avr_domain::Freshness::Partial;
-                    self.source_catalog.error =
-                        Some("receiver did not provide a source catalog response".into());
-                    observation.catalog = self.source_catalog.clone();
-                    self.source_catalog_observation = Some(observation.clone());
-                    Self::emit(events, ReceiverEvent::SourceCatalog(Box::new(observation))).await;
-                    return Ok(());
-                }
-                observation.catalog.generation = self.generation;
-                self.source_catalog = observation.catalog;
-                observation.catalog = self.source_catalog.clone();
-                self.source_catalog_observation = Some(observation.clone());
-                Self::emit(events, ReceiverEvent::SourceCatalog(Box::new(observation))).await;
-                Ok(())
-            }
-            Err(error) => {
-                // Preserve known entries only for this connection generation.
-                if previous.generation == self.generation {
-                    self.source_catalog = previous;
-                    self.source_catalog.freshness = denon_avr_domain::Freshness::Partial;
-                    self.source_catalog.error = Some(error.to_string());
-                } else {
-                    self.source_catalog = SourceCatalog {
-                        freshness: denon_avr_domain::Freshness::Unknown,
-                        generation: self.generation,
-                        error: Some(error.to_string()),
-                        ..SourceCatalog::default()
-                    };
-                }
-                let observation = SourceCatalogObservation {
-                    catalog: self.source_catalog.clone(),
-                    raw_response: String::new(),
-                    response_evidence: catalog_error_evidence(&error),
-                };
-                self.source_catalog_observation = Some(observation.clone());
-                Self::emit(events, ReceiverEvent::SourceCatalog(Box::new(observation))).await;
-                Err(error)
-            }
-        }
+        let (catalog, observation, outcome) =
+            crate::source_catalog::merge_refresh(previous, self.generation, result);
+        self.source_catalog = catalog;
+        self.source_catalog_observation = Some(observation.clone());
+        Self::emit(events, ReceiverEvent::SourceCatalog(Box::new(observation))).await;
+        outcome
     }
     async fn refresh_quick_select_eq(
         &mut self,
         events: &mpsc::Sender<ReceiverEvent>,
     ) -> Result<(), OperationError> {
-        let capabilities = self.capabilities();
-        if !capabilities.eq_status {
-            return Err(OperationError::new(
-                OperationErrorKind::Unsupported,
-                "EQ status",
-                "selected receiver has no validated EQ status capability",
-            ));
-        }
+        crate::quick_select::ensure_eq_supported(&self.capabilities())?;
         if self.session.is_none() {
             self.connect(events).await?;
         }
         // Quick Select is an execute-only capability.  Denon does not expose
         // a validated per-slot query for the registered fields, so refresh
         // must not invent availability or names from a guessed response.
-        if capabilities.eq_status {
-            let previous_eq_status = self.eq_status.clone();
-            let result = {
-                let session = self.session.as_mut().ok_or_else(stopped)?;
-                session.query_eq_status().await
-            };
-            match result {
-                Ok(mut refreshed_eq_status) => {
-                    // The controller owns lifecycle generations. Transport
-                    // adapters may use their own counters internally.
-                    refreshed_eq_status.generation = self.generation;
-                    refreshed_eq_status.preserve_failed_observations(&previous_eq_status);
-                    if let Some(mode) = self.snapshot.audio_context.current_mode.value.known() {
-                        refreshed_eq_status.apply_mode_restrictions(mode.as_str());
-                    }
-                    self.eq_status = refreshed_eq_status;
-                    Self::emit(
-                        events,
-                        ReceiverEvent::EqStatus(Box::new(self.eq_status.clone())),
-                    )
-                    .await;
-                }
-                Err(error) => {
-                    Self::emit(
-                        events,
-                        ReceiverEvent::Diagnostic(Diagnostic::Timeout {
-                            context: format!("refreshing EQ status: {error}"),
-                        }),
-                    )
-                    .await
-                }
+        let previous_eq_status = self.eq_status.clone();
+        let result = {
+            let session = self.session.as_mut().ok_or_else(stopped)?;
+            session.query_eq_status().await
+        };
+        match result {
+            Ok(refreshed_eq_status) => {
+                self.eq_status = crate::quick_select::merge_eq_status(
+                    &previous_eq_status,
+                    refreshed_eq_status,
+                    self.generation,
+                    self.snapshot.audio_context.current_mode.value.known(),
+                );
+                Self::emit(
+                    events,
+                    ReceiverEvent::EqStatus(Box::new(self.eq_status.clone())),
+                )
+                .await;
+            }
+            Err(error) => {
+                Self::emit(
+                    events,
+                    ReceiverEvent::Diagnostic(Diagnostic::Timeout {
+                        context: format!("refreshing EQ status: {error}"),
+                    }),
+                )
+                .await
             }
         }
         Ok(())
@@ -883,13 +721,7 @@ impl<F: SessionFactory> State<F> {
         &mut self,
         events: &mpsc::Sender<ReceiverEvent>,
     ) -> Result<(), OperationError> {
-        if !self.capabilities().quick_select_names {
-            return Err(OperationError::new(
-                OperationErrorKind::Unsupported,
-                "Quick Select names",
-                "selected receiver has no validated Quick Select name capability",
-            ));
-        }
+        crate::quick_select::ensure_names_supported(&self.capabilities())?;
         if self.session.is_none() {
             self.connect(events).await?;
         }
@@ -901,17 +733,13 @@ impl<F: SessionFactory> State<F> {
             .refresh_quick_select_names()
             .await;
         match result {
-            Ok(mut observation) => {
-                observation.generation = self.generation;
+            Ok(observation) => {
+                let observation = crate::quick_select::apply_names(
+                    &mut self.quick_select,
+                    observation,
+                    self.generation,
+                );
                 self.quick_select_names_observation = Some(observation.clone());
-                self.quick_select.generation = self.generation;
-                for (index, name) in observation.names.clone().into_iter().enumerate() {
-                    if let Some(name) = name {
-                        let slot = QuickSelectSlot::new(index as u8 + 1)
-                            .expect("Quick Select name response has four slots");
-                        self.quick_select.set_name(slot, name);
-                    }
-                }
                 Self::emit(
                     events,
                     ReceiverEvent::QuickSelectNames(Box::new(observation)),
@@ -936,10 +764,8 @@ impl<F: SessionFactory> State<F> {
         expected: Option<u64>,
         events: &mpsc::Sender<ReceiverEvent>,
     ) -> QuickSelectRecallOutcome {
-        if !self.capabilities().quick_select_recall {
-            return QuickSelectRecallOutcome::Unsupported(
-                "selected receiver has no validated Quick Select capability".into(),
-            );
+        if let Some(outcome) = crate::quick_select::recall_unsupported(&self.capabilities()) {
+            return outcome;
         }
         if let Some(expected) = expected {
             let current = self.quick_select.resource_version();
@@ -955,29 +781,7 @@ impl<F: SessionFactory> State<F> {
         let Some(session) = self.session.as_mut() else {
             return QuickSelectRecallOutcome::Rejected("receiver is not connected".into());
         };
-        match session.recall_quick_select(slot).await {
-            Ok(QuickSelectRecallConfirmation::Authoritative) => {
-                QuickSelectRecallOutcome::Confirmed { slot }
-            }
-            Ok(QuickSelectRecallConfirmation::Dispatched) => QuickSelectRecallOutcome::Unconfirmed(
-                "receiver acknowledged the preset command; resulting state was not authoritative"
-                    .into(),
-            ),
-            Err(error) if error.kind == OperationErrorKind::Unsupported => {
-                QuickSelectRecallOutcome::Unsupported(error.to_string())
-            }
-            Err(error)
-                if matches!(
-                    error.kind,
-                    OperationErrorKind::Timeout
-                        | OperationErrorKind::Disconnected
-                        | OperationErrorKind::Connection
-                ) =>
-            {
-                QuickSelectRecallOutcome::Unconfirmed(error.to_string())
-            }
-            Err(error) => QuickSelectRecallOutcome::TransportFailure(error.to_string()),
-        }
+        crate::quick_select::recall_outcome(slot, session.recall_quick_select(slot).await)
     }
     fn capabilities(&self) -> ModelCapabilities {
         let model = self
@@ -991,8 +795,10 @@ impl<F: SessionFactory> State<F> {
             .with_validated_source_catalog(self.validated_source_catalog.unwrap_or_default())
     }
     fn should_read_http_information(&self) -> bool {
-        self.capabilities().http_information_read
-            || matches!(self.selection, Some(ReceiverSelection::Saved { .. }))
+        crate::http_information::should_read(
+            &self.capabilities(),
+            matches!(self.selection, Some(ReceiverSelection::Saved { .. })),
+        )
     }
     async fn control(
         &mut self,
@@ -1013,34 +819,34 @@ impl<F: SessionFactory> State<F> {
                 ModelCapabilities::for_model(model)
             })
             .unwrap_or_else(|| ModelCapabilities::for_model(Model::Unknown));
-        if self.selection.is_some() && !capabilities.supports_control(&control) {
-            return ControlResult::Unsupported(
-                "selected receiver does not have validated support for this control".into(),
-            );
-        }
         if self.session.is_none() {
             if let Err(e) = self.connect(events).await {
                 return ControlResult::Rejected(e);
             }
         }
-        if let Some(expected) = expected {
-            if expected != self.snapshot.resource_version() {
-                return ControlResult::Conflict {
-                    expected,
-                    current: self.snapshot.resource_version(),
+        match admit_main_zone_control(&self.snapshot, &capabilities, &control, expected) {
+            ControlAdmission::Dispatch => {}
+            ControlAdmission::NoOp => {
+                return ControlResult::NoOp {
+                    snapshot: self.snapshot.clone(),
                 };
+            }
+            ControlAdmission::Rejected(error) => {
+                if let Some(expected) = expected {
+                    if error.kind == OperationErrorKind::Conflict {
+                        return ControlResult::Conflict {
+                            expected,
+                            current: self.snapshot.resource_version(),
+                        };
+                    }
+                }
+                return ControlResult::Rejected(error);
+            }
+            ControlAdmission::Unsupported(message) => {
+                return ControlResult::Unsupported(message);
             }
         }
         let field = control_field(&control);
-        if self
-            .snapshot
-            .value(field)
-            .is_some_and(|v| control_matches(&control, &v, &capabilities))
-        {
-            return ControlResult::NoOp {
-                snapshot: self.snapshot.clone(),
-            };
-        }
         let Some(s) = self.session.as_mut() else {
             return ControlResult::Rejected(stopped());
         };
@@ -1063,7 +869,7 @@ impl<F: SessionFactory> State<F> {
                     .value(field)
                     .is_some_and(|v| control_matches(&control, &v, &capabilities)) =>
             {
-                if information_may_have_changed(&control) {
+                if crate::http_information::may_have_changed(&control) {
                     let _ = self.refresh_http_information(events).await;
                 }
                 ControlResult::Confirmed {
@@ -1108,58 +914,6 @@ fn field_error(e: OperationError) -> denon_avr_domain::FieldError {
     }
 }
 
-fn catalog_error_evidence(error: &OperationError) -> denon_avr_domain::CatalogResponseEvidence {
-    match error.kind {
-        OperationErrorKind::Malformed => denon_avr_domain::CatalogResponseEvidence::Malformed,
-        OperationErrorKind::Timeout => denon_avr_domain::CatalogResponseEvidence::Timeout,
-        OperationErrorKind::Disconnected | OperationErrorKind::Connection => {
-            denon_avr_domain::CatalogResponseEvidence::Disconnected
-        }
-        _ => denon_avr_domain::CatalogResponseEvidence::Unsupported,
-    }
-}
-fn information_may_have_changed(control: &MainZoneControl) -> bool {
-    matches!(
-        control,
-        MainZoneControl::Input(_)
-            | MainZoneControl::SurroundMode(_)
-            | MainZoneControl::Power(denon_avr_domain::PowerState::On)
-    )
-}
-
-fn control_field(c: &MainZoneControl) -> MainZoneField {
-    match c {
-        MainZoneControl::Power(_) => MainZoneField::Power,
-        MainZoneControl::Input(_) => MainZoneField::Input,
-        MainZoneControl::Volume(_) => MainZoneField::Volume,
-        MainZoneControl::Mute(_) => MainZoneField::Mute,
-        MainZoneControl::SurroundMode(_) => MainZoneField::SurroundMode,
-        MainZoneControl::ListeningModeGroup(_) => MainZoneField::SurroundMode,
-    }
-}
-fn control_matches(
-    c: &MainZoneControl,
-    v: &MainZoneValue,
-    capabilities: &ModelCapabilities,
-) -> bool {
-    match (c, v) {
-        (MainZoneControl::Power(a), MainZoneValue::Power(b)) => a == b,
-        (MainZoneControl::Input(a), MainZoneValue::Input(b)) => a == b,
-        (MainZoneControl::Volume(a), MainZoneValue::Volume(b)) => b
-            .level()
-            .ok()
-            .is_some_and(|actual| actual.to_native_code() == a.to_native_code()),
-        (MainZoneControl::Mute(a), MainZoneValue::Mute(b)) => a == b,
-        (MainZoneControl::SurroundMode(a), MainZoneValue::SurroundMode(b)) => a == b,
-        (MainZoneControl::ListeningModeGroup(group), MainZoneValue::SurroundMode(actual)) => {
-            capabilities
-                .listening_modes(*group)
-                .contains(&actual.as_str())
-        }
-        _ => false,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1171,7 +925,14 @@ mod tests {
     #[derive(Clone)]
     struct FakeFactory;
 
-    struct FakeSession;
+    struct FakeSession {
+        closes: Option<Arc<AtomicUsize>>,
+    }
+
+    #[derive(Clone)]
+    struct ShutdownFactory {
+        closes: Arc<AtomicUsize>,
+    }
 
     #[derive(Clone)]
     struct ReplacementFactory {
@@ -1200,7 +961,23 @@ mod tests {
             &self,
             _identity: ReceiverIdentity,
         ) -> BoxFuture<'_, Result<Box<dyn ReceiverSession>, OperationError>> {
-            Box::pin(async { Ok(Box::new(FakeSession) as Box<dyn ReceiverSession>) })
+            Box::pin(async {
+                Ok(Box::new(FakeSession { closes: None }) as Box<dyn ReceiverSession>)
+            })
+        }
+    }
+
+    impl SessionFactory for ShutdownFactory {
+        fn connect(
+            &self,
+            _identity: ReceiverIdentity,
+        ) -> BoxFuture<'_, Result<Box<dyn ReceiverSession>, OperationError>> {
+            let closes = Arc::clone(&self.closes);
+            Box::pin(async move {
+                Ok(Box::new(FakeSession {
+                    closes: Some(closes),
+                }) as Box<dyn ReceiverSession>)
+            })
         }
     }
 
@@ -1271,6 +1048,9 @@ mod tests {
         }
 
         fn close(&mut self) -> BoxFuture<'_, Result<(), OperationError>> {
+            if let Some(closes) = &self.closes {
+                closes.fetch_add(1, Ordering::SeqCst);
+            }
             Box::pin(async { Ok(()) })
         }
 
@@ -1528,6 +1308,20 @@ mod tests {
             next_recall_outcome(&mut handle).await,
             QuickSelectRecallOutcome::Unsupported(_)
         ));
+    }
+
+    #[tokio::test]
+    async fn shutdown_closes_the_owned_session_exactly_once() {
+        let closes = Arc::new(AtomicUsize::new(0));
+        let factory = ShutdownFactory {
+            closes: Arc::clone(&closes),
+        };
+        let handle = ReceiverController::spawn(factory, ControllerConfig::default());
+        handle.select(selection()).await.unwrap();
+        handle.connect().await.unwrap();
+
+        assert_eq!(handle.shutdown().await.unwrap(), None);
+        assert_eq!(closes.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]

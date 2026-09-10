@@ -17,5 +17,4 @@ flate2 = "1"
 crc32fast = "1"
 
 [dev-dependencies]
-denon-avr-infrastructure = { path = "../infrastructure" }
 iced_runtime = "0.14"

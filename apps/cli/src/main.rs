@@ -1,5 +1,8 @@
-use denon_avr_application::{
-    query_main_zone_status, resolve_status_receiver_with_probe, ConfigRepository, ReceiverDiscovery,
+use denon_avr_application::main_zone_control::{admit_main_zone_control, ControlAdmission};
+use denon_avr_application::main_zone_status::query_main_zone_status;
+use denon_avr_application::ports::{ConfigRepository, ControlGateway, ReceiverDiscovery};
+use denon_avr_application::receiver_selection::{
+    resolve_status_receiver_with_probe, ResolvedReceiver,
 };
 use denon_avr_domain::{
     ConfiguredReceivers, DiscoveredReceiver, MainZoneControl, MainZoneField, MainZoneSnapshot,
@@ -7,7 +10,6 @@ use denon_avr_domain::{
 };
 use denon_avr_infrastructure::discovery_ssdp::{SsdpDiscoveryAdapter, DEFAULT_DISCOVERY_TIMEOUT};
 use denon_avr_infrastructure::{SyncAvrClient, YamlConfigRepository};
-use denon_avr_protocol::avr::encode_control;
 use std::collections::BTreeMap;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -231,9 +233,7 @@ fn saved_identity_is_usable(identity: &ReceiverIdentity) -> bool {
     };
     query_main_zone_status(&mut client).probe_succeeded()
 }
-fn resolve_read_identity(
-    selection: &Selection,
-) -> Result<denon_avr_application::ResolvedReceiver, String> {
+fn resolve_read_identity(selection: &Selection) -> Result<ResolvedReceiver, String> {
     resolve_status_receiver_with_probe(
         &YamlConfigRepository::default(),
         &SsdpDiscoveryAdapter,
@@ -244,11 +244,9 @@ fn resolve_read_identity(
     )
     .map_err(|error| error.to_string())
 }
-fn resolve_write_identity(
-    selection: &Selection,
-) -> Result<denon_avr_application::ResolvedReceiver, String> {
+fn resolve_write_identity(selection: &Selection) -> Result<ResolvedReceiver, String> {
     if let Some(host) = selection.host.as_deref() {
-        return Ok(denon_avr_application::ResolvedReceiver {
+        return Ok(ResolvedReceiver {
             name: None,
             identity: ReceiverIdentity::ad_hoc(host),
         });
@@ -260,7 +258,7 @@ fn resolve_write_identity(
         let receiver = receivers
             .get(index)
             .ok_or_else(|| "receiver selection is out of range".to_owned())?;
-        return Ok(denon_avr_application::ResolvedReceiver {
+        return Ok(ResolvedReceiver {
             name: None,
             identity: receiver.identity(),
         });
@@ -271,7 +269,7 @@ fn resolve_write_identity(
     let (name, identity) = config
         .current()
         .ok_or_else(|| "set requires a saved receiver or an explicit selector".to_owned())?;
-    Ok(denon_avr_application::ResolvedReceiver {
+    Ok(ResolvedReceiver {
         name: Some(name.to_owned()),
         identity: identity.clone(),
     })
@@ -358,35 +356,41 @@ fn set_resource(
     }
     let mut client = connect(&resolved.identity)?;
     let snapshot = query_main_zone_status(&mut client);
-    if expected_version.is_some_and(|version| snapshot.resource_version() != version) {
-        let expected = expected_version.expect("checked above");
-        return Err(format!(
-            "stale resource version: expected {expected}, current {}; run get status",
-            snapshot.resource_version()
-        ));
-    }
     let effective_version = snapshot.resource_version();
     let control = parse_control(operation, raw_value, &capabilities)?;
     let field = operation_field(operation);
-    if snapshot
-        .value(field)
-        .is_some_and(|value| control_matches(&control, &value))
-    {
-        print_target(&resolved.identity, effective_version);
-        println!("No-op: {} is already {}", field.name(), raw_value);
-        return Ok(());
+    match admit_main_zone_control(&snapshot, &capabilities, &control, expected_version) {
+        ControlAdmission::Dispatch => {}
+        ControlAdmission::NoOp => {
+            print_target(&resolved.identity, effective_version);
+            println!("No-op: {} is already {}", field.name(), raw_value);
+            return Ok(());
+        }
+        ControlAdmission::Rejected(error)
+            if error.kind == denon_avr_application::ports::OperationErrorKind::Conflict =>
+        {
+            let expected = expected_version.expect("conflict requires an expected version");
+            return Err(format!(
+                "stale resource version: expected {expected}, current {}; run get status",
+                snapshot.resource_version()
+            ));
+        }
+        ControlAdmission::Rejected(error) => return Err(error.to_string()),
+        ControlAdmission::Unsupported(message) => return Err(message),
     }
-    let command = encode_control(&control).map_err(|error| error.to_string())?;
     print_target(&resolved.identity, effective_version);
     if dry_run {
-        println!("Dry run: would dispatch {}", command.as_str());
+        println!(
+            "Dry run: would dispatch the validated {} control",
+            field.name()
+        );
         println!("Requested {}: {}", field.name(), raw_value);
         return Ok(());
     }
     client
-        .send_once(&command)
+        .execute_once(control)
         .map_err(|error| error.to_string())?;
-    println!("Dispatched once: {}", command.as_str());
+    println!("Dispatched once.");
     println!("Not confirmed; run get status to verify the receiver state.");
     Ok(())
 }
@@ -444,24 +448,6 @@ fn operation_field(operation: Operation) -> MainZoneField {
         Operation::Volume => MainZoneField::Volume,
         Operation::Mute => MainZoneField::Mute,
         Operation::Surround => MainZoneField::SurroundMode,
-    }
-}
-fn control_matches(control: &MainZoneControl, value: &denon_avr_domain::MainZoneValue) -> bool {
-    match (control, value) {
-        (MainZoneControl::Power(a), denon_avr_domain::MainZoneValue::Power(b)) => a == b,
-        (MainZoneControl::Input(a), denon_avr_domain::MainZoneValue::Input(b)) => a == b,
-        (MainZoneControl::Volume(a), denon_avr_domain::MainZoneValue::Volume(b)) => {
-            b.level().ok().as_ref() == Some(a)
-        }
-        (MainZoneControl::Mute(a), denon_avr_domain::MainZoneValue::Mute(b)) => a == b,
-        (MainZoneControl::SurroundMode(a), denon_avr_domain::MainZoneValue::SurroundMode(b)) => {
-            a == b
-        }
-        (
-            MainZoneControl::ListeningModeGroup(_),
-            denon_avr_domain::MainZoneValue::SurroundMode(_),
-        ) => true,
-        _ => false,
     }
 }
 fn print_discovered_receivers(receivers: &[DiscoveredReceiver]) {

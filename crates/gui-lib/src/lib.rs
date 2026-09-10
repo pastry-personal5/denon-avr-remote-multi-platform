@@ -4,10 +4,10 @@
 //! policy, confirmation, retry, and lifecycle decisions remain in the typed
 //! application controller.
 
-use denon_avr_application::ports::AsyncReceiverDiscovery;
-use denon_avr_application::{
-    ControllerHandle, ReceiverController, ReceiverEvent, ReceiverSelection, SessionFactory,
+use denon_avr_application::ports::{
+    AsyncConfigRepository, AsyncReceiverDiscovery, BoxFuture, OperationError,
 };
+use denon_avr_application::{ReceiverEvent, ReceiverSelection};
 use denon_avr_domain::{
     ChannelSlot, ChannelSlotState, ConfiguredReceivers, EqStatus, FieldStatus, Input,
     ListeningModeGroup, MainZoneControl, MainZoneSnapshot, MainZoneValue, Model, ModelCapabilities,
@@ -15,23 +15,29 @@ use denon_avr_domain::{
     ReceiverIdentity, SourceCatalog, SourceCatalogCapabilities, SourceVisibility, StateAuthority,
     SurroundMode, Volume,
 };
-use iced::futures::SinkExt;
-use iced::widget::{
-    button, column, container, row, scrollable, slider, space, stack, text, text_input,
-};
+use iced::widget::{column, container, row, scrollable, space, stack, text, text_input};
 use iced::{Element, Length, Subscription, Task};
 use std::collections::BTreeMap;
 use std::collections::VecDeque;
-use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{mpsc, Mutex};
 
+mod bridge;
 mod capture;
 pub mod components;
+mod dashboard;
 pub mod design;
 mod feedback;
+mod messages;
+mod receiver_setup;
+mod settings_diagnostics;
+mod views;
+
+use bridge::BridgeCommand;
+pub use bridge::{BridgeEvent, ControllerBridge, GuiServices};
+use dashboard::*;
+pub use messages::Message;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Route {
@@ -60,342 +66,6 @@ pub enum MotionPreference {
 pub enum ContrastPreference {
     Normal,
     High,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BridgeEvent {
-    pub request_id: u64,
-    pub generation: u64,
-    pub event: ReceiverEvent,
-}
-
-#[derive(Debug, Clone)]
-enum BridgeCommand {
-    Select(u64, ReceiverSelection),
-    Connect(u64),
-    Refresh(u64),
-    Disconnect(u64),
-    Control(u64, MainZoneControl, Option<u64>),
-    RefreshQuickSelectEq(u64),
-    RefreshSourceCatalog(u64),
-    RecallQuickSelect(u64, QuickSelectSlot, Option<u64>),
-    Shutdown(u64),
-}
-
-/// A single serialized owner of `ControllerHandle`.
-#[derive(Clone)]
-pub struct ControllerBridge {
-    commands: mpsc::Sender<BridgeCommand>,
-    events: Arc<Mutex<mpsc::Receiver<BridgeEvent>>>,
-    validated_quick_select_eq: Option<QuickSelectEqCapabilities>,
-    validated_source_catalog: Option<SourceCatalogCapabilities>,
-}
-
-/// Presentation-facing service ports supplied by the desktop composition root.
-#[derive(Clone)]
-pub struct GuiServices {
-    pub factory: Arc<dyn SessionFactory>,
-    pub configuration: Arc<dyn denon_avr_application::AsyncConfigRepository>,
-    pub discovery: Arc<dyn AsyncReceiverDiscovery>,
-}
-
-impl ControllerBridge {
-    pub fn new<F: SessionFactory>(factory: F) -> Self {
-        Self::new_with_config(factory, Default::default())
-    }
-
-    pub fn new_with_config<F: SessionFactory>(
-        factory: F,
-        config: denon_avr_application::ControllerConfig,
-    ) -> Self {
-        let validated_quick_select_eq = config.validated_quick_select_eq;
-        let validated_source_catalog = config.validated_source_catalog;
-        let (commands, mut command_rx) = mpsc::channel(16);
-        let (event_sender, event_rx) = mpsc::channel(32);
-        let events = Arc::new(Mutex::new(event_rx));
-        tokio::spawn(async move {
-            let handle = ReceiverController::spawn_with_observability(
-                factory,
-                config,
-                Arc::new(TracingObservability),
-            );
-            run_bridge(handle, &mut command_rx, event_sender).await;
-        });
-        Self {
-            commands,
-            events: Arc::clone(&events),
-            validated_quick_select_eq,
-            validated_source_catalog,
-        }
-    }
-
-    pub fn subscription(&self) -> Subscription<BridgeEvent> {
-        let data = SubscriptionData(Arc::clone(&self.events));
-        Subscription::run_with(data, |data| {
-            let events = Arc::clone(&data.0);
-            iced::stream::channel(32, async move |mut output| loop {
-                let event = events.lock().await.recv().await;
-                if let Some(event) = event {
-                    if output.send(event).await.is_err() {
-                        break;
-                    }
-                } else {
-                    break;
-                }
-            })
-        })
-    }
-
-    async fn send(&self, command: BridgeCommand) -> Result<(), String> {
-        self.commands
-            .send(command)
-            .await
-            .map_err(|_| "controller bridge stopped".into())
-    }
-}
-
-#[derive(Clone)]
-struct SubscriptionData(Arc<Mutex<mpsc::Receiver<BridgeEvent>>>);
-impl Hash for SubscriptionData {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        0x5d_u8.hash(state);
-    }
-}
-
-async fn run_bridge(
-    handle: ControllerHandle,
-    commands: &mut mpsc::Receiver<BridgeCommand>,
-    event_sender: mpsc::Sender<BridgeEvent>,
-) {
-    // The controller is intentionally owned by this task.  Replies are
-    // converted to events so the GUI never borrows or polls it directly.
-    let mut handle = handle;
-    let mut pending_request_id: Option<u64> = None;
-    let mut pending_generation: u64 = 0;
-
-    // Continuously poll for commands and events independently to prevent
-    // bounded-channel deadlock. While idle, continue consuming events instead
-    // of waiting exclusively for the next GUI command.
-    loop {
-        tokio::select! {
-            // Poll for a new command request
-            Some(command) = commands.recv() => {
-                let is_shutdown = matches!(&command, BridgeCommand::Shutdown(_));
-                tracing::debug!(command = bridge_command_name(&command), "processing GUI command");
-                let (request_id, result) = match command {
-                    BridgeCommand::Select(id, selection) => {
-                        let selected = handle.select(selection).await;
-                        if selected.is_ok() {
-                            (id, connect_and_refresh(&handle).await)
-                        } else {
-                            (id, selected)
-                        }
-                    }
-                    BridgeCommand::Connect(id) => (id, connect_and_refresh(&handle).await),
-                    BridgeCommand::Refresh(id) => (id, handle.refresh().await),
-                    BridgeCommand::Disconnect(id) => (id, handle.disconnect().await),
-                    BridgeCommand::Control(id, control, version) => {
-                        (id, handle.control(control, version).await)
-                    }
-                    BridgeCommand::RefreshQuickSelectEq(id) => {
-                        (id, handle.refresh_quick_select_eq().await)
-                    }
-                    BridgeCommand::RefreshSourceCatalog(id) => {
-                        (id, handle.refresh_source_catalog().await)
-                    }
-                    BridgeCommand::RecallQuickSelect(id, slot, expected_version) => {
-                        (id, handle.recall_quick_select(slot, expected_version).await)
-                    }
-                    BridgeCommand::Shutdown(id) => (id, handle.shutdown().await),
-                };
-                let event = result
-                    .map(|reply| reply.unwrap_or(ReceiverEvent::Cancelled))
-                    .unwrap_or_else(|error| {
-                        ReceiverEvent::Diagnostic(denon_avr_application::Diagnostic::Timeout {
-                            context: error.to_string(),
-                        })
-                    });
-                let generation = match &event {
-                    ReceiverEvent::Lifecycle(denon_avr_application::Lifecycle::Connected {
-                        generation,
-                    })
-                    | ReceiverEvent::Lifecycle(denon_avr_application::Lifecycle::Reconnecting {
-                        generation,
-                    }) => *generation,
-                    _ => 0,
-                };
-                pending_request_id = Some(request_id);
-                pending_generation = generation;
-
-                // Drain already-queued events before publishing the command's
-                // final authoritative reply, preventing an invalidated selection
-                // snapshot from replacing confirmed status.
-                let mut reply_already_forwarded = false;
-                while let Ok(Some(controller_event)) =
-                    tokio::time::timeout(Duration::from_millis(1), handle.next_event()).await
-                {
-                    reply_already_forwarded |= controller_event == event;
-                    let generation = match &controller_event {
-                        ReceiverEvent::Lifecycle(denon_avr_application::Lifecycle::Connected {
-                            generation,
-                        })
-                        | ReceiverEvent::Lifecycle(denon_avr_application::Lifecycle::Reconnecting {
-                            generation,
-                        }) => *generation,
-                        _ => 0,
-                    };
-                    let _ = event_sender
-                        .send(BridgeEvent {
-                            request_id,
-                            generation,
-                            event: controller_event,
-                        })
-                        .await;
-                }
-                // A control result is both emitted by the controller and
-                // returned as its command reply. Forward it once only.
-                if !reply_already_forwarded {
-                    let _ = event_sender
-                        .send(BridgeEvent {
-                            request_id,
-                            generation,
-                            event,
-                        })
-                        .await;
-                }
-                if is_shutdown {
-                    tracing::info!("controller bridge stopped");
-                    break;
-                }
-            }
-                        // While idle, continue consuming events instead of waiting exclusively
-            // for the next GUI command. This prevents bounded-channel deadlock when
-            // unsolicited AVR events accumulate.
-            Some(controller_event) = handle.next_event() => {
-                let generation = match &controller_event {
-                    ReceiverEvent::Lifecycle(denon_avr_application::Lifecycle::Connected {
-                        generation,
-                    })
-                    | ReceiverEvent::Lifecycle(denon_avr_application::Lifecycle::Reconnecting {
-                        generation,
-                    }) => *generation,
-                    _ => pending_generation,
-                };
-                let request_id = pending_request_id.unwrap_or(0);
-                let _ = event_sender
-                    .send(BridgeEvent {
-                        request_id,
-                        generation,
-                        event: controller_event,
-                    })
-                    .await;
-            }
-        }
-    }
-}
-
-fn bridge_command_name(command: &BridgeCommand) -> &'static str {
-    match command {
-        BridgeCommand::Select(..) => "select",
-        BridgeCommand::Connect(..) => "connect",
-        BridgeCommand::Refresh(..) => "refresh",
-        BridgeCommand::Disconnect(..) => "disconnect",
-        BridgeCommand::Control(..) => "control",
-        BridgeCommand::RefreshQuickSelectEq(..) => "refresh_quick_select_eq",
-        BridgeCommand::RefreshSourceCatalog(..) => "refresh_source_catalog",
-        BridgeCommand::RecallQuickSelect(..) => "recall_quick_select",
-        BridgeCommand::Shutdown(..) => "shutdown",
-    }
-}
-
-/// Adapts application-owned, redacted diagnostics to the desktop's centralized
-/// tracing subscriber without making the application layer depend on logging.
-struct TracingObservability;
-
-impl denon_avr_application::Observability for TracingObservability {
-    fn record(&self, diagnostic: denon_avr_application::Diagnostic) {
-        match diagnostic {
-            denon_avr_application::Diagnostic::ConnectionGeneration(generation) => {
-                tracing::info!(generation, "receiver connection established");
-            }
-            denon_avr_application::Diagnostic::ReconnectAttempt { attempt } => {
-                tracing::warn!(attempt, "receiver reconnecting");
-            }
-            denon_avr_application::Diagnostic::Timeout { context } => {
-                tracing::warn!(%context, "receiver operation timed out");
-            }
-            denon_avr_application::Diagnostic::MalformedFrame { context } => {
-                tracing::warn!(%context, "receiver returned a malformed frame");
-            }
-            denon_avr_application::Diagnostic::QueuePressure { queued } => {
-                tracing::warn!(queued, "receiver command queue under pressure");
-            }
-            denon_avr_application::Diagnostic::Shutdown => {
-                tracing::info!("receiver controller shut down");
-            }
-        }
-    }
-}
-
-/// A transport connection only establishes the session; it does not populate
-/// the controller snapshot. Every GUI connection entry point must resolve the
-/// complete Main Zone status before it reports success to the view.
-async fn connect_and_refresh(
-    handle: &ControllerHandle,
-) -> Result<Option<ReceiverEvent>, denon_avr_application::OperationError> {
-    let connected = handle.connect().await;
-    if connected.is_ok() {
-        handle.refresh().await
-    } else {
-        connected
-    }
-}
-
-#[derive(Debug, Clone)]
-pub enum Message {
-    ConfigLoaded(Result<ConfiguredReceivers, String>),
-    CommandFinished(Result<(), String>),
-    Navigate(Route),
-    AddressChanged(String),
-    NameChanged(String),
-    Discover,
-    DiscoveryFinished(Result<Vec<denon_avr_domain::DiscoveredReceiver>, String>),
-    SaveDiscovered(denon_avr_domain::DiscoveredReceiver),
-    DiscoveredSaved(Result<(ConfiguredReceivers, ReceiverSelection), String>),
-    ManualSetup,
-    ManualSaved(Result<(ConfiguredReceivers, ReceiverSelection), String>),
-    Select(ReceiverSelection),
-    Connect,
-    Refresh,
-    Disconnect,
-    /// Toggle the receiver's Main Zone (Zone 1) power state.
-    ToggleMainZonePower,
-    Mute,
-    Unmute,
-    VolumeChanged(f32),
-    CommitVolume,
-    AdjustVolume(f32),
-    HideVolumeValue(u64),
-    LaunchTick,
-    SelectListeningModeGroup(ListeningModeGroup),
-    SelectSurroundMode(String),
-    OpenSourcePicker,
-    CloseSourcePicker,
-    SelectInput(String),
-    RefreshQuickSelectEq,
-    RefreshSourceCatalog,
-    RecallQuickSelect(QuickSelectSlot),
-    Shutdown,
-    ToggleMessages,
-    ClearMessages,
-    SetTextScale(u8),
-    SetMotion(MotionPreference),
-    SetContrast(ContrastPreference),
-    CaptureVisual,
-    ScreenshotCaptured(iced::window::Screenshot),
-    ScreenshotWritten(Result<PathBuf, String>),
-    Keyboard(iced::keyboard::Event),
-    Bridge(Box<BridgeEvent>),
 }
 
 pub struct Gui {
@@ -439,7 +109,7 @@ pub struct Gui {
     validated_source_catalog: Option<SourceCatalogCapabilities>,
     bridge: ControllerBridge,
     discovery: Arc<dyn AsyncReceiverDiscovery>,
-    configuration: Arc<dyn denon_avr_application::AsyncConfigRepository>,
+    configuration: Arc<dyn AsyncConfigRepository>,
 }
 
 impl Gui {
@@ -1329,1046 +999,6 @@ impl Gui {
         })
         .into()
     }
-
-    fn settings(&self) -> iced::widget::Column<'_, Message> {
-        let scale_controls = [
-            (100_u8, "100%"),
-            (125, "125%"),
-            (150, "150%"),
-            (175, "175%"),
-            (200, "200%"),
-        ]
-        .into_iter()
-        .fold(row![].spacing(8), |row, (scale, label)| {
-            row.push(components::toggle_action(
-                "Aa",
-                label,
-                self.text_scale == scale,
-                Message::SetTextScale(scale),
-            ))
-        });
-        column![
-            text("Settings").size(32),
-            components::panel("Appearance", column![
-                text("Dark console theme").size(16),
-                text("Session accessibility overrides are never persisted. When a reliable host preference is available it is the starting point; these controls take precedence.").color(design::MUTED),
-                text("Text scale").color(design::MUTED),
-                scale_controls,
-                text("Motion").color(design::MUTED),
-                row![
-                    components::toggle_action("◌", "Normal", self.motion_preference == MotionPreference::Normal, Message::SetMotion(MotionPreference::Normal)),
-                    components::toggle_action("◐", "Reduced", self.motion_preference == MotionPreference::Reduced, Message::SetMotion(MotionPreference::Reduced)),
-                ].spacing(8),
-                text("Contrast").color(design::MUTED),
-                row![
-                    components::toggle_action("◒", "Normal", self.contrast_preference == ContrastPreference::Normal, Message::SetContrast(ContrastPreference::Normal)),
-                    components::toggle_action("◑", "High", self.contrast_preference == ContrastPreference::High, Message::SetContrast(ContrastPreference::High)),
-                ].spacing(8),
-                components::quiet_action("Capture current screen", Message::CaptureVisual),
-                text("Capture is enabled only when DENON_AVR_CAPTURE_DIR names an explicit directory. Files are native RGBA PNGs organized by platform, route, and text scale.").color(design::MUTED),
-                text("Screen-reader semantic support is release-blocked pending an Iced native accessibility bridge and three-platform audit.").color(design::MUTED),
-            ].spacing(10)),
-            components::panel("Configuration", column![text("YAML configuration is managed by the desktop host."), text("Quick Select slot editing requires validated receiver support.").color(design::MUTED)]),
-            components::panel("Source presentation", column![
-                text("Source names and visibility are managed on the receiver at Settings → Inputs → Source Rename / Hide Sources.").color(design::MUTED),
-                text(match self.source_catalog.freshness {
-                    denon_avr_domain::Freshness::Live => "Receiver source list is current.",
-                    denon_avr_domain::Freshness::Partial => "Receiver source list is last known; the latest refresh was partial.",
-                    denon_avr_domain::Freshness::Invalidated => "Source list will refresh after reconnect.",
-                    denon_avr_domain::Freshness::Unknown => "Source list has not been confirmed.",
-                }).color(design::MUTED),
-                components::quiet_action("Refresh source list", Message::RefreshSourceCatalog),
-            ].spacing(10))
-        ].spacing(18)
-    }
-
-    fn advanced(&self) -> iced::widget::Column<'_, Message> {
-        column![components::panel(
-            "Receiver status",
-            column![
-                text("Request a fresh authoritative Main Zone status snapshot.")
-                    .color(design::MUTED),
-                components::action("Refresh Status", Message::Refresh),
-            ]
-            .spacing(12),
-        ),]
-        .spacing(18)
-    }
-
-    fn diagnostics(&self) -> iced::widget::Column<'_, Message> {
-        column![
-            text("Diagnostics").size(32),
-            components::panel(
-                "Connection",
-                column![
-                    components::state_row("Lifecycle", lifecycle_label(&self.lifecycle).into()),
-                    components::state_row("Generation", self.generation.to_string()),
-                    components::state_row(
-                        "Selected receiver",
-                        self.selection
-                            .as_ref()
-                            .map(|s| s.identity().host.clone())
-                            .unwrap_or_else(|| "None".into())
-                    )
-                ]
-            ),
-            components::panel(
-                "Observed state",
-                column![
-                    components::state_row(
-                        "Snapshot authority",
-                        format!("{:?}", self.snapshot.authority)
-                    ),
-                    components::state_row(
-                        "Quick Select freshness",
-                        format!("{:?}", self.quick_select.freshness)
-                    ),
-                    components::state_row(
-                        "Source catalog freshness",
-                        format!("{:?}", self.source_catalog.freshness)
-                    ),
-                    components::state_row(
-                        "Source catalog entries",
-                        self.source_catalog.entries.len().to_string()
-                    ),
-                    text(feedback::eq_summary(&self.eq_status)),
-                    text(feedback::eq_evidence_summary(&self.eq_status)).color(design::MUTED),
-                    text(
-                        "Unknown, unavailable, and not-applicable states remain distinct from Off."
-                    )
-                    .color(design::MUTED)
-                ]
-            )
-        ]
-        .spacing(18)
-    }
-
-    fn dashboard(&self) -> iced::widget::Column<'_, Message> {
-        let capabilities = self.selected_capabilities();
-        let writable = capabilities.writable;
-        let power_action = (writable
-            && main_zone_power_control(self.snapshot.power.value()).is_some())
-        .then_some(Message::ToggleMainZonePower);
-        let header = dashboard_header(self.snapshot.power.value(), power_action);
-        if self.snapshot.power.value() == Some(&PowerState::Standby) {
-            return column![container(stack![
-                container(text("POWER OFF").size(36).color(design::MUTED))
-                    .width(Length::Fill)
-                    .height(Length::Fill)
-                    .center(Length::Fill),
-                container(header).width(Length::Fill)
-            ])
-            .width(Length::Fill)
-            .height(Length::Fixed(600.0))];
-        }
-        if self.snapshot.power.value() != Some(&PowerState::On) {
-            let (title, detail, action) = power_recovery(&self.lifecycle, &self.snapshot);
-            let action: Element<'_, Message> = action.map_or_else(
-                || space().into(),
-                |(label, message)| components::action(label, message).into(),
-            );
-            return column![
-                header,
-                container(
-                    column![
-                        text(title).size(28).color(design::MUTED),
-                        text(detail).size(15).color(design::MUTED),
-                        action,
-                    ]
-                    .spacing(14)
-                    .align_x(iced::Alignment::Center)
-                )
-                .width(Length::Fill)
-                .height(Length::Fixed(520.0))
-                .center(Length::Fill)
-            ]
-            .spacing(18);
-        }
-
-        let input = self
-            .snapshot
-            .input
-            .value()
-            .map(ToString::to_string)
-            .unwrap_or_else(|| "Unavailable".into());
-        let quick_select_supported = capabilities.quick_select_recall;
-        let quick_select_names_supported = capabilities.quick_select_names;
-        let group_controls = if writable {
-            ListeningModeGroup::ALL
-                .into_iter()
-                .fold(row![].spacing(12), |row, group| {
-                    row.push(
-                        components::quiet_action(
-                            format!("{}  {}", mode_icon(group), group.as_str()),
-                            Message::SelectListeningModeGroup(group),
-                        )
-                        .width(Length::Fill),
-                    )
-                })
-                .width(Length::Fill)
-        } else {
-            row![text("Mode groups unavailable for this receiver.")]
-        };
-        let mute_controls: Element<'_, Message> = if writable {
-            let muted = self.snapshot.mute.value() == Some(&denon_avr_domain::MuteState::On);
-            components::toggle_action(
-                if muted { "🔇" } else { "🔊" },
-                "Mute",
-                muted,
-                if muted {
-                    Message::Unmute
-                } else {
-                    Message::Mute
-                },
-            )
-            .width(Length::Fill)
-            .into()
-        } else {
-            text("Controls unavailable: receiver model is not validated for writes.")
-                .color(design::MUTED)
-                .into()
-        };
-        let information = &self.snapshot.http_information;
-        // Keep the established volume control visible while its command is in
-        // flight. `volume_is_interactive` still rejects input until the
-        // receiver confirms the command, but replacing the slider with a
-        // transient status label makes an ordinary adjustment look like the
-        // control disappeared.
-        let volume_controls: Element<'_, Message> = if self.snapshot.volume.value().is_some() {
-            container(
-                row![
-                    column![
-                        container(volume_slider(self.volume_slider, self.volume_value,))
-                            .width(Length::Fill),
-                        row![
-                            text("-80.0 dB").size(11).color(design::MUTED),
-                            space().width(Length::Fill),
-                            text("+18.5 dB").size(11).color(design::MUTED),
-                        ]
-                        .width(Length::Fill),
-                    ]
-                    .spacing(2)
-                    .width(Length::Fill),
-                    row![
-                        components::quiet_action("≪", Message::AdjustVolume(-10.0)),
-                        components::quiet_action("−", Message::AdjustVolume(-0.5)),
-                        components::quiet_action("+", Message::AdjustVolume(0.5)),
-                        components::quiet_action("≫", Message::AdjustVolume(10.0)),
-                    ]
-                    .spacing(4),
-                ]
-                .spacing(8)
-                .align_y(iced::Alignment::Center)
-                .padding([4, 0]),
-            )
-            .width(Length::Fill)
-            .height(Length::Fixed(90.0))
-            .into()
-        } else {
-            text("Volume controls are unavailable until the receiver reports its current volume.")
-                .color(design::MUTED)
-                .into()
-        };
-        column![
-            header,
-            dashboard_context_line(&input, self.source_catalog.clone()),
-            row![
-                container(
-                    column![
-                        container(text("INPUT").size(14).color(iced::Color::WHITE))
-                            .width(Length::Fill)
-                            .padding(iced::Padding::ZERO.top(10))
-                            .center_x(Length::Fill),
-                        container(typed_input_channel_grid(&information.input_slots))
-                            .width(Length::Fill)
-                            .height(Length::Fill)
-                            .padding(iced::Padding::ZERO.bottom(12))
-                            .center(Length::Fill)
-                    ]
-                    .height(Length::Fill)
-                )
-                .width(Length::Fill)
-                .height(Length::Fixed(190.0))
-                .style(design::panel),
-                container(
-                    column![
-                        container(text("OUTPUT").size(14).color(iced::Color::WHITE))
-                            .width(Length::Fill)
-                            .padding(iced::Padding::ZERO.top(10))
-                            .center_x(Length::Fill),
-                        container(typed_output_channel_grid(&information.output_slots))
-                            .width(Length::Fill)
-                            .height(Length::Fill)
-                            .padding(iced::Padding::ZERO.bottom(12))
-                            .center(Length::Fill)
-                    ]
-                    .height(Length::Fill)
-                )
-                .width(Length::Fill)
-                .height(Length::Fixed(190.0))
-                .style(design::panel),
-                container(information_card(
-                    "AUDYSSEY",
-                    &[
-                        ("MultEQ", &information.audyssey.multeq),
-                        ("Dynamic EQ", &information.audyssey.dynamic_eq),
-                        ("Dynamic Volume", &information.audyssey.dynamic_volume),
-                    ]
-                ))
-                .width(Length::Fill)
-                .height(Length::Fixed(190.0))
-                .style(design::panel)
-            ]
-            .spacing(16),
-            row![
-                container(information_card(
-                    "VIDEO",
-                    &[
-                        ("Monitor", &information.video.monitor),
-                        ("HDMI in", &information.video.hdmi_input),
-                        ("HDMI out", &information.video.hdmi_output)
-                    ]
-                ))
-                .width(Length::Fill)
-                .height(Length::Fixed(125.0))
-                .style(design::panel),
-                container(information_card(
-                    "AUDIO",
-                    &[
-                        ("Input", &information.audio.input_mode),
-                        ("Output", &information.audio.output),
-                        ("Signal", &information.audio.signal),
-                        ("Sound", &information.audio.sound),
-                        ("Rate", &information.audio.sample_rate),
-                    ]
-                ))
-                .width(Length::Fill)
-                .height(Length::Fixed(125.0))
-                .style(design::panel),
-            ]
-            .spacing(16),
-            volume_controls,
-            row![mute_controls, group_controls]
-                .width(Length::Fill)
-                .spacing(14)
-                .align_y(iced::Alignment::Center),
-            quick_select_bar(
-                &self.quick_select,
-                quick_select_supported,
-                quick_select_names_supported,
-                self.source_catalog.clone(),
-            ),
-        ]
-        .spacing(10)
-    }
-
-    fn receivers(&self) -> iced::widget::Column<'_, Message> {
-        let mut page = column![text("Receivers").size(32), text("Saved receivers")].spacing(12);
-        for (name, identity) in &self.configured.receivers {
-            page = page.push(
-                row![
-                    text(format!("{name} · {}", identity.host)),
-                    components::quiet_action(
-                        "Select",
-                        Message::Select(ReceiverSelection::Saved {
-                            name: name.clone(),
-                            identity: identity.clone()
-                        })
-                    )
-                ]
-                .spacing(12),
-            );
-        }
-        for receiver in &self.discovered {
-            page = page.push(
-                row![
-                    column![
-                        text(receiver.model.as_deref().unwrap_or("Unknown model")).size(16),
-                        text(format!("Address · {}:{}", receiver.address.host, receiver.address.port)).color(design::MUTED),
-                        text("Discovered on the local network; selecting opens the Main Zone console.").size(12).color(design::MUTED)
-                    ].spacing(4).width(Length::Fill),
-                    components::action("Save and open console", Message::SaveDiscovered(receiver.clone()))
-                ]
-                .spacing(16)
-                .align_y(iced::Alignment::Center),
-            );
-        }
-        page.push(text("Find a receiver"))
-            .push(components::quiet_action("Discover", Message::Discover))
-            .push(
-                row![
-                    text_input("Receiver address", &self.address)
-                        .on_input(Message::AddressChanged)
-                        .style(design::text_field),
-                    text_input("Name (optional)", &self.name)
-                        .on_input(Message::NameChanged)
-                        .style(design::text_field),
-                    components::action("Save and connect", Message::ManualSetup)
-                ]
-                .spacing(8),
-            )
-    }
-}
-
-/// Denon `MV00` is -80.0 dB and `MV985` is +18.5 dB. Keep the desktop
-/// control in that receiver-visible unit instead of treating the wire code as
-/// a 0–60 UI value.
-const MIN_VOLUME_DB: f32 = -80.0;
-const MAX_VOLUME_DB: f32 = 18.5;
-const VOLUME_HALF_DB_STEPS: u16 = 197;
-const VOLUME_INDICATOR_HEIGHT: f32 = 28.0;
-
-fn slider_volume(snapshot: &MainZoneSnapshot) -> Option<f32> {
-    snapshot
-        .volume
-        .value()
-        .map(|volume| volume.db_tenths() as f32 / 10.0)
-}
-
-fn volume_level_for_slider(value: f32) -> Result<denon_avr_domain::VolumeLevel, String> {
-    if !value.is_finite() || !(MIN_VOLUME_DB..=MAX_VOLUME_DB).contains(&value) {
-        return Err("Volume must be between -80.0 and +18.5 dB.".into());
-    }
-    let half_db_steps = (value * 2.0).round() as i16;
-    let native_code = ((half_db_steps + 160) * 5) as u16;
-    denon_avr_domain::VolumeLevel::from_native_code(native_code).map_err(str::to_owned)
-}
-
-fn volume_slider<'a>(value: f32, shown_value: Option<f32>) -> Element<'a, Message> {
-    let bubble: Element<'a, Message> = shown_value.map_or_else(
-        || space().into(),
-        |shown_value| {
-            let steps = ((shown_value.clamp(MIN_VOLUME_DB, MAX_VOLUME_DB) - MIN_VOLUME_DB) * 2.0)
-                .round() as u16;
-            let leading = steps.max(1);
-            let trailing = VOLUME_HALF_DB_STEPS.saturating_sub(steps).max(1);
-            row![
-                space().width(Length::FillPortion(leading)),
-                container(text(format!("{shown_value:.1} dB")).size(13))
-                    .padding([3, 7])
-                    .style(design::panel),
-                space().width(Length::FillPortion(trailing)),
-            ]
-            .width(Length::Fill)
-            .align_y(iced::Alignment::Center)
-            .into()
-        },
-    );
-    column![
-        // Always reserve the bubble lane. Changing the slider's vertical
-        // position while a pointer drag is in progress causes visible jitter.
-        container(bubble)
-            .width(Length::Fill)
-            .height(Length::Fixed(VOLUME_INDICATOR_HEIGHT)),
-        slider(MIN_VOLUME_DB..=MAX_VOLUME_DB, value, Message::VolumeChanged)
-            .step(0.5_f32)
-            .on_release(Message::CommitVolume)
-            .width(Length::Fill),
-    ]
-    .spacing(2)
-    .into()
-}
-
-/// The desktop dashboard intentionally exposes only the receiver's Main Zone
-/// (Zone 1). Denon `PW` commands target that zone; secondary-zone power
-/// commands are not available from this control.
-fn main_zone_power_control(power: Option<&PowerState>) -> Option<MainZoneControl> {
-    match power {
-        Some(PowerState::On) => Some(MainZoneControl::Power(PowerState::Standby)),
-        Some(PowerState::Standby) => Some(MainZoneControl::Power(PowerState::On)),
-        None => None,
-    }
-}
-
-fn power_recovery(
-    lifecycle: &denon_avr_application::Lifecycle,
-    snapshot: &MainZoneSnapshot,
-) -> (&'static str, String, Option<(&'static str, Message)>) {
-    let error = match &snapshot.power {
-        denon_avr_domain::FieldStatus::Unavailable(error) => error.message.as_str(),
-        denon_avr_domain::FieldStatus::Value(_) => "power status is not currently available",
-    };
-    match lifecycle {
-        denon_avr_application::Lifecycle::Connecting
-        | denon_avr_application::Lifecycle::Selected => (
-            "CONNECTING",
-            "Connecting to the selected receiver and requesting its status.".into(),
-            None,
-        ),
-        denon_avr_application::Lifecycle::Reconnecting { .. } => (
-            "RECONNECTING",
-            "The receiver connection was interrupted; status refresh is being retried.".into(),
-            None,
-        ),
-        denon_avr_application::Lifecycle::Disconnected => (
-            "RECEIVER UNAVAILABLE",
-            format!("Could not read power status: {error}"),
-            Some(("Retry Status", Message::Refresh)),
-        ),
-        denon_avr_application::Lifecycle::NoReceiver => (
-            "NO RECEIVER SELECTED",
-            "Choose a receiver before requesting Main Zone status.".into(),
-            Some(("Choose Receiver", Message::Navigate(Route::Receivers))),
-        ),
-        denon_avr_application::Lifecycle::Connected { .. } => (
-            "POWER STATUS UNAVAILABLE",
-            format!("Could not read power status: {error}"),
-            Some(("Retry Status", Message::Refresh)),
-        ),
-        denon_avr_application::Lifecycle::Stopping | denon_avr_application::Lifecycle::Stopped => (
-            "CONNECTION CLOSED",
-            "The receiver session is stopping or has stopped.".into(),
-            None,
-        ),
-    }
-}
-
-fn dashboard_header(
-    power: Option<&PowerState>,
-    power_action: Option<Message>,
-) -> Element<'static, Message> {
-    let (icon, color) = match power {
-        Some(PowerState::On) => ("⏻", design::SUCCESS),
-        Some(PowerState::Standby) => ("⏻", design::MUTED),
-        None => ("?", design::WARNING),
-    };
-    let power_button = match power_action {
-        Some(action) => button(text(icon).size(24).color(color))
-            .padding([6, 10])
-            .style(design::secondary)
-            .on_press(action),
-        None => button(text(icon).size(24).color(color))
-            .padding([6, 10])
-            .style(design::secondary),
-    };
-    row![
-        container(power_button).align_right(Length::Fill),
-        container(text("MAIN ZONE · ZONE 1").size(13).color(design::MUTED))
-            .center_x(Length::Fixed(160.0)),
-        space().width(Length::Fill)
-    ]
-    .align_y(iced::Alignment::Center)
-    .into()
-}
-
-fn dashboard_context_line(source: &str, catalog: SourceCatalog) -> Element<'static, Message> {
-    let label = catalog_entry_label(source, &catalog);
-    let active_hidden = catalog
-        .entry(source)
-        .is_some_and(|entry| entry.visibility == SourceVisibility::Hidden);
-    let context = row![
-        button(
-            row![
-                text(source_icon(source)).size(18).color(design::ACCENT),
-                text(if active_hidden {
-                    format!("{label} · Hidden on receiver")
-                } else {
-                    label
-                })
-                .size(15)
-            ]
-            .spacing(8)
-            .align_y(iced::Alignment::Center)
-        )
-        .padding([6, 10])
-        .style(design::secondary)
-        .on_press(Message::OpenSourcePicker),
-        container(space()).width(Length::Fill),
-        container(text("Main Zone").size(14).color(design::MUTED)).center_x(Length::Fixed(120.0)),
-        space().width(Length::Fill)
-    ]
-    .align_y(iced::Alignment::Center);
-
-    context.into()
-}
-
-fn source_picker_overlay(
-    capabilities: ModelCapabilities,
-    catalog: SourceCatalog,
-) -> Element<'static, Message> {
-    // This offset places the panel immediately below the Dashboard's header
-    // and source context without affecting the layout beneath it.
-    container(column![
-        space().height(Length::Fixed(86.0)),
-        row![
-            space().width(Length::Fixed(18.0)),
-            source_picker_popup(capabilities, catalog),
-            space().width(Length::Fill),
-        ],
-    ])
-    .width(Length::Fill)
-    .height(Length::Fill)
-    .into()
-}
-
-fn source_icon(source: &str) -> &'static str {
-    match source.to_ascii_uppercase().as_str() {
-        "TV" | "TV AUDIO" => "▣",
-        "BT" | "BLUETOOTH" => "ᛒ",
-        "HEOS" | "NETWORK" => "◉",
-        "PHONO" => "◌",
-        "CD" => "◍",
-        "GAME" => "◇",
-        _ => "●",
-    }
-}
-
-fn source_label(source: &str) -> String {
-    match source.to_ascii_uppercase().as_str() {
-        "TV" | "TV AUDIO" => "TV Audio".into(),
-        "BT" | "BLUETOOTH" => "Bluetooth".into(),
-        "HEOS" | "NETWORK" => "Network".into(),
-        _ => source.to_owned(),
-    }
-}
-
-fn catalog_entry_label(source: &str, catalog: &SourceCatalog) -> String {
-    catalog
-        .entry(source)
-        .map(|entry| entry.display_name_or(&source_label(source)).to_owned())
-        .unwrap_or_else(|| source_label(source))
-}
-
-fn source_picker_popup(
-    capabilities: ModelCapabilities,
-    catalog: SourceCatalog,
-) -> Element<'static, Message> {
-    let choices: Element<'static, Message> = if capabilities.inputs.is_empty() {
-        text("Source selection is unavailable for this receiver.")
-            .color(design::MUTED)
-            .into()
-    } else if catalog.entries.is_empty()
-        && matches!(
-            catalog.freshness,
-            denon_avr_domain::Freshness::Unknown | denon_avr_domain::Freshness::Invalidated
-        )
-    {
-        text("Loading receiver source names…")
-            .color(design::MUTED)
-            .into()
-    } else {
-        capabilities
-            .inputs
-            .iter()
-            // A partial or older catalog is still authoritative about the
-            // entries it contains. Keep receiver rename/hide choices visible
-            // rather than falling back to canonical names for those entries.
-            .filter(|source| source_is_visible(&catalog, source))
-            .fold(column![].spacing(7), |column, source| {
-                column.push(
-                    components::quiet_action(
-                        catalog_entry_label(source, &catalog),
-                        Message::SelectInput((*source).into()),
-                    )
-                    .width(Length::Fill),
-                )
-            })
-            .into()
-    };
-    container(
-        column![
-            row![
-                space().width(Length::Fill),
-                components::quiet_icon_action("×", Message::CloseSourcePicker),
-            ]
-            .align_y(iced::Alignment::Center),
-            scrollable(choices).height(Length::Fixed(440.0)),
-        ]
-        .spacing(12)
-        .padding(14),
-    )
-    .width(Length::Fixed(300.0))
-    .style(design::panel)
-    .into()
-}
-
-fn source_is_visible(catalog: &SourceCatalog, source: &str) -> bool {
-    catalog
-        .entry(source)
-        .is_none_or(|entry| entry.visibility != SourceVisibility::Hidden)
-}
-
-fn information_card<'a>(
-    title: &'a str,
-    values: &[(&'a str, &'a FieldStatus<String>)],
-) -> iced::widget::Column<'a, Message> {
-    let content = values
-        .iter()
-        .fold(column![].spacing(5), |column, (label, value)| {
-            let displayed = match value {
-                FieldStatus::Value(value) => value.as_str(),
-                FieldStatus::Unavailable(_) => "Unavailable",
-            };
-            column.push(
-                row![
-                    text(*label).size(11).color(design::MUTED),
-                    space().width(Length::Fill),
-                    text(displayed).size(11)
-                ]
-                .width(Length::Fill),
-            )
-        });
-    column![
-        container(text(title).size(14).color(iced::Color::WHITE))
-            .width(Length::Fill)
-            .padding(iced::Padding::ZERO.top(10))
-            .center_x(Length::Fill),
-        content.padding(10),
-    ]
-}
-
-#[allow(dead_code)]
-fn channel_slot_grid<'a>(
-    slots: &'a FieldStatus<Vec<ChannelSlot>>,
-) -> iced::widget::Column<'a, Message> {
-    match slots {
-        FieldStatus::Unavailable(_) => column![text("Unavailable").size(13).color(design::MUTED)],
-        FieldStatus::Value(slots) => slots.iter().fold(column![].spacing(5), |column, slot| {
-            column.push(channel_slot_box(slot))
-        }),
-    }
-}
-
-#[allow(dead_code)]
-fn channel_slot_box<'a>(slot: &'a ChannelSlot) -> Element<'a, Message> {
-    let (foreground, state) = match slot.state {
-        ChannelSlotState::Active => (design::SUCCESS, "Active"),
-        ChannelSlotState::Available => (iced::Color::from_rgb(0.58, 0.76, 0.95), "Available"),
-        ChannelSlotState::Absent => (design::MUTED, "Absent"),
-        ChannelSlotState::Unknown => (design::MUTED, "Unknown"),
-    };
-    container(
-        row![
-            text(&slot.label).size(11).color(foreground),
-            space().width(Length::Fill),
-            text(state).size(10).color(foreground)
-        ]
-        .width(Length::Fill)
-        .padding([3, 7]),
-    )
-    .style(design::panel)
-    .into()
-}
-
-fn typed_input_channel_grid<'a>(
-    slots: &'a FieldStatus<Vec<ChannelSlot>>,
-) -> iced::widget::Column<'a, Message> {
-    column![
-        typed_channel_grid_row(
-            &[Some("FHL"), Some("LFE"), None, Some("EXT"), Some("FHR")],
-            slots
-        ),
-        typed_channel_grid_row(
-            &[Some("FWL"), Some("FL"), Some("C"), Some("FR"), Some("FWR")],
-            slots
-        ),
-        typed_channel_grid_row(&[None, Some("SL"), None, Some("SR"), None], slots),
-        typed_channel_grid_row(&[None, Some("SBL"), Some("SB"), Some("SBR"), None], slots),
-    ]
-    .spacing(6)
-}
-
-fn typed_output_channel_grid<'a>(
-    slots: &'a FieldStatus<Vec<ChannelSlot>>,
-) -> iced::widget::Column<'a, Message> {
-    column![
-        typed_channel_grid_row(&[Some("FL"), Some("C"), Some("FR")], slots),
-        typed_channel_grid_row(&[Some("SL"), Some("SW"), Some("SR")], slots),
-        typed_channel_grid_row(&[Some("SBL"), None, Some("SBR")], slots),
-        typed_channel_grid_row(&[Some("TRL"), None, Some("TRR")], slots),
-    ]
-    .spacing(6)
-}
-
-fn typed_channel_grid_row<'a>(
-    channels: &[Option<&'static str>],
-    slots: &'a FieldStatus<Vec<ChannelSlot>>,
-) -> iced::widget::Row<'a, Message> {
-    channels.iter().fold(row![].spacing(6), |row, channel| {
-        row.push(match *channel {
-            Some(label) => typed_channel_box(label, channel_slot_state(slots, label)),
-            None => space()
-                .width(Length::Fixed(44.0))
-                .height(Length::Fixed(32.0))
-                .into(),
-        })
-    })
-}
-
-fn channel_slot_state(
-    slots: &FieldStatus<Vec<ChannelSlot>>,
-    channel: &str,
-) -> Option<ChannelSlotState> {
-    let FieldStatus::Value(slots) = slots else {
-        return None;
-    };
-    slots
-        .iter()
-        .find(|slot| slot.label == channel)
-        .map(|slot| slot.state)
-}
-
-fn typed_channel_box<'a>(
-    label: &'static str,
-    state: Option<ChannelSlotState>,
-) -> Element<'a, Message> {
-    let (foreground, background, shadow) = match state {
-        Some(ChannelSlotState::Active) => (
-            design::SUCCESS,
-            iced::Color {
-                a: 0.28,
-                ..design::SUCCESS
-            },
-            iced::Shadow {
-                color: iced::Color {
-                    a: 0.45,
-                    ..design::SUCCESS
-                },
-                offset: iced::Vector::new(0.0, 0.0),
-                blur_radius: 10.0,
-            },
-        ),
-        Some(ChannelSlotState::Available) => (
-            iced::Color::from_rgb(0.58, 0.76, 0.95),
-            design::ACTIVE,
-            iced::Shadow::default(),
-        ),
-        _ => (design::MUTED, design::ACTIVE, iced::Shadow::default()),
-    };
-    container(text(label).size(10).color(foreground))
-        .center_x(Length::Fixed(44.0))
-        .center_y(Length::Fixed(32.0))
-        .style(move |_| iced::widget::container::Style {
-            background: Some(iced::Background::Color(background)),
-            text_color: Some(foreground),
-            border: iced::Border {
-                radius: 5.0.into(),
-                width: 1.0,
-                color: foreground,
-            },
-            shadow,
-            ..Default::default()
-        })
-        .into()
-}
-
-#[allow(dead_code)]
-fn input_channel_grid<'a>(layout: Option<&str>) -> iced::widget::Column<'a, Message> {
-    column![
-        channel_grid_row(
-            &[Some("FHL"), Some("LEF"), None, Some("EXT"), Some("FHR")],
-            layout
-        ),
-        channel_grid_row(
-            &[Some("FWL"), Some("FL"), Some("C"), Some("FR"), Some("FWR")],
-            layout
-        ),
-        channel_grid_row(&[None, Some("SL"), None, Some("SR"), None], layout),
-        channel_grid_row(&[None, Some("SBL"), Some("SB"), Some("SBR"), None], layout),
-    ]
-    .spacing(6)
-}
-
-#[allow(dead_code)]
-fn output_channel_grid<'a>(layout: Option<&str>) -> iced::widget::Column<'a, Message> {
-    column![
-        channel_grid_row(&[Some("FL"), Some("C"), Some("FR")], layout),
-        channel_grid_row(&[Some("SL"), None, Some("SR")], layout),
-    ]
-    .spacing(6)
-}
-
-#[allow(dead_code)]
-fn channel_grid_row<'a>(
-    channels: &[Option<&'static str>],
-    layout: Option<&str>,
-) -> iced::widget::Row<'a, Message> {
-    channels.iter().fold(row![].spacing(6), |row, channel| {
-        row.push(match *channel {
-            Some(label) => channel_box(label, channel_state(layout, label)),
-            None => space()
-                .width(Length::Fixed(44.0))
-                .height(Length::Fixed(32.0))
-                .into(),
-        })
-    })
-}
-
-#[allow(dead_code)]
-fn channel_box<'a>(label: &'static str, state: &'static str) -> Element<'a, Message> {
-    let active = state == "ON";
-    let foreground = if active {
-        design::SUCCESS
-    } else {
-        design::MUTED
-    };
-    let background = if active {
-        iced::Color {
-            a: 0.28,
-            ..design::SUCCESS
-        }
-    } else {
-        design::ACTIVE
-    };
-    let shadow = if active {
-        iced::Shadow {
-            color: iced::Color {
-                a: 0.45,
-                ..design::SUCCESS
-            },
-            offset: iced::Vector::new(0.0, 0.0),
-            blur_radius: 10.0,
-        }
-    } else {
-        iced::Shadow::default()
-    };
-    container(text(label).size(10).color(foreground))
-        .center_x(Length::Fixed(44.0))
-        .center_y(Length::Fixed(32.0))
-        .style(move |_| iced::widget::container::Style {
-            background: Some(iced::Background::Color(background)),
-            text_color: Some(foreground),
-            border: iced::Border {
-                radius: 5.0.into(),
-                width: 1.0,
-                color: foreground,
-            },
-            shadow,
-            ..Default::default()
-        })
-        .into()
-}
-
-#[allow(dead_code)]
-fn channel_state(layout: Option<&str>, channel: &str) -> &'static str {
-    let Some(layout) = layout else {
-        return "UNKNOWN";
-    };
-    let tokens = layout
-        .split(|character: char| !character.is_ascii_alphanumeric())
-        .filter(|token| !token.is_empty())
-        .map(str::to_ascii_uppercase)
-        .collect::<Vec<_>>();
-    if !tokens.iter().any(|token| {
-        matches!(
-            token.as_str(),
-            "FHL"
-                | "LEF"
-                | "LFE"
-                | "EXT"
-                | "FHR"
-                | "FWL"
-                | "FL"
-                | "C"
-                | "FR"
-                | "FWR"
-                | "SL"
-                | "SR"
-                | "SBL"
-                | "SB"
-                | "SBR"
-        )
-    }) {
-        return "UNKNOWN";
-    }
-    let channel_matches = |token: &str| match channel {
-        "LEF" => matches!(token, "LEF" | "LFE"),
-        _ => token == channel,
-    };
-    if tokens.iter().any(|token| channel_matches(token)) {
-        "ON"
-    } else {
-        "OFF"
-    }
-}
-
-fn mode_icon(group: ListeningModeGroup) -> &'static str {
-    match group {
-        ListeningModeGroup::Movie => "▣",
-        ListeningModeGroup::Music => "♫",
-        ListeningModeGroup::Game => "◇",
-    }
-}
-
-fn quick_select_bar<'a>(
-    snapshot: &QuickSelectSnapshot,
-    recall_supported: bool,
-    names_supported: bool,
-    catalog: SourceCatalog,
-) -> Element<'a, Message> {
-    let content: Element<'a, Message> = if recall_supported || names_supported {
-        container(
-            QuickSelectSlot::ALL
-                .into_iter()
-                .fold(row![].spacing(8), |row, slot| {
-                    let label = text(quick_select_slot_label(snapshot, slot, &catalog)).size(12);
-                    if recall_supported {
-                        row.push(
-                            button(label)
-                                .padding([7, 10])
-                                .style(design::secondary)
-                                .on_press(Message::RecallQuickSelect(slot)),
-                        )
-                    } else {
-                        row.push(container(label).padding([7, 10]))
-                    }
-                }),
-        )
-        .width(Length::Fill)
-        .center_x(Length::Fill)
-        .into()
-    } else {
-        text("Quick Select names are unavailable for this receiver.")
-            .size(12)
-            .color(design::MUTED)
-            .into()
-    };
-    container(content)
-        .width(Length::Fill)
-        .padding(10)
-        .style(design::panel)
-        .into()
-}
-
-fn quick_select_slot_label(
-    snapshot: &QuickSelectSnapshot,
-    slot: QuickSelectSlot,
-    catalog: &SourceCatalog,
-) -> String {
-    let Some(preset) = snapshot.preset(slot) else {
-        return slot.number().to_string();
-    };
-    let name = if preset.available {
-        preset
-            .name
-            .as_ref()
-            .map(|name| name.as_str())
-            .map(str::to_owned)
-    } else {
-        None
-    };
-    let source = match &preset.summary.input {
-        denon_avr_domain::Registered::Included(input) => {
-            Some(catalog_entry_label(input.as_str(), catalog))
-        }
-        _ => None,
-    };
-    let base = name.map_or_else(
-        || slot.number().to_string(),
-        |name| format!("{} {name}", slot.number()),
-    );
-    source.map_or(base.clone(), |source| format!("{base} · {source}"))
-}
-
-/// Unknown EQ observations carry no usable display value. Keep that state
-/// distinct internally, but leave the dashboard summary blank until at least
-/// one receiver-reported value is available.
-#[allow(dead_code)]
-fn eq_summary_if_reported(status: &EqStatus) -> Option<String> {
-    denon_avr_domain::EqFeature::ALL
-        .into_iter()
-        .any(|feature| !matches!(status.state(feature), denon_avr_domain::EqState::Unknown))
-        .then(|| feedback::eq_summary(status))
 }
 
 fn route_title(route: Route) -> &'static str {
@@ -2559,30 +1189,21 @@ impl AsyncReceiverDiscovery for NoopDiscovery {
     fn discover(
         &self,
         _timeout: Duration,
-    ) -> denon_avr_application::BoxFuture<
-        '_,
-        Result<Vec<denon_avr_domain::DiscoveredReceiver>, denon_avr_application::OperationError>,
-    > {
+    ) -> BoxFuture<'_, Result<Vec<denon_avr_domain::DiscoveredReceiver>, OperationError>> {
         Box::pin(async { Ok(Vec::new()) })
     }
 }
 
 struct NoopConfiguration;
-impl denon_avr_application::AsyncConfigRepository for NoopConfiguration {
-    fn load(
-        &self,
-    ) -> denon_avr_application::BoxFuture<
-        '_,
-        Result<ConfiguredReceivers, denon_avr_application::OperationError>,
-    > {
+impl AsyncConfigRepository for NoopConfiguration {
+    fn load(&self) -> BoxFuture<'_, Result<ConfiguredReceivers, OperationError>> {
         Box::pin(async { Ok(ConfiguredReceivers::default()) })
     }
 
     fn save<'a>(
         &'a self,
         _config: &'a ConfiguredReceivers,
-    ) -> denon_avr_application::BoxFuture<'a, Result<(), denon_avr_application::OperationError>>
-    {
+    ) -> BoxFuture<'a, Result<(), OperationError>> {
         Box::pin(async { Ok(()) })
     }
 }
@@ -2590,11 +1211,30 @@ impl denon_avr_application::AsyncConfigRepository for NoopConfiguration {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use denon_avr_infrastructure::AvrSessionFactory;
+    use denon_avr_application::ports::{ReceiverSession, SessionFactory};
+    use denon_avr_domain::ReceiverIdentity;
+
+    #[derive(Clone, Default)]
+    struct TestSessionFactory;
+
+    impl SessionFactory for TestSessionFactory {
+        fn connect(
+            &self,
+            _identity: ReceiverIdentity,
+        ) -> BoxFuture<'_, Result<Box<dyn ReceiverSession>, OperationError>> {
+            Box::pin(async {
+                Err(OperationError::new(
+                    denon_avr_application::ports::OperationErrorKind::Connection,
+                    "test session",
+                    "no receiver session is required by GUI reducer tests",
+                ))
+            })
+        }
+    }
 
     #[tokio::test]
     async fn accessibility_overrides_are_session_only_and_update_theme_state() {
-        let bridge = ControllerBridge::new(AvrSessionFactory::default());
+        let bridge = ControllerBridge::new(TestSessionFactory);
         let mut gui = Gui::new(bridge);
         let _ = gui.update(Message::SetTextScale(200));
         let _ = gui.update(Message::SetMotion(MotionPreference::Reduced));
@@ -2609,7 +1249,7 @@ mod tests {
 
     #[tokio::test]
     async fn launch_opens_receiver_setup_when_no_receiver_is_saved() {
-        let bridge = ControllerBridge::new(AvrSessionFactory::default());
+        let bridge = ControllerBridge::new(TestSessionFactory);
         let mut gui = Gui::new(bridge);
 
         let _ = gui.update(Message::ConfigLoaded(Ok(ConfiguredReceivers::default())));
@@ -2621,7 +1261,7 @@ mod tests {
 
     #[tokio::test]
     async fn launch_opens_receiver_setup_when_configuration_fails() {
-        let bridge = ControllerBridge::new(AvrSessionFactory::default());
+        let bridge = ControllerBridge::new(TestSessionFactory);
         let mut gui = Gui::new(bridge);
 
         let _ = gui.update(Message::ConfigLoaded(Err(
@@ -2633,7 +1273,7 @@ mod tests {
 
     #[tokio::test]
     async fn launch_opens_after_saved_receiver_connection() {
-        let bridge = ControllerBridge::new(AvrSessionFactory::default());
+        let bridge = ControllerBridge::new(TestSessionFactory);
         let mut gui = Gui::new(bridge);
         gui.selection = Some(ReceiverSelection::Saved {
             name: "Living room".into(),
@@ -2651,7 +1291,7 @@ mod tests {
 
     #[tokio::test]
     async fn connected_lifecycle_event_opens_saved_receiver_without_status_snapshot() {
-        let bridge = ControllerBridge::new(AvrSessionFactory::default());
+        let bridge = ControllerBridge::new(TestSessionFactory);
         let mut gui = Gui::new(bridge);
         gui.selection = Some(ReceiverSelection::Saved {
             name: "Living room".into(),
@@ -2675,7 +1315,7 @@ mod tests {
 
     #[tokio::test]
     async fn fixed_capture_scenarios_do_not_need_a_receiver_connection() {
-        let bridge = ControllerBridge::new(AvrSessionFactory::default());
+        let bridge = ControllerBridge::new(TestSessionFactory);
         let mut gui = Gui::new(bridge);
         gui.configure_capture_scenario("source-picker").unwrap();
         assert_eq!(
@@ -2737,7 +1377,7 @@ mod tests {
     async fn stale_bridge_results_are_ignored() {
         // State construction is kept independent of widgets, making ordering
         // and stale-result behavior deterministic in unit tests.
-        let bridge = ControllerBridge::new(AvrSessionFactory::default());
+        let bridge = ControllerBridge::new(TestSessionFactory);
         let mut gui = Gui::new(bridge);
         gui.request_id = 4;
         let _ = gui.update(Message::Bridge(Box::new(BridgeEvent {
@@ -2752,7 +1392,7 @@ mod tests {
 
     #[tokio::test]
     async fn disconnected_lifecycle_invalidates_visible_main_zone_status() {
-        let bridge = ControllerBridge::new(AvrSessionFactory::default());
+        let bridge = ControllerBridge::new(TestSessionFactory);
         let mut gui = Gui::new(bridge);
         gui.request_id = 1;
         gui.lifecycle = denon_avr_application::Lifecycle::Connected { generation: 1 };
@@ -2894,7 +1534,7 @@ mod tests {
 
     #[tokio::test]
     async fn volume_step_respects_the_receiver_ceiling_and_blocks_duplicates() {
-        let bridge = ControllerBridge::new(AvrSessionFactory::default());
+        let bridge = ControllerBridge::new(TestSessionFactory);
         let mut gui = Gui::new(bridge);
         gui.selection = Some(ReceiverSelection::ExplicitHost(
             denon_avr_domain::ReceiverIdentity {
@@ -2927,7 +1567,7 @@ mod tests {
 
     #[tokio::test]
     async fn unavailable_volume_does_not_create_a_low_volume_command() {
-        let bridge = ControllerBridge::new(AvrSessionFactory::default());
+        let bridge = ControllerBridge::new(TestSessionFactory);
         let mut gui = Gui::new(bridge);
         gui.volume_slider = MIN_VOLUME_DB;
 
@@ -2940,7 +1580,7 @@ mod tests {
 
     #[tokio::test]
     async fn bridge_failure_reenables_volume_controls() {
-        let bridge = ControllerBridge::new(AvrSessionFactory::default());
+        let bridge = ControllerBridge::new(TestSessionFactory);
         let mut gui = Gui::new(bridge);
         gui.volume_command_pending = true;
 
@@ -2957,7 +1597,7 @@ mod tests {
 
     #[tokio::test]
     async fn stale_volume_confirmation_still_reenables_the_slider() {
-        let bridge = ControllerBridge::new(AvrSessionFactory::default());
+        let bridge = ControllerBridge::new(TestSessionFactory);
         let mut gui = Gui::new(bridge);
         gui.volume_command_pending = true;
         gui.volume_command_request_id = Some(4);
@@ -2977,7 +1617,7 @@ mod tests {
 
     #[tokio::test]
     async fn source_status_opens_and_selects_from_the_picker() {
-        let bridge = ControllerBridge::new(AvrSessionFactory::default());
+        let bridge = ControllerBridge::new(TestSessionFactory);
         let mut gui = Gui::new(bridge);
         gui.selection = Some(ReceiverSelection::ExplicitHost(
             denon_avr_domain::ReceiverIdentity {
@@ -3023,7 +1663,7 @@ mod tests {
 
     #[tokio::test]
     async fn confirmed_status_is_logged_once_per_connection_generation() {
-        let bridge = ControllerBridge::new(AvrSessionFactory::default());
+        let bridge = ControllerBridge::new(TestSessionFactory);
         let mut gui = Gui::new(bridge);
         gui.selection = Some(ReceiverSelection::ExplicitHost(
             denon_avr_domain::ReceiverIdentity::ad_hoc("receiver.local"),
@@ -3068,7 +1708,7 @@ mod tests {
     #[tokio::test]
     async fn gui_uses_explicit_quick_select_eq_validation_for_known_models() {
         let bridge = ControllerBridge::new_with_config(
-            AvrSessionFactory::default(),
+            TestSessionFactory,
             denon_avr_application::ControllerConfig {
                 validated_quick_select_eq: Some(denon_avr_domain::QuickSelectEqCapabilities {
                     quick_select_recall: true,
@@ -3111,7 +1751,7 @@ mod tests {
 
     #[tokio::test]
     async fn message_panel_is_bounded_and_preserves_chronological_order() {
-        let bridge = ControllerBridge::new(AvrSessionFactory::default());
+        let bridge = ControllerBridge::new(TestSessionFactory);
         let mut gui = Gui::new(bridge);
         gui.record_message("same message");
         gui.record_message("same message");
@@ -3130,7 +1770,7 @@ mod tests {
 
     #[tokio::test]
     async fn discovered_receiver_selection_opens_the_console_and_records_context() {
-        let bridge = ControllerBridge::new(AvrSessionFactory::default());
+        let bridge = ControllerBridge::new(TestSessionFactory);
         let mut gui = Gui::new(bridge);
         gui.route = Route::Receivers;
         let receiver = denon_avr_domain::DiscoveredReceiver {

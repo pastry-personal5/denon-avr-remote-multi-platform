@@ -3,6 +3,7 @@
 ## Prerequisites
 
 - Rust stable and Cargo.
+- `rg` and `jq` for the architecture boundary checks.
 - A reachable Denon or Marantz receiver for optional live validation.
 - Windows, macOS, or Linux with a working local network interface.
 
@@ -12,7 +13,7 @@ Run these from the repository root:
 
 ```text
 make check          # format, boundaries, compile, and tests
-make boundary      # verify domain/application/protocol dependency boundaries
+make boundary      # verify workspace package graph and source boundaries
 make clippy         # Clippy with warnings denied
 make format         # format Rust sources
 make test           # run all tests
@@ -39,6 +40,15 @@ receiver validation as part of ordinary unit-test work.
 
 Contribution rules and engineering invariants are maintained in the
 [contributing guide](contributing.md).
+
+## Workspace architecture
+
+The active implementation is entirely under `crates/` and `apps/`; a root
+`src/` tree is intentionally absent. `domain` is runtime- and I/O-free.
+`protocol` owns wire parsing, `application` owns ports and use-case policy,
+and `infrastructure` owns concrete adapters. GUI, CLI, desktop composition,
+and read-only diagnostics are delivery packages. Run `make boundary` after
+moving code or changing a package dependency.
 
 ## Documentation
 

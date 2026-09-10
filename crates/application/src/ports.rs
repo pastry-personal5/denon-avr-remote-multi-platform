@@ -1,12 +1,15 @@
 //! Application ports for infrastructure abstraction.
 
 use denon_avr_domain::{
-    AudioContextSnapshot, ConfiguredReceivers, ConnectionState, DiscoveredReceiver, MainZoneEvent,
-    MainZoneField, MainZoneValue, SourceCatalogObservation,
+    AudioContextSnapshot, ConfiguredReceivers, ConnectionState, DiscoveredReceiver, EqStatus,
+    HttpInformationSnapshot, MainZoneControl, MainZoneEvent, MainZoneField, MainZoneValue,
+    QuickSelectNameObservation, QuickSelectRecallConfirmation, QuickSelectSlot, ReceiverIdentity,
+    SourceCatalogObservation,
 };
 use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::time::Duration;
 
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -116,6 +119,98 @@ pub trait AsyncStatusGateway: Send {
     fn connection_generation(&self) -> u64;
     fn next_event(&mut self) -> BoxFuture<'_, Result<SessionEvent, OperationError>>;
     fn query_audio_context(&mut self) -> BoxFuture<'_, AudioContextSnapshot>;
+}
+
+/// An asynchronous, stateful receiver connection.  This is the only port
+/// which combines reads, writes, lifecycle events, and shutdown because a
+/// single owner is required to preserve command and event ordering.
+pub trait ReceiverSession: Send {
+    fn query_field(
+        &mut self,
+        field: MainZoneField,
+    ) -> BoxFuture<'_, Result<MainZoneValue, OperationError>>;
+    /// Dispatches one state-changing AVR command. Implementations must never
+    /// retry once dispatch begins.
+    fn execute_once(
+        &mut self,
+        control: MainZoneControl,
+    ) -> BoxFuture<'_, Result<(), OperationError>>;
+    fn query_audio_context(&mut self) -> BoxFuture<'_, AudioContextSnapshot>;
+    fn next_event(&mut self) -> BoxFuture<'_, Result<SessionEvent, OperationError>>;
+    fn close(&mut self) -> BoxFuture<'_, Result<(), OperationError>>;
+
+    fn recall_quick_select(
+        &mut self,
+        _slot: QuickSelectSlot,
+    ) -> BoxFuture<'_, Result<QuickSelectRecallConfirmation, OperationError>> {
+        Box::pin(async {
+            Err(OperationError::new(
+                OperationErrorKind::Unsupported,
+                "Quick Select",
+                "Quick Select protocol is not validated",
+            ))
+        })
+    }
+    fn query_eq_status(&mut self) -> BoxFuture<'_, Result<EqStatus, OperationError>> {
+        Box::pin(async {
+            Err(OperationError::new(
+                OperationErrorKind::Unsupported,
+                "EQ status",
+                "EQ protocol is not validated",
+            ))
+        })
+    }
+    fn refresh_source_catalog(
+        &mut self,
+    ) -> BoxFuture<'_, Result<SourceCatalogObservation, OperationError>> {
+        Box::pin(async {
+            Err(OperationError::new(
+                OperationErrorKind::Unsupported,
+                "source catalog",
+                "source catalog protocol is not validated",
+            ))
+        })
+    }
+    fn refresh_quick_select_names(
+        &mut self,
+    ) -> BoxFuture<'_, Result<QuickSelectNameObservation, OperationError>> {
+        Box::pin(async {
+            Err(OperationError::new(
+                OperationErrorKind::Unsupported,
+                "Quick Select names",
+                "Quick Select name protocol is not validated",
+            ))
+        })
+    }
+    fn refresh_http_information(
+        &mut self,
+    ) -> BoxFuture<'_, Result<HttpInformationSnapshot, OperationError>> {
+        Box::pin(async {
+            Err(OperationError::new(
+                OperationErrorKind::Unsupported,
+                "HTTP information",
+                "receiver has no validated HTTP information capability",
+            ))
+        })
+    }
+}
+
+/// Creates a fresh session for a selected receiver. The coordinator owns the
+/// returned session for its entire lifetime.
+pub trait SessionFactory: Send + Sync + 'static {
+    fn connect(
+        &self,
+        identity: ReceiverIdentity,
+    ) -> BoxFuture<'_, Result<Box<dyn ReceiverSession>, OperationError>>;
+}
+
+impl<T: SessionFactory + ?Sized> SessionFactory for Arc<T> {
+    fn connect(
+        &self,
+        identity: ReceiverIdentity,
+    ) -> BoxFuture<'_, Result<Box<dyn ReceiverSession>, OperationError>> {
+        (**self).connect(identity)
+    }
 }
 
 /// Read-only receiver-owned source names and visibility. Implementations must

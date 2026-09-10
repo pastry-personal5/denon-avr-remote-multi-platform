@@ -11,4 +11,3 @@ path = "src/main.rs"
 denon-avr-application = { path = "../../crates/application" }
 denon-avr-domain = { path = "../../crates/domain" }
 denon-avr-infrastructure = { path = "../../crates/infrastructure" }
-denon-avr-protocol = { path = "../../crates/protocol" }

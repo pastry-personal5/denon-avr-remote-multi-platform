@@ -16,4 +16,5 @@ accept `--host HOST` or `--receiver N`.
 
 See the [CLI guide](docs/cli-user-guide.md), [desktop guide](docs/desktop-user-guide.md), [development guide](docs/development.md),
 [contributing guide](docs/contributing.md), [architecture](ARCHITECTURE.md),
-and the active [V3 Phase 1 probe-reliability plan](docs/v3/phase-1-x3800h-http-info-probe-overview.md).
+the [V3 Phase 1 probe-reliability plan](docs/v3/phase-1-x3800h-http-info-probe-overview.md),
+and the [V3 Phase 3 architecture notes](docs/v3/phase-3-refactoring-overview.md).

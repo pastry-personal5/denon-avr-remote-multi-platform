@@ -1,6 +1,6 @@
 //! Synchronous TCP AVR adapter.
 
-use denon_avr_application::{
+use denon_avr_application::ports::{
     ControlGateway, OperationError, OperationErrorKind, SessionEvent, StatusGateway,
 };
 use denon_avr_domain::{

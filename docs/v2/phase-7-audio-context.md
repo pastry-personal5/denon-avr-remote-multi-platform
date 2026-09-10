@@ -51,8 +51,9 @@ manual capture checklist.
 The `control` attribute is deliberately retained as raw evidence; its meaning
 must be correlated with front-panel indicators before it is used as a channel
 map. The HTTP request contains no state-changing operation. XML construction
-and parsing live in `src/protocol/app_command.rs`; socket and bounded-response
-handling live in `src/infrastructure/app_command_http.rs`.
+and parsing live in `crates/protocol/src/app_command.rs`; socket and
+bounded-response handling live in
+`crates/infrastructure/src/app_command_http.rs`.
 The probe uses a curl-compatible `Content-Type: text/xml; charset=utf-8`
 request header, matching the X3800H web-control response format observed in
 field captures.
