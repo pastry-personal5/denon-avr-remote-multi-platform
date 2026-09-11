@@ -7,6 +7,7 @@ use denon_avr_protocol::app_command::{
 use std::io::{self, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::time::{Duration, Instant};
+use tracing::{debug, warn};
 
 const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
 
@@ -96,6 +97,7 @@ impl AppCommandHttpClient {
     }
 
     fn post_xml(&self, path: &str, body: &str) -> io::Result<RawHttpResponse> {
+        debug!(host = %self.endpoint.host, port = self.endpoint.port, %path, "AppCommand HTTP request");
         let mut stream = self.connect()?;
         let request = build_request(&self.endpoint.host, self.endpoint.port, path, body);
         stream.write_all(request.as_bytes())?;
@@ -111,6 +113,7 @@ impl AppCommandHttpClient {
                 .checked_add(count)
                 .is_none_or(|length| length > MAX_RESPONSE_BYTES)
             {
+                warn!(host = %self.endpoint.host, %path, "AppCommand HTTP response exceeded size limit");
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     "HTTP response exceeds bounded size",
@@ -130,7 +133,9 @@ impl AppCommandHttpClient {
                 }
             }
         }
-        parse_http_response(&bytes)
+        let response = parse_http_response(&bytes)?;
+        debug!(host = %self.endpoint.host, %path, status = response.status_code, bytes = bytes.len(), "AppCommand HTTP response received");
+        Ok(response)
     }
 
     fn connect(&self) -> io::Result<TcpStream> {
@@ -156,7 +161,10 @@ impl AppCommandHttpClient {
                     stream.set_write_timeout(Some(self.timeout))?;
                     return Ok(stream);
                 }
-                Err(error) => last_error = Some(error),
+                Err(error) => {
+                    debug!(%address, error = %error, "AppCommand HTTP connection attempt failed");
+                    last_error = Some(error)
+                }
             }
         }
         Err(last_error.unwrap_or_else(|| {

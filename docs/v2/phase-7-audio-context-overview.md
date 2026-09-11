@@ -3,11 +3,11 @@
 **Status: Complete — 2026-09-08**
 
 Phase 7 adds read-only audio-signal and channel-context diagnostics for the
-validated AVR-X3800H. It provides the diagnostic probes and
+validated AVC-X3800H. It provides the diagnostic probes and
 evidence-preserving observations needed to correlate receiver responses with
 the receiver's `INFO` → `Audio` display and front-panel channel indicators,
 without promoting model/firmware-specific behavior into the supported API.
-Live TCP and HTTP traces have been collected from an AVR-X3800H, but
+Live TCP and HTTP traces have been collected from an AVC-X3800H, but
 receiver-specific field meaning is not promoted without scenario-based
 validation. The [Phase 7 technical record](phase-7-audio-context.md) describes
 the protocol, adapter, and observation model in detail.

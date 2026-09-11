@@ -1,7 +1,7 @@
 # Denon AVR Remote
 
 Rust library, CLI, and desktop client for local Denon and Marantz AVR control.
-Main Zone behavior is validated on the AVR-X3800H; unvalidated models remain
+Main Zone behavior is validated on the AVC-X3800H; unvalidated models remain
 read-only.
 
 ```text

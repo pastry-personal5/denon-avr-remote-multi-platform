@@ -142,6 +142,7 @@ pub(crate) fn power_recovery(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn dashboard_header(
     power: Option<&PowerState>,
     power_action: Option<Message>,

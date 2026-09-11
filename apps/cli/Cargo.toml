@@ -11,3 +11,4 @@ path = "src/main.rs"
 denon-avr-application = { path = "../../crates/application" }
 denon-avr-domain = { path = "../../crates/domain" }
 denon-avr-infrastructure = { path = "../../crates/infrastructure" }
+tokio = { version = "1", features = ["rt-multi-thread"] }

@@ -91,7 +91,7 @@ for HTTPS, and TCP 8080 for the AVR Remote app interface. [5][6] These official
 sources document the transports but do not publish a stable, cross-model
 AppCommand XML schema for live input/output channel maps.
 
-A live AVR-X3800H probe on firmware `6000-1060-0071-9831` successfully posted
+A live AVC-X3800H probe on firmware `6000-1060-0071-9831` successfully posted
 read-only `GetAudioInfo`, `GetInputSignal`, and `GetActiveSpeaker` queries to
 `/goform/AppCommand0300.xml` on TCP 8080. The HTTP/1.0 response reported PCM,
 48 kHz, and Multi Ch Stereo. `control="2"` selected `FL`/`FR` for the input and

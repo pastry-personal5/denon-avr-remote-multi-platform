@@ -3,7 +3,7 @@
 ## Objective
 
 Discover a Denon AVR and display its main-zone status in a human-readable CLI,
-with the Denon AVR-X3800H as the initial target.
+with the Denon AVC-X3800H as the initial target.
 
 ## Scope
 

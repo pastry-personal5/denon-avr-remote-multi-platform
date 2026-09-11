@@ -14,4 +14,5 @@ if-addrs = "0.15"
 quick-xml = "0.41"
 serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"
+tracing = "0.1"
 tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }

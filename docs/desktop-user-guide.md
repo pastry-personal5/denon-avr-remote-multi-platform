@@ -10,10 +10,11 @@ make run-gui
 
 The desktop client writes structured lifecycle, diagnostic, and visible
 feedback messages to a file. It rotates the file daily, retains at most 14
-daily files, and keeps their combined size at or below 500 KiB. When the quota
-is reached, older rotated files are removed first; extra entries are skipped if
-the current day's file alone fills the quota. Set `RUST_LOG` (for example,
-`RUST_LOG=debug`) before launch to include more detail.
+daily files, removes files dated three days ago or earlier, and keeps their
+combined size at or below 3 MiB. When the quota is reached, older rotated files
+are removed first; extra entries are skipped if the current day's file alone
+fills the quota. Iced framework warnings and errors are muted by default. Set
+`RUST_LOG` (for example, `RUST_LOG=debug`) before launch to include more detail.
 
 The log directory is platform-specific:
 

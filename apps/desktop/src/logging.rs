@@ -8,14 +8,15 @@ use std::env;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use time::OffsetDateTime;
+use time::{Date, Duration, OffsetDateTime};
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
 const LOG_FILE_NAME: &str = "denon-avr-remote.log";
 const MAX_ROTATED_LOG_FILES: usize = 14;
-const MAX_TOTAL_LOG_BYTES: u64 = 500 * 1024;
+const MAX_TOTAL_LOG_BYTES: u64 = 3 * 1024 * 1024;
+const MAX_LOG_AGE_DAYS: i64 = 3;
 
 pub struct LoggingGuard {
     _worker_guard: WorkerGuard,
@@ -29,7 +30,7 @@ impl LoggingGuard {
 }
 
 /// Configures daily file rotation while retaining at most fourteen files and
-/// 500 KiB in total.
+/// 3 MiB in total. Log files dated three days ago or earlier are removed.
 ///
 /// `RUST_LOG` controls filtering when set; otherwise the desktop records
 /// `info` and higher events. The returned guard must outlive the application.
@@ -41,8 +42,7 @@ fn initialize_at(directory: PathBuf) -> Result<LoggingGuard, Box<dyn std::error:
     fs::create_dir_all(&directory)?;
     let (writer, worker_guard) =
         tracing_appender::non_blocking(CappedDailyWriter::new(directory.clone())?);
-    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+    let filter = default_filter();
     tracing_subscriber::registry()
         .with(filter)
         .with(
@@ -59,6 +59,39 @@ fn initialize_at(directory: PathBuf) -> Result<LoggingGuard, Box<dyn std::error:
         _worker_guard: worker_guard,
         directory,
     })
+}
+
+fn default_filter() -> tracing_subscriber::EnvFilter {
+    let iced_directives =
+        "iced=off,iced_core=off,iced_runtime=off,iced_renderer=off,iced_wgpu=off,iced_widget=off";
+    match tracing_subscriber::EnvFilter::try_from_default_env() {
+        Ok(filter)
+            if env::var_os("RUST_LOG").is_some_and(|value| {
+                value
+                    .to_string_lossy()
+                    .split(',')
+                    .any(|directive| directive.trim_start().starts_with("iced="))
+            }) =>
+        {
+            filter
+        }
+        Ok(filter) => filter
+            .add_directive("iced=off".parse().expect("static tracing directive"))
+            .add_directive("iced_core=off".parse().expect("static tracing directive"))
+            .add_directive(
+                "iced_runtime=off"
+                    .parse()
+                    .expect("static tracing directive"),
+            )
+            .add_directive(
+                "iced_renderer=off"
+                    .parse()
+                    .expect("static tracing directive"),
+            )
+            .add_directive("iced_wgpu=off".parse().expect("static tracing directive"))
+            .add_directive("iced_widget=off".parse().expect("static tracing directive")),
+        Err(_) => tracing_subscriber::EnvFilter::new(format!("info,{iced_directives}")),
+    }
 }
 
 /// A serial writer used behind `tracing_appender`'s non-blocking worker.
@@ -199,6 +232,8 @@ fn prune_logs(
         .collect::<Vec<_>>();
     logs.sort_by_key(|entry| entry.file_name());
 
+    let today = OffsetDateTime::now_utc().date();
+    let expiry = today - Duration::days(MAX_LOG_AGE_DAYS);
     let mut total_bytes = logs
         .iter()
         .map(|entry| entry.metadata().map(|metadata| metadata.len()))
@@ -209,8 +244,10 @@ fn prune_logs(
     for entry in logs {
         let is_active = active_file_name.is_some_and(|active| entry.file_name() == active);
         let size = entry.metadata()?.len();
+        let expired = log_date(&entry.file_name()).is_some_and(|date| date <= expiry);
         if !is_active
-            && (retained_count > MAX_ROTATED_LOG_FILES
+            && (expired
+                || retained_count > MAX_ROTATED_LOG_FILES
                 || total_bytes.saturating_add(incoming_bytes) > MAX_TOTAL_LOG_BYTES)
         {
             fs::remove_file(entry.path())?;
@@ -219,6 +256,20 @@ fn prune_logs(
         }
     }
     Ok(total_bytes.saturating_add(incoming_bytes) <= MAX_TOTAL_LOG_BYTES)
+}
+
+fn log_date(name: &std::ffi::OsStr) -> Option<Date> {
+    let name = name.to_str()?.strip_prefix(&format!("{LOG_FILE_NAME}."))?;
+    let mut parts = name.split('-');
+    let year: i32 = parts.next()?.parse().ok()?;
+    let month: u8 = parts.next()?.parse().ok()?;
+    let day: u8 = parts.next()?.parse().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    time::Month::try_from(month)
+        .ok()
+        .and_then(|month| Date::from_calendar_date(year, month, day).ok())
 }
 
 #[cfg(test)]
@@ -233,12 +284,10 @@ mod tests {
         ));
         let _ = fs::remove_dir_all(&directory);
         fs::create_dir_all(&directory).unwrap();
-        for day in 1..=MAX_ROTATED_LOG_FILES + 2 {
-            fs::write(
-                directory.join(format!("{LOG_FILE_NAME}.2026-01-{day:02}")),
-                "test",
-            )
-            .unwrap();
+        let first_date = OffsetDateTime::now_utc().date() + Duration::days(1);
+        for day in 0..=MAX_ROTATED_LOG_FILES + 1 {
+            let date = first_date + Duration::days(day as i64);
+            fs::write(directory.join(format!("{LOG_FILE_NAME}.{date}")), "test").unwrap();
         }
 
         assert!(prune_logs(&directory, None, 0).unwrap());
@@ -251,11 +300,14 @@ mod tests {
         assert_eq!(names.len(), MAX_ROTATED_LOG_FILES);
         assert_eq!(
             names.first().unwrap(),
-            &format!("{LOG_FILE_NAME}.2026-01-03")
+            &format!("{LOG_FILE_NAME}.{}", first_date + Duration::days(2))
         );
         assert_eq!(
             names.last().unwrap(),
-            &format!("{LOG_FILE_NAME}.2026-01-16")
+            &format!(
+                "{LOG_FILE_NAME}.{}",
+                first_date + Duration::days((MAX_ROTATED_LOG_FILES + 1) as i64)
+            )
         );
         fs::remove_dir_all(directory).unwrap();
     }
@@ -306,5 +358,32 @@ mod tests {
 
         #[cfg(not(target_os = "macos"))]
         assert_eq!(app_log_directory().file_name().unwrap(), "logs");
+    }
+
+    #[test]
+    fn pruning_removes_logs_three_days_old_or_older() {
+        let directory =
+            env::temp_dir().join(format!("denon-avr-remote-age-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir_all(&directory).unwrap();
+        let today = OffsetDateTime::now_utc().date();
+        for (date, name) in [
+            (today - Duration::days(4), "expired"),
+            (today - Duration::days(3), "boundary"),
+            (today - Duration::days(2), "retained"),
+        ] {
+            fs::write(directory.join(format!("{LOG_FILE_NAME}.{date}")), name).unwrap();
+        }
+        prune_logs(&directory, None, 0).unwrap();
+        assert!(!directory
+            .join(format!("{LOG_FILE_NAME}.{}", today - Duration::days(4)))
+            .exists());
+        assert!(!directory
+            .join(format!("{LOG_FILE_NAME}.{}", today - Duration::days(3)))
+            .exists());
+        assert!(directory
+            .join(format!("{LOG_FILE_NAME}.{}", today - Duration::days(2)))
+            .exists());
+        fs::remove_dir_all(directory).unwrap();
     }
 }

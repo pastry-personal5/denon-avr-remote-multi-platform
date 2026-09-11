@@ -657,6 +657,7 @@ version = "2.0.0"
 dependencies = [
  "denon-avr-domain",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -666,6 +667,7 @@ dependencies = [
  "denon-avr-application",
  "denon-avr-domain",
  "denon-avr-infrastructure",
+ "tokio",
 ]
 
 [[package]]
@@ -722,6 +724,7 @@ dependencies = [
  "serde",
  "serde_yaml",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

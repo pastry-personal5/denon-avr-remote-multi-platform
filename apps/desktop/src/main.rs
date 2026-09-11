@@ -19,7 +19,7 @@ fn main() -> iced::Result {
         }
     };
     let services = denon_avr_gui_lib::GuiServices {
-        factory: Arc::new(denon_avr_infrastructure::AvrSessionFactory::default()),
+        factory: Arc::new(denon_avr_infrastructure::CanonicalSessionFactory::default()),
         configuration: Arc::new(denon_avr_infrastructure::YamlConfigRepository::default()),
         discovery: Arc::new(denon_avr_infrastructure::SsdpDiscoveryAdapter),
     };

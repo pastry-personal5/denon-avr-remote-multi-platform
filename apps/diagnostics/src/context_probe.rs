@@ -102,7 +102,17 @@ fn main() -> io::Result<()> {
         let command_failed = result.is_err();
         match result {
             Ok(response) => println!("receiver={host} model={model} firmware={firmware} timestamp={timestamp} command={command} elapsed_ms={} status=ok response={response}", started.elapsed().as_millis()),
-            Err(status) => { failed = true; println!("receiver={host} model={model} firmware={firmware} timestamp={timestamp} command={command} elapsed_ms={} status={status}", started.elapsed().as_millis()); }
+            Err(status) => {
+                // DC? is an optional diagnostic family. AVC-X3800H units may
+                // leave it unanswered; retain the evidence and reconnect, but
+                // do not fail an otherwise successful read-only probe.
+                let optional = is_optional_command(command);
+                if !optional {
+                    failed = true;
+                }
+                let outcome = if optional { "unavailable" } else { status };
+                println!("receiver={host} model={model} firmware={firmware} timestamp={timestamp} command={command} elapsed_ms={} status={outcome}", started.elapsed().as_millis());
+            }
         }
         // A timed-out query can leave a late response in the AVR's TCP stream.
         // Do not let that response become associated with the next query.
@@ -125,8 +135,13 @@ fn connect(address: &std::net::SocketAddr, timeout: u64) -> io::Result<TcpStream
 }
 
 fn command_family(command: &str) -> &str {
-    command.trim_end_matches('?').trim_end()
+    command.trim().trim_end_matches('?').trim_end()
 }
+
+fn is_optional_command(command: &str) -> bool {
+    command_family(command) == "DC"
+}
+
 fn epoch_seconds() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -152,5 +167,13 @@ mod tests {
         assert!(response_is_match("PSMULTEQ: ?", "PSMULTEQ:AUDYSSEY"));
         assert!(response_is_match("PSDYNEQ ?", "PSDYNEQ ON"));
         assert!(!response_is_match("OPINFINS ?", "OPINFASP 2222"));
+    }
+
+    #[test]
+    fn only_dc_is_optional() {
+        assert!(is_optional_command("DC?"));
+        assert!(is_optional_command("DC? "));
+        assert!(!is_optional_command("SI?"));
+        assert!(!is_optional_command("DCX?"));
     }
 }

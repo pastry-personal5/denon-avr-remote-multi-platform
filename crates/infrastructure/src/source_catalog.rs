@@ -9,6 +9,7 @@ use denon_avr_protocol::source_catalog::{
 };
 use std::io;
 use std::time::{Duration, SystemTime};
+use tracing::debug;
 
 pub struct SourceCatalogHttpClient {
     client: AppCommandHttpClient,
@@ -22,6 +23,7 @@ impl SourceCatalogHttpClient {
     }
 
     pub fn read(&self, generation: u64) -> io::Result<SourceCatalogObservation> {
+        debug!(generation, "source catalog HTTP read started");
         let response = self
             .client
             .execute_xml_at("/goform/AppCommand.xml", source_catalog_request_xml())?;
@@ -33,7 +35,7 @@ impl SourceCatalogHttpClient {
             CatalogResponseEvidence::Unsupported => Freshness::Unknown,
             _ => unreachable!("protocol parser emits only response-shape evidence"),
         };
-        Ok(SourceCatalogObservation {
+        let observation = SourceCatalogObservation {
             catalog: SourceCatalog {
                 entries: parsed.entries,
                 freshness,
@@ -43,7 +45,14 @@ impl SourceCatalogHttpClient {
             },
             raw_response: response.body,
             response_evidence: parsed.evidence,
-        })
+        };
+        debug!(
+            generation,
+            entries = observation.catalog.entries.len(),
+            ?freshness,
+            "source catalog HTTP read completed"
+        );
+        Ok(observation)
     }
 }
 

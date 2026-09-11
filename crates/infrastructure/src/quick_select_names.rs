@@ -8,6 +8,7 @@ use denon_avr_domain::{
 use denon_avr_protocol::parse_quick_select_names;
 use std::io;
 use std::time::{Duration, SystemTime};
+use tracing::debug;
 
 const REQUEST_XML: &str = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<tx>\n<cmd id=\"1\">GetQuickSelectName</cmd>\n</tx>";
 
@@ -23,6 +24,7 @@ impl QuickSelectNamesHttpClient {
     }
 
     pub fn read(&self, generation: u64) -> io::Result<QuickSelectNameObservation> {
+        debug!(generation, "Quick Select names HTTP read started");
         let response = self
             .client
             .execute_xml_at("/goform/AppCommand.xml", REQUEST_XML)?;
@@ -37,7 +39,7 @@ impl QuickSelectNamesHttpClient {
                 .transpose()
                 .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
         }
-        Ok(QuickSelectNameObservation {
+        let observation = QuickSelectNameObservation {
             names,
             sources: parsed
                 .sources
@@ -56,7 +58,13 @@ impl QuickSelectNamesHttpClient {
             } else {
                 QuickSelectNameResponseEvidence::Partial
             },
-        })
+        };
+        debug!(
+            generation,
+            complete = observation.response_evidence == QuickSelectNameResponseEvidence::Complete,
+            "Quick Select names HTTP read completed"
+        );
+        Ok(observation)
     }
 }
 

@@ -54,8 +54,8 @@ pub fn parse_main_zone_response(
 ) -> Result<MainZoneValue, AvrProtocolError> {
     match field {
         MainZoneField::Power => match response {
-            "PWON" => Ok(MainZoneValue::Power(PowerState::On)),
-            "PWSTANDBY" => Ok(MainZoneValue::Power(PowerState::Standby)),
+            "ZMON" => Ok(MainZoneValue::Power(PowerState::On)),
+            "ZMOFF" => Ok(MainZoneValue::Power(PowerState::Standby)),
             _ => Err(unexpected(field, response)),
         },
         MainZoneField::Input => prefixed(response, "SI", field)

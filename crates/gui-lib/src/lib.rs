@@ -39,6 +39,7 @@ mod capture;
 pub mod components;
 mod dashboard;
 pub mod design;
+pub mod desktop_projection;
 mod feedback;
 mod messages;
 mod receiver_setup;

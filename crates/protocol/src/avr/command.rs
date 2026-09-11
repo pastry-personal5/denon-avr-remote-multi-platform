@@ -35,7 +35,8 @@ impl AvrCommand {
 
 pub fn query_command(field: MainZoneField) -> AvrCommand {
     let command = match field {
-        MainZoneField::Power => "PW?",
+        // `PW` is system power. Main Zone state is `ZM` on the X3800H.
+        MainZoneField::Power => "ZM?",
         MainZoneField::Input => "SI?",
         MainZoneField::Volume => "MV?",
         MainZoneField::Mute => "MU?",
@@ -97,8 +98,8 @@ pub fn encode_native_volume(code: u16) -> Result<AvrCommand, AvrProtocolError> {
 
 pub fn encode_control(control: &MainZoneControl) -> Result<AvrCommand, AvrProtocolError> {
     match control {
-        MainZoneControl::Power(PowerState::On) => AvrCommand::new("PWON"),
-        MainZoneControl::Power(PowerState::Standby) => AvrCommand::new("PWSTANDBY"),
+        MainZoneControl::Power(PowerState::On) => AvrCommand::new("ZMON"),
+        MainZoneControl::Power(PowerState::Standby) => AvrCommand::new("ZMOFF"),
         MainZoneControl::Input(value) => AvrCommand::new(format!("SI{}", value.as_str())),
         MainZoneControl::Volume(value) => encode_native_volume(value.to_native_code()),
         MainZoneControl::Mute(MuteState::On) => AvrCommand::new("MUON"),
@@ -169,9 +170,9 @@ mod tests {
 
     #[test]
     fn frames_queries_and_parses_typed_values() {
-        assert_eq!(query_command(MainZoneField::Power).as_bytes(), b"PW?\r");
+        assert_eq!(query_command(MainZoneField::Power).as_bytes(), b"ZM?\r");
         assert_eq!(
-            parse_main_zone_response(MainZoneField::Power, "PWON").unwrap(),
+            parse_main_zone_response(MainZoneField::Power, "ZMON").unwrap(),
             MainZoneValue::Power(PowerState::On)
         );
         let MainZoneValue::Volume(volume) =
@@ -225,13 +226,13 @@ mod tests {
             encode_control(&MainZoneControl::Power(PowerState::On))
                 .unwrap()
                 .as_str(),
-            "PWON"
+            "ZMON"
         );
         assert_eq!(
             encode_control(&MainZoneControl::Power(PowerState::Standby))
                 .unwrap()
                 .as_str(),
-            "PWSTANDBY"
+            "ZMOFF"
         );
         assert_eq!(
             encode_control(&MainZoneControl::Input(Input::new("CD").unwrap()))

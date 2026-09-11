@@ -2,7 +2,7 @@
 
 use denon_avr_application::ports::{
     AsyncControlGateway, AsyncStatusGateway, BoxFuture, OperationError, OperationErrorKind,
-    ReceiverSession, SessionEvent, SessionFactory, SourceCatalogReader,
+    ReceiverSession, SessionEvent, SourceCatalogReader,
 };
 use denon_avr_domain::{
     AudioContextSnapshot, Confidence, ConnectionState, EqEvidence, EqFeature, EqState, EqStatus,
@@ -23,9 +23,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
-use tokio::net::{lookup_host, TcpStream};
+use tokio::net::TcpStream;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
+use tracing::{debug, info, warn};
 
 const DEFAULT_MAX_LINE_LENGTH: usize = 135;
 
@@ -36,6 +37,11 @@ pub struct AvrSessionConfig {
     pub response_timeout: Duration,
     pub reconnect_attempts: usize,
     pub reconnect_delay: Duration,
+    /// Continue reconnecting until the owning Phase 5 session is explicitly
+    /// closed.  Kept opt-in while the legacy controller is still present.
+    pub reconnect_indefinitely: bool,
+    /// The X3800H requires at least 50 ms between all transmissions.
+    pub transmission_interval: Duration,
     pub max_line_length: usize,
     pub app_command_port: u16,
 }
@@ -48,6 +54,8 @@ impl Default for AvrSessionConfig {
             response_timeout: Duration::from_secs(1),
             reconnect_attempts: 3,
             reconnect_delay: Duration::from_millis(250),
+            reconnect_indefinitely: false,
+            transmission_interval: Duration::from_millis(50),
             max_line_length: DEFAULT_MAX_LINE_LENGTH,
             app_command_port: 8080,
         }
@@ -59,7 +67,13 @@ pub enum AvrSessionEvent {
     Connected,
     Reconnected,
     Line(String),
-    Disconnected(String),
+    /// Generation identifies the connection that failed.  Consumers can
+    /// discard a delayed disconnect notification after a newer connection is
+    /// already established.
+    Disconnected {
+        generation: u64,
+        message: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -118,47 +132,22 @@ pub struct AvrSession {
     requests: mpsc::Sender<Request>,
     events: mpsc::Receiver<AvrSessionEvent>,
     generation: Arc<AtomicU64>,
-    snapshot: Arc<Mutex<MainZoneSnapshot>>,
     task_handle: JoinHandle<()>,
     source_catalog_host: String,
     source_catalog_port: u16,
     source_catalog_timeout: Duration,
 }
 
-/// Production session factory used by persistent application clients.
-#[derive(Debug, Clone, Default)]
-pub struct AvrSessionFactory {
-    pub config: AvrSessionConfig,
-}
-
-impl SessionFactory for AvrSessionFactory {
-    fn connect(
-        &self,
-        identity: denon_avr_domain::ReceiverIdentity,
-    ) -> BoxFuture<'_, Result<Box<dyn ReceiverSession>, OperationError>> {
-        let config = self.config.clone();
-        Box::pin(async move {
-            AvrSession::connect(&identity.host, config)
-                .await
-                .map(|session| Box::new(session) as Box<dyn ReceiverSession>)
-                .map_err(OperationError::from)
-        })
+impl Drop for AvrSession {
+    fn drop(&mut self) {
+        // A canonical actor may be cancelled while the transport is in
+        // reconnect backoff. Dropping the handle must still terminate the
+        // socket owner; otherwise an orphaned retry task survives shutdown.
+        self.task_handle.abort();
     }
 }
 
 impl AvrSession {
-    pub async fn connect(host: &str, config: AvrSessionConfig) -> Result<Self, AvrSessionError> {
-        let address = tokio::time::timeout(config.connect_timeout, lookup_host((host, 23)))
-            .await
-            .map_err(|_| AvrSessionError::Timeout("resolving receiver address".to_owned()))?
-            .map_err(|error| AvrSessionError::Connection(error.to_string()))?
-            .next()
-            .ok_or_else(|| AvrSessionError::Connection("host has no address".to_owned()))?;
-        let mut session = Self::connect_addr(address, config).await?;
-        session.source_catalog_host = host.to_owned();
-        Ok(session)
-    }
-
     pub async fn connect_addr(
         address: SocketAddr,
         config: AvrSessionConfig,
@@ -183,7 +172,6 @@ impl AvrSession {
             requests,
             events,
             generation,
-            snapshot,
             task_handle,
             source_catalog_host: address.ip().to_string(),
             source_catalog_port,
@@ -248,10 +236,6 @@ impl AvrSession {
     pub fn connection_generation(&self) -> u64 {
         self.generation.load(Ordering::Acquire)
     }
-
-    pub fn snapshot(&self) -> MainZoneSnapshot {
-        self.snapshot.lock().expect("session snapshot lock").clone()
-    }
 }
 
 impl AsyncStatusGateway for AvrSession {
@@ -289,7 +273,7 @@ impl AsyncStatusGateway for AvrSession {
                 Some(AvrSessionEvent::Connected | AvrSessionEvent::Reconnected) => {
                     Ok(SessionEvent::Connection(ConnectionState::Connected))
                 }
-                Some(AvrSessionEvent::Disconnected(_)) => {
+                Some(AvrSessionEvent::Disconnected { .. }) => {
                     Ok(SessionEvent::Connection(ConnectionState::Reconnecting))
                 }
                 Some(AvrSessionEvent::Line(line)) => {
@@ -671,6 +655,7 @@ async fn connect_socket(
     address: SocketAddr,
     config: &AvrSessionConfig,
 ) -> Result<BufReader<TcpStream>, AvrSessionError> {
+    debug!(%address, "opening AVR TCP connection");
     let stream = tokio::time::timeout(config.connect_timeout, TcpStream::connect(address))
         .await
         .map_err(|_| AvrSessionError::Timeout(format!("connecting to {address}")))?
@@ -687,9 +672,12 @@ async fn run_session(
     generation: Arc<AtomicU64>,
     snapshot: Arc<Mutex<MainZoneSnapshot>>,
 ) {
+    info!(%address, "AVR session transport started");
     if !publish_event(&events, AvrSessionEvent::Connected).await {
         return;
     }
+    let mut last_transmission = None;
+    let mut power_on_quiet_until = None;
     loop {
         let mut request = match next_request(
             &mut reader,
@@ -703,12 +691,22 @@ async fn run_session(
             Ok(Some(request)) => request,
             Ok(None) => return,
             Err(message) => {
+                warn!(%message, "AVR transport failed while waiting for a request");
                 invalidate_snapshot(&snapshot);
-                if !publish_event(&events, AvrSessionEvent::Disconnected(message)).await {
+                if !publish_event(
+                    &events,
+                    AvrSessionEvent::Disconnected {
+                        generation: generation.load(Ordering::Acquire),
+                        message,
+                    },
+                )
+                .await
+                {
                     return;
                 }
-                match reconnect(address, &config, &events).await {
+                match reconnect(address, &config, &events, &generation).await {
                     Ok(new_reader) => {
+                        info!(%address, "AVR transport reconnected");
                         reader = new_reader;
                         generation.fetch_add(1, Ordering::AcqRel);
                         if !publish_event(&events, AvrSessionEvent::Reconnected).await {
@@ -722,6 +720,14 @@ async fn run_session(
         };
         let family = get_command_family(request.command.as_str());
         let command_bytes = request.command.as_bytes();
+        let now = tokio::time::Instant::now();
+        let mut due = power_on_quiet_until.unwrap_or(now);
+        if let Some(previous) = last_transmission {
+            due = due.max(previous + config.transmission_interval);
+        }
+        if due > now {
+            tokio::time::sleep_until(due).await;
+        }
         let write_result = tokio::time::timeout(
             config.write_timeout,
             reader.get_mut().write_all(&command_bytes),
@@ -733,8 +739,19 @@ async fn run_session(
         .and_then(|result| {
             result.map_err(|error| AvrSessionError::Disconnected(error.to_string()))
         });
+        // A completed, timed-out, or failed write attempt occupies the wire
+        // schedule. We must not immediately issue another command after an
+        // ambiguous transport boundary.
+        last_transmission = Some(tokio::time::Instant::now());
+        if request.command.as_str() == "PWON" {
+            power_on_quiet_until = Some(
+                last_transmission.expect("transmission timestamp was just recorded")
+                    + Duration::from_secs(1),
+            );
+        }
         if let Err(error) = write_result {
             let message = error.to_string();
+            warn!(command = request.command.as_str(), %message, "AVR command write failed");
             if let Some(response) = request.response.take() {
                 let _ = response.send(Err(error.clone()));
             }
@@ -742,11 +759,20 @@ async fn run_session(
                 let _ = dispatched.send(Err(error));
             }
             invalidate_snapshot(&snapshot);
-            if !publish_event(&events, AvrSessionEvent::Disconnected(message)).await {
+            if !publish_event(
+                &events,
+                AvrSessionEvent::Disconnected {
+                    generation: generation.load(Ordering::Acquire),
+                    message,
+                },
+            )
+            .await
+            {
                 return;
             }
-            match reconnect(address, &config, &events).await {
+            match reconnect(address, &config, &events, &generation).await {
                 Ok(new_reader) => {
+                    info!(%address, "AVR transport reconnected after write failure");
                     reader = new_reader;
                     generation.fetch_add(1, Ordering::AcqRel);
                     if !publish_event(&events, AvrSessionEvent::Reconnected).await {
@@ -784,13 +810,23 @@ async fn run_session(
             | Err(error @ AvrSessionError::Disconnected(_))
             | Err(error @ AvrSessionError::MalformedFrame(_)) => {
                 let message = error.to_string();
+                warn!(%message, "AVR response stream failed");
                 let _ = response_sender.send(Err(error));
                 invalidate_snapshot(&snapshot);
-                if !publish_event(&events, AvrSessionEvent::Disconnected(message)).await {
+                if !publish_event(
+                    &events,
+                    AvrSessionEvent::Disconnected {
+                        generation: generation.load(Ordering::Acquire),
+                        message,
+                    },
+                )
+                .await
+                {
                     return;
                 }
-                match reconnect(address, &config, &events).await {
+                match reconnect(address, &config, &events, &generation).await {
                     Ok(new_reader) => {
+                        info!(%address, "AVR transport reconnected after response failure");
                         reader = new_reader;
                         generation.fetch_add(1, Ordering::AcqRel);
                         if !publish_event(&events, AvrSessionEvent::Reconnected).await {
@@ -930,7 +966,7 @@ fn apply_line(snapshot: &Arc<Mutex<MainZoneSnapshot>>, line: &str, authority: St
 
 fn apply_response(snapshot: &Arc<Mutex<MainZoneSnapshot>>, family: &str, response: &str) {
     let field = match family {
-        "PW" => MainZoneField::Power,
+        "ZM" => MainZoneField::Power,
         "SI" => MainZoneField::Input,
         "MV" => MainZoneField::Volume,
         "MU" => MainZoneField::Mute,
@@ -1004,19 +1040,35 @@ async fn reconnect(
     address: SocketAddr,
     config: &AvrSessionConfig,
     events: &mpsc::Sender<AvrSessionEvent>,
+    generation: &Arc<AtomicU64>,
 ) -> Result<BufReader<TcpStream>, AvrSessionError> {
     let mut last_error = None;
-    for attempt in 0..config.reconnect_attempts {
+    let mut attempt = 0usize;
+    loop {
+        if !config.reconnect_indefinitely && attempt >= config.reconnect_attempts {
+            break;
+        }
         if attempt > 0 {
-            tokio::time::sleep(config.reconnect_delay).await;
+            // Bounded exponential backoff. The Phase 5 owner opts into the
+            // indefinite form; legacy callers retain their finite policy.
+            let multiplier = 1u32 << attempt.saturating_sub(1).min(7);
+            tokio::time::sleep(config.reconnect_delay.saturating_mul(multiplier)).await;
         }
         match connect_socket(address, config).await {
-            Ok(reader) => return Ok(reader),
+            Ok(reader) => {
+                info!(%address, attempt, "AVR reconnect succeeded");
+                return Ok(reader);
+            }
             Err(error) => {
+                attempt = attempt.saturating_add(1);
                 last_error = Some(error.to_string());
+                warn!(%address, attempt, error = %error, "AVR reconnect attempt failed");
                 if !publish_event(
                     events,
-                    AvrSessionEvent::Disconnected(last_error.clone().unwrap()),
+                    AvrSessionEvent::Disconnected {
+                        generation: generation.load(Ordering::Acquire),
+                        message: last_error.clone().unwrap(),
+                    },
                 )
                 .await
                 {
@@ -1057,6 +1109,67 @@ mod tests {
             session.next_event().await,
             Some(AvrSessionEvent::Line("SICD".to_owned()))
         );
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn globally_paces_each_transmission() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut reader = BufReader::new(stream);
+            let mut command = Vec::new();
+            reader.read_until(b'\r', &mut command).await.unwrap();
+            assert_eq!(command, b"MV?\r");
+            reader.get_mut().write_all(b"MV80\r").await.unwrap();
+            command.clear();
+            let first = tokio::time::Instant::now();
+            reader.read_until(b'\r', &mut command).await.unwrap();
+            let elapsed = first.elapsed();
+            assert_eq!(command, b"MU?\r");
+            assert!(
+                elapsed >= Duration::from_millis(45),
+                "second command arrived after {elapsed:?}"
+            );
+            reader.get_mut().write_all(b"MUOFF\r").await.unwrap();
+        });
+        let session = AvrSession::connect_addr(address, AvrSessionConfig::default())
+            .await
+            .unwrap();
+        assert_eq!(session.request("MV?").await.unwrap(), "MV80");
+        assert_eq!(session.request("MU?").await.unwrap(), "MUOFF");
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn enforces_denon_power_on_quiet_period() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut reader = BufReader::new(stream);
+            let mut command = Vec::new();
+            reader.read_until(b'\r', &mut command).await.unwrap();
+            assert_eq!(command, b"PWON\r");
+            command.clear();
+            let started = tokio::time::Instant::now();
+            reader.read_until(b'\r', &mut command).await.unwrap();
+            assert!(started.elapsed() >= Duration::from_millis(950));
+            assert_eq!(command, b"MV?\r");
+            reader.get_mut().write_all(b"MV80\r").await.unwrap();
+        });
+        let session = AvrSession::connect_addr(
+            address,
+            AvrSessionConfig {
+                transmission_interval: Duration::from_millis(1),
+                ..AvrSessionConfig::default()
+            },
+        )
+        .await
+        .unwrap();
+        session.dispatch("PWON").await.unwrap();
+        assert_eq!(session.request("MV?").await.unwrap(), "MV80");
         server.await.unwrap();
     }
 

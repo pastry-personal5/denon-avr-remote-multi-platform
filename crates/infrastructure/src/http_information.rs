@@ -6,6 +6,7 @@ use denon_avr_protocol::app_command::{AppCommandQuery, AppCommandRequest, APP_CO
 use denon_avr_protocol::http_information::{missing_information_commands, parse_http_information};
 use std::io;
 use std::time::Duration;
+use tracing::debug;
 
 pub const X3800H_HTTP_PORT: u16 = 8080;
 
@@ -25,6 +26,7 @@ impl HttpInformationHttpClient {
         })
     }
     pub fn read(&self, generation: u64) -> io::Result<HttpInformationSnapshot> {
+        debug!(generation, "HTTP information read started");
         let batch = AppCommandRequest::audio_information();
         let mut response = self.client.execute_and_parse(&batch)?.response;
         // Firmware that returns an entirely empty 0300 batch is compatible with
@@ -48,7 +50,13 @@ impl HttpInformationHttpClient {
                 "receiver returned no HTTP information commands",
             ));
         }
-        Ok(parse_http_information(&response, generation))
+        let snapshot = parse_http_information(&response, generation);
+        debug!(
+            generation,
+            commands = response.commands.len(),
+            "HTTP information read completed"
+        );
+        Ok(snapshot)
     }
 }
 fn single(command: &str) -> AppCommandRequest {

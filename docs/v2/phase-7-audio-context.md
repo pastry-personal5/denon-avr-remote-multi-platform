@@ -10,7 +10,7 @@ probes are available, and the audio-context query primitives feed the
 persistent session snapshot. Group recall remains distinct from individual
 mode selection, and individual listening-mode choices stay disabled without
 validated signal and speaker context. Live TCP and HTTP traces have been
-collected from an AVR-X3800H, but receiver-specific AppCommand meaning is not
+collected from an AVC-X3800H, but receiver-specific AppCommand meaning is not
 promoted to the supported API without scenario-based validation.
 
 ## Diagnostic procedure

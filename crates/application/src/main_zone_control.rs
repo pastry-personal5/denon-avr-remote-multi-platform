@@ -1,10 +1,8 @@
 //! Safe, capability-gated Main Zone control use cases.
 
-use crate::ports::{
-    AsyncControlGateway, AsyncStatusGateway, ControlGateway, OperationError, OperationErrorKind,
-    StatusGateway,
-};
+use crate::ports::{AsyncControlGateway, AsyncStatusGateway, OperationError, OperationErrorKind};
 use denon_avr_domain::{MainZoneControl, MainZoneSnapshot, ModelCapabilities};
+use tracing::{debug, warn};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ControlOutcome {
@@ -36,6 +34,12 @@ pub fn admit_main_zone_control(
 ) -> ControlAdmission {
     if let Some(expected_version) = expected_version {
         if preflight.resource_version() != expected_version {
+            warn!(
+                ?control,
+                expected_version,
+                current_version = preflight.resource_version(),
+                "control rejected due to stale resource version"
+            );
             return ControlAdmission::Rejected(OperationError::new(
                 OperationErrorKind::Conflict,
                 "checking resource version",
@@ -47,6 +51,7 @@ pub fn admit_main_zone_control(
         }
     }
     if !capabilities.supports_control(control) {
+        warn!(?control, "control rejected by receiver capabilities");
         return ControlAdmission::Unsupported(
             "the selected receiver does not support this validated control".into(),
         );
@@ -56,77 +61,11 @@ pub fn admit_main_zone_control(
             .value(control_field(control))
             .is_some_and(|value| control_matches(control, &value, capabilities))
     {
+        debug!(?control, "control admitted as already observed no-op");
         ControlAdmission::NoOp
     } else {
+        debug!(?control, "control admitted for dispatch");
         ControlAdmission::Dispatch
-    }
-}
-
-/// One-shot admission policy used by the CLI. It performs the authoritative
-/// preflight and emits at most one state-changing dispatch; confirmation is
-/// intentionally left to a later status query.
-pub fn dispatch_main_zone_control(
-    status: &mut (impl StatusGateway + ControlGateway),
-    capabilities: &ModelCapabilities,
-    control: MainZoneControl,
-    expected_version: u64,
-) -> ControlOutcome {
-    let preflight = crate::main_zone_status::query_main_zone_status(status);
-    match admit_main_zone_control(&preflight, capabilities, &control, Some(expected_version)) {
-        ControlAdmission::Dispatch => {}
-        ControlAdmission::NoOp => return ControlOutcome::NoOp(preflight),
-        ControlAdmission::Rejected(error) => return ControlOutcome::Rejected(error),
-        ControlAdmission::Unsupported(message) => return ControlOutcome::Unsupported(message),
-    }
-    match status.execute_once(control) {
-        Ok(()) => ControlOutcome::Unconfirmed(OperationError::new(
-            OperationErrorKind::Unavailable,
-            "confirming control",
-            "dispatched once; confirmation is deferred to a later status query",
-        )),
-        Err(error) => ControlOutcome::TransportFailure(error),
-    }
-}
-
-pub fn execute_main_zone_control(
-    status: &mut (impl StatusGateway + ControlGateway),
-    capabilities: &ModelCapabilities,
-    control: MainZoneControl,
-    expected_version: u64,
-) -> ControlOutcome {
-    let preflight = crate::main_zone_status::query_main_zone_status(status);
-    match admit_main_zone_control(&preflight, capabilities, &control, Some(expected_version)) {
-        ControlAdmission::Dispatch => {}
-        ControlAdmission::NoOp => return ControlOutcome::NoOp(preflight),
-        ControlAdmission::Rejected(error) => return ControlOutcome::Rejected(error),
-        ControlAdmission::Unsupported(message) => return ControlOutcome::Unsupported(message),
-    }
-    let previous_surround_mode = preflight.surround_mode.value().cloned();
-    if let Err(error) = status.execute_once(control.clone()) {
-        return ControlOutcome::TransportFailure(error);
-    }
-    if matches!(
-        control,
-        MainZoneControl::Power(denon_avr_domain::PowerState::On)
-    ) {
-        std::thread::sleep(std::time::Duration::from_secs(1));
-    }
-    let confirmed = crate::main_zone_status::query_main_zone_status(status);
-    if confirmed
-        .value(control_field(&control))
-        .is_some_and(|value| {
-            control_matches(&control, &value, capabilities)
-                && (!matches!(control, MainZoneControl::RecallSoundModeCategory(_))
-                    || previous_surround_mode.as_ref() != confirmed.surround_mode.value())
-        })
-    {
-        ControlOutcome::Confirmed(confirmed)
-    } else {
-        ControlOutcome::Unconfirmed(OperationError::new(
-            OperationErrorKind::Unavailable,
-            "confirming control command",
-            "receiver did not report the requested value",
-        ))
     }
 }
 
@@ -145,6 +84,7 @@ pub async fn execute_main_zone_control_async(
     }
     let previous_surround_mode = preflight.surround_mode.value().cloned();
     if let Err(error) = status.execute_once(control.clone()).await {
+        warn!(?control, error = %error, "asynchronous control dispatch failed");
         return ControlOutcome::TransportFailure(error);
     }
     if matches!(
@@ -162,8 +102,13 @@ pub async fn execute_main_zone_control_async(
                     || previous_surround_mode.as_ref() != confirmed.surround_mode.value())
         })
     {
+        debug!(?control, "asynchronous control confirmed by receiver");
         ControlOutcome::Confirmed(confirmed)
     } else {
+        warn!(
+            ?control,
+            "asynchronous control was not confirmed by receiver"
+        );
         ControlOutcome::Unconfirmed(OperationError::new(
             OperationErrorKind::Unavailable,
             "confirming control command",

@@ -11,6 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use tracing::{debug, warn};
 
 #[derive(Debug, Clone)]
 pub struct YamlConfigRepository {
@@ -387,15 +388,34 @@ fn write_config(path: &Path, config: &ConfiguredReceivers) -> Result<(), Operati
 }
 impl ConfigRepository for YamlConfigRepository {
     fn load(&self) -> Result<ConfiguredReceivers, OperationError> {
-        read_config(&self.path)
+        let result = read_config(&self.path);
+        match &result {
+            Ok(config) => {
+                debug!(path = %self.path.display(), receivers = config.receivers.len(), "configuration loaded")
+            }
+            Err(error) => {
+                warn!(path = %self.path.display(), error = %error, "configuration load failed")
+            }
+        }
+        result
     }
     fn save(&self, config: &ConfiguredReceivers) -> Result<(), OperationError> {
-        write_config(&self.path, config)
+        let result = write_config(&self.path, config);
+        match &result {
+            Ok(()) => {
+                debug!(path = %self.path.display(), receivers = config.receivers.len(), "configuration saved")
+            }
+            Err(error) => {
+                warn!(path = %self.path.display(), error = %error, "configuration save failed")
+            }
+        }
+        result
     }
 }
 impl AsyncConfigRepository for YamlConfigRepository {
     fn load(&self) -> BoxFuture<'_, Result<ConfiguredReceivers, OperationError>> {
         Box::pin(async move {
+            debug!(path = %self.path.display(), "asynchronous configuration load started");
             let text = match tokio::fs::read_to_string(&self.path).await {
                 Ok(text) => text,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -432,6 +452,7 @@ impl AsyncConfigRepository for YamlConfigRepository {
         config: &'a ConfiguredReceivers,
     ) -> BoxFuture<'a, Result<(), OperationError>> {
         Box::pin(async move {
+            debug!(path = %self.path.display(), receivers = config.receivers.len(), "asynchronous configuration save started");
             let file = encode_config_file(config)?;
             if let Some(parent) = self.path.parent() {
                 tokio::fs::create_dir_all(parent).await.map_err(|e| {

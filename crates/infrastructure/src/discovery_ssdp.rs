@@ -19,6 +19,7 @@ use tokio::net::{TcpStream as AsyncTcpStream, UdpSocket as AsyncUdpSocket};
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 use tokio::time::Instant as AsyncInstant;
+use tracing::{debug, info, warn};
 
 pub const SSDP_PORT: u16 = 1900;
 pub const DENON_DOCUMENTED_SSDP_PORT: u16 = 1800;
@@ -123,11 +124,16 @@ pub fn discover_receivers(timeout: Duration) -> Result<Vec<DiscoveredReceiver>, 
         return Err(DiscoveryError::Timeout);
     }
     let start = Instant::now();
+    info!(?timeout, "starting SSDP receiver discovery");
     let deadline = start + timeout;
     let fallback_budget = reserved_fallback_budget(timeout);
     let ssdp_deadline = start + timeout.saturating_sub(fallback_budget);
     let retry_at = start + timeout.saturating_sub(fallback_budget) / 2;
     let interface_ips = local_private_ipv4_addresses()?;
+    debug!(
+        interfaces = interface_ips.len(),
+        "SSDP discovery interfaces selected"
+    );
     let mut sockets = Vec::new();
     for interface_ip in &interface_ips {
         if Instant::now() >= ssdp_deadline {
@@ -173,7 +179,10 @@ pub fn discover_receivers(timeout: Duration) -> Result<Vec<DiscoveredReceiver>, 
                 Err(error)
                     if error.kind() == std::io::ErrorKind::WouldBlock
                         || error.kind() == std::io::ErrorKind::TimedOut => {}
-                Err(error) => return Err(error.into()),
+                Err(error) => {
+                    warn!(%error, "SSDP receive failed");
+                    return Err(error.into());
+                }
             }
         }
     }
@@ -363,7 +372,12 @@ fn discover_receivers_by_description_scan(
             DiscoveryError::InvalidResponse("description scan worker failed".to_owned())
         })?;
     }
-    Ok(receivers.into_values().collect())
+    let discovered = receivers.into_values().collect::<Vec<_>>();
+    info!(
+        count = discovered.len(),
+        "SSDP receiver discovery completed"
+    );
+    Ok(discovered)
 }
 
 async fn discover_receivers_by_description_scan_async(

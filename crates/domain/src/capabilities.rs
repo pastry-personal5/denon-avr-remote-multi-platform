@@ -128,6 +128,43 @@ const X3800H_GAME_MODES: &[&str] = &[
 ];
 const X3800H_PURE_MODES: &[&str] = &["AUTO", "DIRECT", "PURE DIRECT", "STEREO"];
 
+pub fn supports_x3800h_source(value: &str) -> bool {
+    X3800H_INPUTS
+        .iter()
+        .any(|candidate| candidate.eq_ignore_ascii_case(value))
+}
+
+pub fn canonical_x3800h_source(value: &str) -> Option<&'static str> {
+    X3800H_INPUTS
+        .iter()
+        .copied()
+        .find(|candidate| candidate.eq_ignore_ascii_case(value))
+}
+
+pub fn supports_x3800h_sound_mode(value: &str) -> bool {
+    [
+        X3800H_MOVIE_MODES,
+        X3800H_MUSIC_MODES,
+        X3800H_GAME_MODES,
+        X3800H_PURE_MODES,
+    ]
+    .into_iter()
+    .flatten()
+    .any(|candidate| candidate.eq_ignore_ascii_case(value))
+}
+
+pub fn x3800h_sound_mode_in_category(value: &str, category: SoundModeCategory) -> bool {
+    let modes = match category {
+        SoundModeCategory::Movie => X3800H_MOVIE_MODES,
+        SoundModeCategory::Music => X3800H_MUSIC_MODES,
+        SoundModeCategory::Game => X3800H_GAME_MODES,
+        SoundModeCategory::Pure => X3800H_PURE_MODES,
+    };
+    modes
+        .iter()
+        .any(|candidate| candidate.eq_ignore_ascii_case(value))
+}
+
 impl ModelCapabilities {
     pub const fn for_model(model: Model) -> Self {
         let writable = matches!(model, Model::AvrX3800h);

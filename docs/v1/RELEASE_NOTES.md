@@ -6,7 +6,7 @@
 ## Summary
 
 Version 1.0.0 freezes the Version 1 scope: read-only main-zone status for
-Denon and Marantz AVR receivers over local IP, with the Denon AVR-X3800H as
+Denon and Marantz AVR receivers over local IP, with the Denon AVC-X3800H as
 the validated target. It ships the one-shot status CLI, the protocol and
 application library, and a persistent asynchronous AVR session.
 

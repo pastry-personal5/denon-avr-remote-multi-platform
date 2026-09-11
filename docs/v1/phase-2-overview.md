@@ -2,7 +2,7 @@
 
 ## Objective
 
-Validate the AVR-X3800H network and remote behavior required by the v1 status
+Validate the AVC-X3800H network and remote behavior required by the v1 status
 contract, then add a persistent asynchronous AVR session without changing the
 one-shot CLI contract.
 
@@ -24,7 +24,7 @@ that were not exposed are recorded as `not exposed`, not inferred.
 - Persistent `AvrSession` with structured lifecycle events and errors.
 - Interleaved unsolicited-line handling and solicited-response matching.
 - Automatic reconnect with bounded attempts and backoff.
-- AVR-X3800H validation record dated 2026-09-07.
+- AVC-X3800H validation record dated 2026-09-07.
 - Local tests for framing, correlation, reconnect, malformed frames, and CLI
   compatibility.
 
