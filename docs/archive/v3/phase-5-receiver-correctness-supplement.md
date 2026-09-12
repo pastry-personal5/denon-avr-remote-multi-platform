@@ -12,16 +12,16 @@ requirements into executable coverage.
 ## Evidence and confidence
 
 The code review covers the active workspace, especially
-[`controller.rs`](../../crates/application/src/controller.rs),
-[`ports.rs`](../../crates/application/src/ports.rs),
-[`avr_session.rs`](../../crates/infrastructure/src/avr_session.rs),
-[`tcp_avr.rs`](../../crates/infrastructure/src/tcp_avr.rs),
-[`command.rs`](../../crates/protocol/src/avr/command.rs),
-[`response.rs`](../../crates/protocol/src/avr/response.rs),
-[`main_zone.rs`](../../crates/domain/src/main_zone.rs), and
-[`bridge.rs`](../../crates/gui-lib/src/bridge.rs). The verification review also
-covers the inline tests, [`async_apis.rs`](../../crates/gui-lib/tests/async_apis.rs),
-the root [`Makefile`](../../Makefile), and the current boundary checker.
+[`controller.rs`](../../../crates/application/src/controller.rs),
+[`ports.rs`](../../../crates/application/src/ports.rs),
+[`avr_session.rs`](../../../crates/infrastructure/src/avr_session.rs),
+[`x3800h_session.rs`](../../../crates/infrastructure/src/x3800h_session.rs),
+[`command.rs`](../../../crates/protocol/src/avr/command.rs),
+[`response.rs`](../../../crates/protocol/src/avr/response.rs),
+[`main_zone.rs`](../../../crates/domain/src/main_zone.rs), and
+[`bridge.rs`](../../../crates/gui-lib/src/bridge.rs). The verification review also
+covers the inline tests, [`async_apis.rs`](../../../crates/gui-lib/tests/async_apis.rs),
+the root [`Makefile`](../../../Makefile), and the current boundary checker.
 
 Protocol conclusions use this evidence order:
 

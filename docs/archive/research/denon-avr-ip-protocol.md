@@ -1,7 +1,7 @@
 # Archived: Denon and Marantz AVR IP protocol research
 
 This is preserved historical research. Active project scope and user guidance
-are maintained under `docs/v1/` and `docs/v2/`.
+are maintained under `docs/archive/v1/` and `docs/archive/v2/`.
 
 Status: research/reference documentation. The primary project target is the Denon AVR-X3800H, with Denon/Marantz variation recorded rather than assumed away. Facts are classified as **official**, **community-observed**, or **live validation required**.
 

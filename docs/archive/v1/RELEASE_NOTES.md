@@ -79,7 +79,7 @@ own design and evidence:
 - Additional zones and broader model compatibility
 - Version 2 GUI work
 
-See the Architecture TODO in [ARCHITECTURE.md](../../ARCHITECTURE.md) for the
+See the Architecture TODO in [ARCHITECTURE.md](../../../ARCHITECTURE.md) for the
 deferred work list.
 
 ## Compatibility and maintenance notes
@@ -92,7 +92,7 @@ deferred work list.
 
 ## Documentation
 
-- [CLI user guide](../cli-user-guide.md)
+- [CLI user guide](../../cli-user-guide.md)
 - [Phase 1 overview](phase-1-overview.md) and
   [Phase 1 architecture](phase-1-architecture.md)
 - [Phase 2 overview](phase-2-overview.md) and

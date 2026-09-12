@@ -1,51 +1,80 @@
 # Architecture
 
-The project is a virtual Cargo workspace with independently compiled layered
-packages. Presentation assembles application policy with concrete adapters;
-network, filesystem, and runtime details stay at the edge.
+This is the authoritative description of the current implementation. Protocol
+research and archived plans provide evidence and history; neither changes the
+rules here.
+
+## Workspace and dependencies
+
+The Cargo workspace contains independently compiled packages. Its permitted
+workspace edges are enforced by `make boundary`.
+
+| Package | Owns |
+| --- | --- |
+| `crates/domain` | Receiver identity, configuration, capabilities, state, intents, and evidence/validity types. |
+| `crates/protocol` | AVR, HEOS, and AppCommand framing, wire values, and parsing. |
+| `crates/application` | Use-case policy, ports, status/control policy, and the serialized receiver coordinator. |
+| `crates/infrastructure` | SSDP discovery, YAML persistence, TCP/HTTP adapters, and concrete receiver sessions. |
+| `crates/gui-lib` | Iced presentation state, reducers, views, and the GUI controller bridge. |
+| `apps/cli` | Short-lived CLI composition over the canonical receiver service. |
+| `apps/desktop` | Native GUI composition, logging, and concrete adapter wiring. |
+| `apps/diagnostics` | Explicit, read-only evidence probes. |
 
 ```text
-CLI / Iced GUI
-      |
-application ports and use cases
-      |
-domain types     protocol primitives
-      ^                 ^
-      \---- infrastructure adapters ----/
+protocol       → domain
+application    → domain
+infrastructure → application, domain, protocol
+gui-lib        → application, domain
+cli            → application, domain, infrastructure
+desktop        → gui-lib, application, domain, infrastructure
+diagnostics    → domain, infrastructure, protocol
 ```
 
-| Layer | Responsibility |
-| --- | --- |
-| `crates/domain` | Receiver identity, capabilities, Main Zone, and audio-context values. |
-| `crates/protocol` | Transport-independent AVR, HEOS, and AppCommand framing/parsing. |
-| `crates/application` | Ports, focused policies, and serialized controller lifecycle. |
-| `crates/infrastructure` | SSDP, YAML, synchronous TCP/HTTP, and the Tokio AVR session. |
-| `crates/gui-lib` | Iced state, reducer, views, and serialized controller bridge. |
-| `apps/cli`, `apps/desktop`, `apps/diagnostics` | Delivery and concrete composition. |
+`domain` imports no workspace package. `protocol` and `application` depend only
+on `domain`; infrastructure may compose all three core crates. `gui-lib` uses
+application and domain only. Delivery packages compose the dependencies their
+delivery role requires, but do not create competing architectural contracts.
 
-## Invariants
+## Session boundary
+
+`crates/application/src/ports.rs` is the one definition site for
+`SessionEvent`, `ReceiverSession`, and `SessionFactory`. A `ReceiverSession`
+combines reads, one-shot writes, lifecycle events, and shutdown because one
+owner is necessary to preserve ordering. `SessionFactory` creates a session;
+the application coordinator owns it for its complete lifetime. GUI bridges and
+adapters forward through that boundary rather than owning or duplicating a
+session.
+
+The canonical async receiver service serializes connection lifecycle and
+operations. A reconnect or receiver change invalidates authority from the old
+connection. Uncorrelated receiver lines remain events rather than being
+assigned to a command opportunistically.
+
+## Receiver-correctness invariants
 
 - AVR commands end in one CR; HEOS commands end in CRLF.
-- Domain and protocol code have no socket, filesystem, runtime, or presentation dependency.
-- Operations are bounded and report context; sessions serialize writes.
-- Uncorrelated lines remain events, and reconnect invalidates prior authority.
-- Unsupported, malformed, unavailable, disconnected, and unknown data stay distinct.
-- Capabilities are model- and evidence-bound; unvalidated models are read-only.
-- State-changing controls execute once and require authoritative confirmation.
-- Tests use deterministic fakes or local servers; live validation records model,
-  firmware, settings, command, response, and date.
+- Domain and protocol code do not depend on sockets, filesystems, runtimes, or
+  presentation.
+- I/O is bounded and failures retain useful context.
+- State distinguishes unsupported, malformed, unavailable, disconnected,
+  stale, and unknown observations; unavailable data is never invented.
+- Capability claims are model- and evidence-bound. Unvalidated behavior stays
+  read-only or reports unsupported.
+- A state-changing operation dispatches at most once once dispatch begins, and
+  its result is only authoritative when receiver evidence confirms it.
+- Deterministic fakes or local servers cover ordinary tests. Live validation
+  records the model, firmware, relevant settings, command, response, and date.
 
-## Roadmap
+## Delivery and enforcement
 
-Phases 1 and 3–7 established the layers, controls, controller, desktop GUI,
-listening modes, and diagnostic observations. Phase 8 adds Quick Select and EQ
-status. Phase 9 replaced the former package with an enforced Cargo workspace;
-Phase 10 applies the desktop visual identity. Detailed scope and acceptance
-criteria live in [the V2 plans](docs/v2/phase-8-quick-select-eq-overview.md),
-[Phase 9](docs/v2/phase-9-workspace-refactor-overview.md), and
-[Phase 10](docs/v2/phase-10-visual-identity-overview.md). The active Version
-3 work includes [Phase 1: X3800H HTTP probe reliability](docs/v3/phase-1-x3800h-http-info-probe-overview.md)
-and the completed [Phase 3 architecture refactor](docs/v3/phase-3-refactoring-overview.md).
+The CLI and desktop executable are composition roots. The CLI selects a
+receiver, connects a canonical async service, synchronizes before reads or
+writes, and closes the service after its short-lived command. Diagnostics are
+deliberately independent of normal delivery behavior and never issue writes.
 
-Future HEOS, JSON contracts, additional zones, and broader-model support need
-their own evidence and design.
+`make boundary` checks source imports, prohibits the retired root `src/` tree,
+validates the resolved Cargo workspace edges, and ensures the session contracts
+have exactly one definition. Run it whenever a package dependency or boundary
+changes. Current engineering policy and verification gates are in
+[docs/contributing.md](docs/contributing.md) and
+[docs/development.md](docs/development.md).

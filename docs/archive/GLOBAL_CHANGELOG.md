@@ -10,7 +10,7 @@ and this project adheres to Semantic Versioning.
 
 ### Fixed
 
-- Added the active [Version 3 Phase 1 plan](v3/phase-1-x3800h-http-info-probe-overview.md)
+- Added the then-active [Version 3 Phase 1 plan](v3/phase-1-x3800h-http-info-probe-overview.md)
   for reliable, read-only X3800H HTTP information-probe evidence capture.
 - Fixed AppCommand request serialization for AVR-X3800H firmware that returns
   an empty response for compact XML.
@@ -60,6 +60,5 @@ and this project adheres to Semantic Versioning.
 ## Documentation hierarchy exception
 
 Retired or superseded documentation may be moved into `docs/archive/`.
-Active version documentation remains directly under `docs/v1/` or `docs/v2/`
-using the phase-in-filename convention; archive content must not introduce
-phase subdirectories.
+This historical hierarchy description is superseded by the current
+[archive policy](../v3/phase-6-documentation-consolidation-architecture.md).

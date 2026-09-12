@@ -3,68 +3,48 @@
 ## Prerequisites
 
 - Rust stable and Cargo.
-- `rg` and `jq` for the architecture boundary checks.
-- A reachable Denon or Marantz receiver for optional live validation.
-- Windows, macOS, or Linux with a working local network interface.
+- `rg` and `jq` for architecture-boundary checks.
+- A reachable Denon or Marantz receiver only for optional live validation.
+- Windows, macOS, or Linux with a usable local network interface.
 
 ## Common commands
 
 Run these from the repository root:
 
 ```text
-make check          # format, boundaries, compile, and tests
-make boundary      # verify workspace package graph and source boundaries
+make check          # formatting, boundaries, deterministic checks, compile, tests
+make format-check   # verify Rust formatting without changing files
+make boundary       # verify workspace package graph and source boundaries
 make clippy         # Clippy with warnings denied
 make format         # format Rust sources
 make test           # run all tests
 make run ARGS="help"
-make run-gui          # run the native Iced desktop GUI
+make run-gui        # run the native Iced desktop GUI
 make run-diagnostics ARGS="HOST TIMEOUT-MS MODEL FIRMWARE"
-                      # run the read-only Telnet diagnostics probe
 make run-diagnostics-http ARGS="HOST TIMEOUT-MS MODEL FIRMWARE [PORT]"
-                      # run the read-only HTTP AppCommand evidence probe
-make package-macos       # build the unsigned Apple Silicon .app and .dmg
-cargo run -p denon-avr-diagnostics --bin source-catalog-probe -- \
-  http://HOST:8080/goform/AppCommand.xml TIMEOUT-MS MODEL FIRMWARE SCENARIO
-                      # diagnostic-only candidate source-catalog read; no writes
-cargo run -p denon-avr-diagnostics --bin quick-select-name-probe -- \
-  http://HOST:PORT TIMEOUT-MS MODEL FIRMWARE SCENARIO
-                      # four fixed XML GETs plus receiver-advertised name read; no writes
-make capture-visual-baselines CAPTURES=target/visual-captures
-                      # captures every deterministic scenario at 100% and 200%, then exits
-make visual-baselines PLATFORM=linux CAPTURES=target/visual-captures/linux
-                      # compare all captured PNGs to committed Linux baselines
+make package-macos  # build the unsigned Apple Silicon .app and .dmg
 ```
 
-On an Apple Silicon Mac, `make package-macos` writes
-`target/release/macos/Denon AVR Remote.app` and
-`target/release/macos/Denon-AVR-Remote-<version>-arm64.dmg`. The release is
-unsigned and unnotarized; macOS Gatekeeper may require right-clicking the app
-and choosing Open on its first launch. See the [Phase 4 overview](v3/phase-4-macos-bundle-overview.md)
-for prerequisites and configuration details.
+Additional read-only diagnostics and visual-regression commands are documented
+in the [Makefile](../Makefile). Do not run live validation in ordinary unit-test
+work. `make test-live-x3800h` is opt-in; state-restoring live controls also
+require `ALLOW_RECEIVER_WRITES=1`, `DENON_X3800H_HOST`, and a safe-volume value.
 
-Equivalent Cargo commands are documented by the Makefile. Do not run live
-receiver validation as part of ordinary unit-test work.
+On an Apple Silicon Mac, `make package-macos` writes the unsigned app and DMG
+under `target/release/macos/`. Gatekeeper may require right-clicking the app
+and choosing Open on its first launch.
 
-Contribution rules and engineering invariants are maintained in the
-[contributing guide](contributing.md).
+## Verification gates
 
-## Workspace architecture
+Run `make format-check`, `make boundary`, and `git diff --check` for every
+change. Run `make check` for implementation changes; run `make clippy` before
+submission when Rust code changes. `make boundary` must also be run after moving
+code or changing a package dependency.
 
-The active implementation is entirely under `crates/` and `apps/`; a root
-`src/` tree is intentionally absent. `domain` is runtime- and I/O-free.
-`protocol` owns wire parsing, `application` owns ports and use-case policy,
-and `infrastructure` owns concrete adapters. GUI, CLI, desktop composition,
-and read-only diagnostics are delivery packages. Run `make boundary` after
-moving code or changing a package dependency.
+## Documentation locations
 
-## Documentation
-
-Active version documentation is under `docs/v1/`, `docs/v2/`, and `docs/v3/`. Put retired
-material under `docs/archive/`. Phase directories are not used; phase numbers belong in filenames. Keep the root `README.md` concise and link to detailed guides from there.
-
-Before submitting documentation changes, check links and run:
-
-```text
-git diff --check
-```
+Use the [documentation map](README.md) to find current guidance.
+`ARCHITECTURE.md` is the current architectural reference; `contributing.md`
+contains engineering policy; this document contains commands and gates.
+Research in `docs/research/` is supporting evidence. Completed material is in
+`docs/archive/` and is not active guidance.
