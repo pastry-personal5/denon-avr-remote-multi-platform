@@ -760,6 +760,11 @@ fn reduce_line(
         states.send_replace(state);
         return None;
     };
+    // `MVMAX …` is a supported AVR metadata frame. It has no Main Zone state
+    // equivalent, so ignore it without manufacturing diagnostic churn.
+    if matches!(&parsed, X3800hFrame::VolumeLimit(_)) {
+        return None;
+    }
     let Some(frame) = core_frame(parsed.clone()) else {
         debug!(frame = %line, "unknown X3800H frame retained as diagnostic");
         let mut state = states.borrow().clone();

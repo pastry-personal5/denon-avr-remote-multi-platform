@@ -1,7 +1,7 @@
 //! Dashboard controls and receiver-status visualizations.
 
 use super::*;
-use iced::widget::{button, column, container, row, slider, text};
+use iced::widget::{button, column, container, mouse_area, row, slider, text};
 
 /// Denon `MV00` is -80.0 dB and `MV985` is +18.5 dB. Keep the desktop
 /// control in that receiver-visible unit instead of treating the wire code as
@@ -56,7 +56,11 @@ pub(crate) fn volume_level_for_slider(value: f32) -> Result<denon_avr_domain::Vo
     denon_avr_domain::VolumeLevel::from_native_code(native_code).map_err(str::to_owned)
 }
 
-pub(crate) fn volume_slider<'a>(value: f32, shown_value: Option<f32>) -> Element<'a, Message> {
+pub(crate) fn volume_slider<'a>(
+    value: f32,
+    shown_value: Option<f32>,
+    interactive: bool,
+) -> Element<'a, Message> {
     let bubble: Element<'a, Message> = shown_value.map_or_else(
         || space().into(),
         |shown_value| {
@@ -76,16 +80,31 @@ pub(crate) fn volume_slider<'a>(value: f32, shown_value: Option<f32>) -> Element
             .into()
         },
     );
+    let slider = slider(MIN_VOLUME_DB..=MAX_VOLUME_DB, value, Message::VolumeChanged)
+        .step(0.5_f32)
+        .on_release(Message::CommitVolume)
+        .width(Length::Fill);
+    let slider: Element<'a, Message> = if interactive {
+        slider.into()
+    } else {
+        // Iced's Slider has no disabled state.  An inert top layer both keeps
+        // its normal dimensions and prevents pointer events reaching it,
+        // instead of merely discarding a value change after the thumb moves.
+        stack![
+            slider,
+            mouse_area(space().width(Length::Fill).height(Length::Fill))
+                .interaction(iced::mouse::Interaction::NotAllowed),
+        ]
+        .width(Length::Fill)
+        .into()
+    };
     column![
         // Always reserve the bubble lane. Changing the slider's vertical
         // position while a pointer drag is in progress causes visible jitter.
         container(bubble)
             .width(Length::Fill)
             .height(Length::Fixed(VOLUME_INDICATOR_HEIGHT)),
-        slider(MIN_VOLUME_DB..=MAX_VOLUME_DB, value, Message::VolumeChanged)
-            .step(0.5_f32)
-            .on_release(Message::CommitVolume)
-            .width(Length::Fill),
+        slider,
     ]
     .spacing(2)
     .into()
@@ -142,7 +161,6 @@ pub(crate) fn power_recovery(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn dashboard_header(
     power: Option<&PowerState>,
     power_action: Option<Message>,
@@ -151,13 +169,11 @@ pub(crate) fn dashboard_header(
     zone2_popup_action: Option<Message>,
     source: &str,
     catalog: SourceCatalog,
-    waiting: bool,
-    frame: u16,
 ) -> Element<'static, Message> {
     let (icon, color) = match power {
         Some(PowerState::On) => ("⏻", design::SUCCESS),
         Some(PowerState::Standby) => ("⏻", design::MUTED),
-        None => (if waiting { "·" } else { "" }, design::MUTED),
+        None => ("", design::MUTED),
     };
     let power_button = match power_action.clone() {
         Some(action) => button(text(icon).size(24).color(color))
@@ -174,7 +190,6 @@ pub(crate) fn dashboard_header(
             match state {
                 Some(PowerState::On) => "ON",
                 Some(PowerState::Standby) => "STANDBY",
-                None if waiting => waiting_dots(frame),
                 None => "",
             }
         )
@@ -386,17 +401,12 @@ pub(crate) fn source_is_picker_entry(source: &str) -> bool {
 pub(crate) fn information_card<'a>(
     title: &'a str,
     values: &[(&'a str, &'a FieldStatus<String>)],
-    waiting: bool,
-    frame: u16,
 ) -> iced::widget::Column<'a, Message> {
     let content = values
         .iter()
         .fold(column![].spacing(5), |column, (label, value)| {
             let displayed = match value {
                 FieldStatus::Value(value) => value.as_str(),
-                FieldStatus::Unavailable(error) if waiting && error.message == "not queried" => {
-                    waiting_dots(frame)
-                }
                 FieldStatus::Unavailable(_) => "",
             };
             column.push(
@@ -415,10 +425,6 @@ pub(crate) fn information_card<'a>(
             .center_x(Length::Fill),
         content.padding(10),
     ]
-}
-
-pub(crate) fn waiting_dots(frame: u16) -> &'static str {
-    ["·  ", "·· ", "···", " ··"][(frame as usize / 2) % 4]
 }
 
 #[allow(dead_code)]

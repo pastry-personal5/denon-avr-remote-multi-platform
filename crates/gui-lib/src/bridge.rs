@@ -125,7 +125,11 @@ async fn run_bridge(
 ) {
     let mut handle = handle;
     let mut pending_request_id: Option<u64> = None;
-    let mut pending_generation: u64 = 0;
+    // Receiver state is authoritative within a connection generation, while
+    // GUI request IDs also advance for unrelated work (for example, a source
+    // catalog read). Keep the generation on every forwarded event so the GUI
+    // can distinguish a late same-connection snapshot from old-receiver data.
+    let mut connection_generation: u64 = 0;
     loop {
         tokio::select! {
             Some(command) = commands.recv() => {
@@ -151,18 +155,20 @@ async fn run_bridge(
                     .unwrap_or_else(|error| ReceiverEvent::Diagnostic(
                         denon_avr_application::Diagnostic::Timeout { context: error.to_string() }
                     ));
-                let generation = event_generation(&event).unwrap_or(0);
                 pending_request_id = Some(request_id);
-                pending_generation = generation;
                 let mut reply_already_forwarded = false;
                 while let Ok(Some(controller_event)) =
                     tokio::time::timeout(Duration::from_millis(1), handle.next_event()).await
                 {
                     reply_already_forwarded |= controller_event == event;
-                    let generation = event_generation(&controller_event).unwrap_or(0);
+                    let generation = bridge_event_generation(
+                        &controller_event,
+                        &mut connection_generation,
+                    );
                     let _ = event_sender.send(BridgeEvent { request_id, generation, event: controller_event }).await;
                 }
                 if !reply_already_forwarded {
+                    let generation = bridge_event_generation(&event, &mut connection_generation);
                     let _ = event_sender.send(BridgeEvent { request_id, generation, event }).await;
                 }
                 if is_shutdown {
@@ -171,7 +177,7 @@ async fn run_bridge(
                 }
             }
             Some(controller_event) = handle.next_event() => {
-                let generation = event_generation(&controller_event).unwrap_or(pending_generation);
+                let generation = bridge_event_generation(&controller_event, &mut connection_generation);
                 let request_id = pending_request_id.unwrap_or(0);
                 let _ = event_sender.send(BridgeEvent { request_id, generation, event: controller_event }).await;
             }
@@ -179,13 +185,21 @@ async fn run_bridge(
     }
 }
 
-fn event_generation(event: &ReceiverEvent) -> Option<u64> {
+fn bridge_event_generation(event: &ReceiverEvent, connection_generation: &mut u64) -> u64 {
     match event {
         ReceiverEvent::Lifecycle(denon_avr_application::Lifecycle::Connected { generation })
-        | ReceiverEvent::Lifecycle(denon_avr_application::Lifecycle::Reconnecting { generation }) => {
-            Some(*generation)
+        | ReceiverEvent::Lifecycle(denon_avr_application::Lifecycle::Reconnecting { generation }) =>
+        {
+            *connection_generation = *generation;
+            *generation
         }
-        _ => None,
+        // A selection starts a new receiver context. Do not label any
+        // selection-era event with the previous receiver's generation.
+        ReceiverEvent::Lifecycle(denon_avr_application::Lifecycle::Selected) => {
+            *connection_generation = 0;
+            0
+        }
+        _ => *connection_generation,
     }
 }
 
@@ -239,5 +253,37 @@ async fn connect_and_refresh(
         handle.refresh().await
     } else {
         connected
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use denon_avr_application::Lifecycle;
+
+    #[test]
+    fn snapshots_keep_the_current_connection_generation() {
+        let mut generation = 0;
+        assert_eq!(
+            bridge_event_generation(
+                &ReceiverEvent::Lifecycle(Lifecycle::Connected { generation: 7 }),
+                &mut generation,
+            ),
+            7
+        );
+        assert_eq!(
+            bridge_event_generation(
+                &ReceiverEvent::Snapshot(denon_avr_domain::MainZoneSnapshot::default()),
+                &mut generation,
+            ),
+            7
+        );
+        assert_eq!(
+            bridge_event_generation(
+                &ReceiverEvent::Lifecycle(Lifecycle::Selected),
+                &mut generation
+            ),
+            0
+        );
     }
 }

@@ -61,6 +61,7 @@ struct CanonicalSessionAdapter {
     states: denon_avr_application::StateSubscription,
     last_state: denon_avr_domain::ReceiverState,
     connected: bool,
+    pending_connected: bool,
     next_operation: u64,
 }
 
@@ -75,6 +76,7 @@ impl CanonicalSessionAdapter {
             states,
             last_state,
             connected: false,
+            pending_connected: false,
             next_operation: 1,
         }
     }
@@ -226,12 +228,31 @@ impl ReceiverSession for CanonicalSessionAdapter {
                     denon_avr_domain::ConnectionState::Connected,
                 ));
             }
+            // `watch` coalesces state updates. A disconnect followed quickly
+            // by a new epoch can therefore arrive as one epoch-to-epoch
+            // transition. Preserve the lifecycle pair the application needs
+            // to invalidate then resynchronize its legacy projection.
+            if self.pending_connected {
+                self.pending_connected = false;
+                return Ok(SessionEvent::Connection(
+                    denon_avr_domain::ConnectionState::Connected,
+                ));
+            }
             loop {
                 let state = self.states.changed().await?;
                 let previous_epoch = self.last_state.epoch;
                 let current_epoch = state.epoch;
                 let value = changed_value(&self.last_state, &state);
                 self.last_state = state;
+                if previous_epoch.is_some()
+                    && current_epoch.is_some()
+                    && previous_epoch != current_epoch
+                {
+                    self.pending_connected = true;
+                    return Ok(SessionEvent::Connection(
+                        denon_avr_domain::ConnectionState::Reconnecting,
+                    ));
+                }
                 if let Some(connection) = lifecycle_transition(previous_epoch, current_epoch) {
                     return Ok(SessionEvent::Connection(connection));
                 }
@@ -502,13 +523,28 @@ fn changed_value(
             return Some(MainZoneValue::Mute(value.value));
         }
     }
-    state
+    if previous
         .main_zone
         .sound_mode
         .last_good
         .as_ref()
-        .and_then(|o| SurroundMode::new(o.value.id.clone()).ok())
-        .map(MainZoneValue::SurroundMode)
+        .map(|o| o.value.id.as_str())
+        != state
+            .main_zone
+            .sound_mode
+            .last_good
+            .as_ref()
+            .map(|o| o.value.id.as_str())
+    {
+        return state
+            .main_zone
+            .sound_mode
+            .last_good
+            .as_ref()
+            .and_then(|o| SurroundMode::new(o.value.id.clone()).ok())
+            .map(MainZoneValue::SurroundMode);
+    }
+    None
 }
 
 #[cfg(test)]
@@ -560,5 +596,28 @@ mod tests {
         );
         assert_eq!(lifecycle_transition(Some(Epoch(1)), Some(Epoch(2))), None);
         assert_eq!(lifecycle_transition(None, None), None);
+    }
+
+    #[test]
+    fn unchanged_sound_mode_does_not_fabricate_a_main_zone_event() {
+        let receiver = ReceiverId::new("adapter-test").unwrap();
+        let mut previous = denon_avr_domain::ReceiverState::new(receiver.clone());
+        previous.establish_epoch(Epoch(1));
+        previous.reduce(
+            &receiver,
+            Epoch(1),
+            FrameSeq(1),
+            MonotonicMillis(0),
+            MonotonicMillis(10_000),
+            ObservationOrigin::ReceiverFrame,
+            CoreFrame::SoundMode(denon_avr_domain::SoundModeStatus {
+                id: "DOLBY SURROUND".into(),
+                raw: "MSDOLBY SURROUND".into(),
+            }),
+        );
+        let mut unrelated = previous.clone();
+        unrelated.record_diagnostic("unrelated frame");
+
+        assert!(changed_value(&previous, &unrelated).is_none());
     }
 }

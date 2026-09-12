@@ -4,23 +4,17 @@ use super::*;
 use iced::widget::{button, column, radio, scrollable};
 
 impl Gui {
-    pub(super) fn dashboard(&self) -> iced::widget::Column<'_, Message> {
+    pub(super) fn dashboard(&self) -> Element<'_, Message> {
         let capabilities = self.selected_capabilities();
         let writable = capabilities.writable;
-        let waiting = self.status_waiting();
-        let frame = self.status_wait_ticks;
+        let sound_mode_pending = self.sound_mode_request_id.is_some();
+        let pending = dashboard_pending(self.status_waiting(), sound_mode_pending);
         let input = self
             .snapshot
             .input
             .value()
             .map(ToString::to_string)
-            .unwrap_or_else(|| {
-                if waiting {
-                    waiting_dots(frame).into()
-                } else {
-                    String::new()
-                }
-            });
+            .unwrap_or_default();
         let power_action = (writable
             && main_zone_power_control(self.snapshot.power.value()).is_some())
         .then_some(Message::ToggleMainZonePower);
@@ -36,8 +30,6 @@ impl Gui {
             zone2_popup_action,
             &input,
             self.source_catalog.clone(),
-            waiting,
-            frame,
         );
         if self.snapshot.power.value() == Some(&PowerState::Standby) {
             return column![container(stack![
@@ -48,19 +40,11 @@ impl Gui {
                 container(header).width(Length::Fill)
             ])
             .width(Length::Fill)
-            .height(Length::Fixed(600.0))];
+            .height(Length::Fixed(600.0))]
+            .into();
         }
-        if self.snapshot.power.value() != Some(&PowerState::On) {
-            let (title, detail, action) = if waiting {
-                (
-                    format!("WAITING {}", waiting_dots(frame)),
-                    String::new(),
-                    None,
-                )
-            } else {
-                let (title, detail, action) = power_recovery(&self.lifecycle, &self.snapshot);
-                (title.to_owned(), detail, action)
-            };
+        if self.snapshot.power.value() != Some(&PowerState::On) && !pending {
+            let (title, detail, action) = power_recovery(&self.lifecycle, &self.snapshot);
             let action: Element<'_, Message> = action.map_or_else(
                 || space().into(),
                 |(label, message)| components::action(label, message).into(),
@@ -80,7 +64,8 @@ impl Gui {
                 .height(Length::Fixed(520.0))
                 .center(Length::Fill)
             ]
-            .spacing(18);
+            .spacing(18)
+            .into();
         }
 
         let quick_select_supported = capabilities.quick_select_recall;
@@ -109,58 +94,56 @@ impl Gui {
         };
         let information = &self.snapshot.http_information;
         // Keep the established volume control visible while its command is in
-        // flight. `volume_is_interactive` still rejects input until the
-        // receiver confirms the command, but replacing the slider with a
+        // flight. The slider remains inert until the receiver confirms the
+        // command, but replacing it with a
         // transient status label makes an ordinary adjustment look like the
         // control disappeared.
-        let volume_controls: Element<'_, Message> = if self.snapshot.volume.value().is_some() {
-            container(
-                row![
-                    container(
-                        column![
-                            container(volume_slider(self.volume_slider, self.volume_value,))
-                                .width(Length::Fill),
-                            row![
-                                text("-80.0 dB").size(11).color(design::MUTED),
-                                space().width(Length::Fill),
-                                text("+18.5 dB").size(11).color(design::MUTED),
-                            ]
-                            .width(Length::Fill),
-                        ]
-                        .spacing(2)
+        let volume_controls: Element<'_, Message> = container(
+            row![
+                container(
+                    column![
+                        container(volume_slider(
+                            self.volume_slider,
+                            self.volume_value,
+                            self.volume_is_interactive(),
+                        ))
                         .width(Length::Fill),
-                    )
-                    .width(Length::FillPortion(2))
-                    .height(Length::Fill)
-                    .center_y(Length::Fill),
-                    column![
-                        space().height(Length::Fixed(VOLUME_CONTROL_TOP_OFFSET)),
-                        mute_controls,
-                    ],
-                    column![
-                        space().height(Length::Fixed(VOLUME_CONTROL_TOP_OFFSET)),
                         row![
-                            components::quiet_action("≪", Message::AdjustVolume(-10.0)),
-                            components::quiet_action("−", Message::AdjustVolume(-0.5)),
-                            components::quiet_action("+", Message::AdjustVolume(0.5)),
-                            components::quiet_action("≫", Message::AdjustVolume(10.0)),
+                            text("-80.0 dB").size(11).color(design::MUTED),
+                            space().width(Length::Fill),
+                            text("+18.5 dB").size(11).color(design::MUTED),
                         ]
-                        .spacing(4),
-                    ],
-                ]
-                .spacing(8)
-                .align_y(iced::Alignment::Center)
-                .padding([4, 0]),
-            )
-            .width(Length::Fill)
-            .height(Length::Fixed(VOLUME_ROW_HEIGHT))
-            .into()
-        } else {
-            text("Volume controls are unavailable until the receiver reports its current volume.")
-                .color(design::MUTED)
-                .into()
-        };
-        column![
+                        .width(Length::Fill),
+                    ]
+                    .spacing(2)
+                    .width(Length::Fill),
+                )
+                .width(Length::FillPortion(2))
+                .height(Length::Fill)
+                .center_y(Length::Fill),
+                column![
+                    space().height(Length::Fixed(VOLUME_CONTROL_TOP_OFFSET)),
+                    mute_controls,
+                ],
+                column![
+                    space().height(Length::Fixed(VOLUME_CONTROL_TOP_OFFSET)),
+                    row![
+                        components::quiet_action("≪", Message::AdjustVolume(-10.0)),
+                        components::quiet_action("−", Message::AdjustVolume(-0.5)),
+                        components::quiet_action("+", Message::AdjustVolume(0.5)),
+                        components::quiet_action("≫", Message::AdjustVolume(10.0)),
+                    ]
+                    .spacing(4),
+                ],
+            ]
+            .spacing(8)
+            .align_y(iced::Alignment::Center)
+            .padding([4, 0]),
+        )
+        .width(Length::Fill)
+        .height(Length::Fixed(VOLUME_ROW_HEIGHT))
+        .into();
+        let dashboard = column![
             header,
             // The source picker shares the power-control row. This lead makes
             // that compact row read 16 px above the information dashboard.
@@ -214,8 +197,6 @@ impl Gui {
                                 ("Sound", &information.audio.sound),
                                 ("Rate", &information.audio.sample_rate),
                             ],
-                            waiting,
-                            frame,
                         ))
                         .width(Length::Fill)
                         .height(Length::Fixed(DASHBOARD_INFORMATION_BOTTOM_ROW_HEIGHT))
@@ -227,8 +208,6 @@ impl Gui {
                                 ("HDMI in", &information.video.hdmi_input),
                                 ("HDMI out", &information.video.hdmi_output)
                             ],
-                            waiting,
-                            frame,
                         ))
                         .width(Length::Fill)
                         .height(Length::Fixed(DASHBOARD_INFORMATION_BOTTOM_ROW_HEIGHT))
@@ -240,8 +219,6 @@ impl Gui {
                                 ("Dynamic EQ", &information.audyssey.dynamic_eq),
                                 ("Dynamic Volume", &information.audyssey.dynamic_volume),
                             ],
-                            waiting,
-                            frame,
                         ))
                         .width(Length::Fill)
                         .height(Length::Fixed(DASHBOARD_INFORMATION_BOTTOM_ROW_HEIGHT))
@@ -257,12 +234,9 @@ impl Gui {
                         .surround_mode
                         .value()
                         .map(|mode| mode.as_str()),
-                    self.snapshot
-                        .sound_mode_category
-                        .or(self.sound_mode_category_preference),
+                    self.sound_mode_category_filter,
                     &self.configured,
-                    waiting,
-                    frame,
+                    self.sound_mode_request_id.is_none(),
                 ),
             ]
             .spacing(DASHBOARD_INFORMATION_ROW_GAP),
@@ -274,124 +248,131 @@ impl Gui {
                 self.source_catalog.clone(),
             ),
         ]
-        .spacing(10)
+        .spacing(10);
+        if pending {
+            stack![dashboard, sound_mode_wait_overlay(self.launch_frame),].into()
+        } else {
+            dashboard.into()
+        }
     }
+}
+
+fn sound_mode_wait_overlay(frame: u8) -> Element<'static, Message> {
+    // The same text-free spinner used during launch, deliberately without a
+    // panel background so the current dashboard remains visible below it.
+    launch_waiting_animation(frame)
+}
+
+fn dashboard_pending(status_waiting: bool, sound_mode_pending: bool) -> bool {
+    status_waiting || sound_mode_pending
 }
 
 fn sound_mode_panel<'a>(
     capabilities: ModelCapabilities,
     active: Option<&'a str>,
-    selected_category: Option<SoundModeCategory>,
+    category_filter: Option<SoundModeCategory>,
     favorites: &'a ConfiguredReceivers,
-    waiting: bool,
-    frame: u16,
+    controls_enabled: bool,
 ) -> Element<'a, Message> {
-    use denon_avr_domain::SoundModeCategory;
-    let categories = [
-        ("MOVIE", SoundModeCategory::Movie),
-        ("MUSIC", SoundModeCategory::Music),
-        ("GAME", SoundModeCategory::Game),
-        ("PURE", SoundModeCategory::Pure),
-    ];
-    let rows = categories
-        .into_iter()
-        .flat_map(|(category, kind)| {
-            capabilities
-                .sound_modes(kind)
-                .iter()
-                .enumerate()
-                .map(move |(index, mode)| (category, kind, *mode, index == 0))
-        })
-        .collect::<Vec<_>>();
-    // A mode can appear in more than one organizational category. Select the
-    // first matching row so the receiver-reported `MS…` state lights exactly
-    // one radio button.
-    let selected = selected_sound_mode_index(&rows, active, selected_category);
-    let current_category =
-        selected.and_then(|index| rows.get(index).map(|(_, category, _, _)| *category));
-    let table = rows.into_iter().enumerate().fold(
-        column![].spacing(2),
-        |table, (index, (category, kind, mode, group_start))| {
-            let selected_row = selected == Some(index);
-            let row_style = if selected_row {
-                design::sound_mode_row_selected
-            } else if index.is_multiple_of(2) {
-                design::sound_mode_row_a
-            } else {
-                design::sound_mode_row_b
-            };
-            let favorite = favorites.is_sound_mode_favorite(kind, mode);
-            let category_control: Element<'_, Message> = if group_start {
-                button(
-                    text(category)
-                        .size(9)
-                        .width(Length::Fill)
-                        .align_x(iced::alignment::Horizontal::Center),
-                )
-                .padding([3, 5])
-                .style(if current_category == Some(kind) {
-                    design::primary
-                } else {
-                    design::secondary
-                })
-                .on_press(Message::SelectSoundModeCategory(kind))
-                .width(Length::Fixed(52.0))
-                .into()
-            } else {
-                container(text("")).width(Length::Fixed(52.0)).into()
-            };
-            table.push(
-                container(
-                    row![
-                        category_control,
-                        text(mode).size(9).width(Length::Fill),
-                        button(text(if favorite { "♥" } else { "♡" }).size(13))
-                            .padding([0, 3])
-                            .style(if favorite {
-                                design::sound_mode_favorite_heart
-                            } else {
-                                design::sound_mode_inactive_heart
-                            })
-                            .on_press(Message::ToggleSoundModeFavorite(kind, mode.into())),
-                        container(
-                            radio("", index, selected, |_| Message::SelectSurroundMode(
-                                kind,
-                                mode.into()
-                            ))
-                            .size(12)
-                            .spacing(0)
-                            .style(design::sound_mode_radio),
-                        )
-                        .width(Length::Fixed(40.0))
-                        .padding(iced::Padding::ZERO.right(12)),
-                    ]
-                    .align_y(iced::Alignment::Center)
-                    .spacing(6),
-                )
-                .padding([3, 6])
-                .width(Length::Fill)
-                .style(row_style),
+    let categories = sound_mode_categories();
+    let rows = sound_mode_rows(capabilities, category_filter);
+    let selected = selected_sound_mode_index(&rows, active);
+    let category_buttons = categories.into_iter().fold(
+        row![].spacing(4).width(Length::Fill),
+        |buttons, (label, category)| {
+            let mut control = button(
+                text(label)
+                    .size(9)
+                    .width(Length::Fill)
+                    .align_x(iced::alignment::Horizontal::Center),
             )
+            .padding([4, 5])
+            .style(if category_filter == Some(category) {
+                design::primary
+            } else {
+                design::secondary
+            })
+            .width(Length::FillPortion(1));
+            if sound_mode_category_is_interactive(capabilities, category, controls_enabled) {
+                control = control.on_press(Message::SelectSoundModeCategory(category));
+            }
+            buttons.push(control)
         },
     );
+    let table =
+        rows.into_iter()
+            .enumerate()
+            .fold(column![].spacing(2), |table, (index, (kind, mode))| {
+                let selected_row = selected == Some(index);
+                let row_style = if selected_row {
+                    design::sound_mode_row_selected
+                } else if index.is_multiple_of(2) {
+                    design::sound_mode_row_a
+                } else {
+                    design::sound_mode_row_b
+                };
+                let favorite = favorites.is_sound_mode_favorite(mode);
+                let select_control: Element<'_, Message> = if controls_enabled {
+                    radio("", index, selected, |_| {
+                        Message::SelectSurroundMode(kind, mode.into())
+                    })
+                    .size(12)
+                    .spacing(0)
+                    .style(design::sound_mode_radio)
+                    .into()
+                } else {
+                    text(if selected_row { "◉" } else { "○" })
+                        .size(15)
+                        .color(design::MUTED)
+                        .into()
+                };
+                table.push(
+                    container(
+                        row![
+                            text(mode).size(9).width(Length::Fill),
+                            container(
+                                button(text(if favorite { "♥" } else { "♡" }).size(13))
+                                    .padding([0, 3])
+                                    .style(if favorite {
+                                        design::sound_mode_favorite_heart
+                                    } else {
+                                        design::sound_mode_inactive_heart
+                                    })
+                                    .on_press(Message::ToggleSoundModeFavorite(mode.into())),
+                            )
+                            .width(Length::Fixed(54.0)),
+                            container(select_control)
+                                .width(Length::Fixed(40.0))
+                                .padding(iced::Padding::ZERO.right(12)),
+                        ]
+                        .align_y(iced::Alignment::Center)
+                        .spacing(6),
+                    )
+                    .padding([3, 6])
+                    .width(Length::Fill)
+                    .style(row_style),
+                )
+            });
     container(
         column![
             row![
                 text("SOUND MODE").size(14).color(iced::Color::WHITE),
-                text(active.map_or_else(
-                    || if waiting {
-                        format!("WAITING {}", waiting_dots(frame))
-                    } else {
-                        String::new()
-                    },
-                    str::to_owned,
-                ))
-                .size(9)
-                .color(design::MUTED),
+                text(active.map_or_else(String::new, str::to_owned))
+                    .size(9)
+                    .color(design::MUTED),
             ]
             .width(Length::Fill)
             .align_y(iced::Alignment::Center)
             .spacing(8),
+            category_buttons,
+            row![
+                text("Detailed Sound Mode").size(9).width(Length::Fill),
+                text("Favorite").size(9).width(Length::Fixed(54.0)),
+                container(text("Select").size(9))
+                    .width(Length::Fixed(40.0))
+                    .padding(iced::Padding::ZERO.right(12)),
+            ]
+            .spacing(6),
             scrollable(table).height(Length::Fill).spacing(10),
         ]
         .spacing(8)
@@ -404,16 +385,49 @@ fn sound_mode_panel<'a>(
 }
 
 fn selected_sound_mode_index(
-    rows: &[(&str, SoundModeCategory, &str, bool)],
+    rows: &[(SoundModeCategory, &str)],
     active: Option<&str>,
-    selected_category: Option<SoundModeCategory>,
 ) -> Option<usize> {
-    active
-        .zip(selected_category)
-        .and_then(|(active, selected_category)| {
-            rows.iter().position(|(_, category, mode, _)| {
-                *mode == active && selected_category == *category
-            })
+    active.and_then(|active| rows.iter().position(|(_, mode)| *mode == active))
+}
+
+fn sound_mode_categories() -> [(&'static str, SoundModeCategory); 4] {
+    [
+        ("MOVIE", SoundModeCategory::Movie),
+        ("MUSIC", SoundModeCategory::Music),
+        ("GAME", SoundModeCategory::Game),
+        ("PURE", SoundModeCategory::Pure),
+    ]
+}
+
+fn sound_mode_category_is_interactive(
+    capabilities: ModelCapabilities,
+    category: SoundModeCategory,
+    controls_enabled: bool,
+) -> bool {
+    controls_enabled
+        && (category == SoundModeCategory::Pure
+            || capabilities.supports_control(&MainZoneControl::RecallSoundModeCategory(category)))
+}
+
+fn sound_mode_rows(
+    capabilities: ModelCapabilities,
+    category_filter: Option<SoundModeCategory>,
+) -> Vec<(SoundModeCategory, &'static str)> {
+    sound_mode_categories()
+        .into_iter()
+        .filter(|(_, category)| category_filter.is_none_or(|filter| filter == *category))
+        .flat_map(|(_, category)| {
+            capabilities
+                .sound_modes(category)
+                .iter()
+                .map(move |mode| (category, *mode))
+        })
+        .fold(Vec::new(), |mut rows, row| {
+            if !rows.iter().any(|(_, mode)| *mode == row.1) {
+                rows.push(row);
+            }
+            rows
         })
 }
 
@@ -422,24 +436,75 @@ mod tests {
     use super::*;
 
     #[test]
-    fn detailed_mode_radio_respects_the_clicked_category_when_mode_is_shared() {
-        let rows = [
-            ("MOVIE", SoundModeCategory::Movie, "DOLBY SURROUND", true),
-            ("MUSIC", SoundModeCategory::Music, "DOLBY SURROUND", true),
-        ];
+    fn all_modes_follow_catalog_order_and_deduplicate_shared_modes() {
+        let capabilities = ModelCapabilities::for_model(Model::AvrX3800h);
+        let rows = sound_mode_rows(capabilities, None);
         assert_eq!(
-            selected_sound_mode_index(
-                &rows,
-                Some("DOLBY SURROUND"),
-                Some(SoundModeCategory::Music),
-            ),
-            Some(1)
+            rows.first(),
+            Some(&(SoundModeCategory::Movie, "DOLBY SURROUND"))
         );
-        // Receiver status carries the detailed mode but no category. A radio
-        // is active only after the controller reports the confirmed pair.
         assert_eq!(
-            selected_sound_mode_index(&rows, Some("DOLBY SURROUND"), None),
-            None
+            rows.iter()
+                .filter(|(_, mode)| *mode == "DOLBY SURROUND")
+                .count(),
+            1
         );
+        assert!(rows.iter().any(|(category, mode)| {
+            *category == SoundModeCategory::Pure && *mode == "PURE DIRECT"
+        }));
+    }
+
+    #[test]
+    fn category_buttons_are_in_movie_music_game_pure_order() {
+        assert_eq!(
+            sound_mode_categories().map(|(label, _)| label),
+            ["MOVIE", "MUSIC", "GAME", "PURE"]
+        );
+    }
+
+    #[test]
+    fn status_and_sound_mode_pending_share_one_dashboard_overlay() {
+        assert!(dashboard_pending(true, false));
+        assert!(dashboard_pending(true, true));
+        assert!(dashboard_pending(false, true));
+        assert!(!dashboard_pending(false, false));
+    }
+
+    #[test]
+    fn unsupported_receivers_do_not_offer_category_recalls() {
+        let unknown = ModelCapabilities::for_model(Model::Unknown);
+        assert!(!sound_mode_category_is_interactive(
+            unknown,
+            SoundModeCategory::Movie,
+            true
+        ));
+        assert!(sound_mode_category_is_interactive(
+            unknown,
+            SoundModeCategory::Pure,
+            true
+        ));
+
+        let x3800h = ModelCapabilities::for_model(Model::AvrX3800h);
+        assert!(sound_mode_category_is_interactive(
+            x3800h,
+            SoundModeCategory::Movie,
+            true
+        ));
+        assert!(!sound_mode_category_is_interactive(
+            x3800h,
+            SoundModeCategory::Movie,
+            false
+        ));
+    }
+
+    #[test]
+    fn category_filter_and_authoritative_detailed_selection_are_independent() {
+        let capabilities = ModelCapabilities::for_model(Model::AvrX3800h);
+        let rows = sound_mode_rows(capabilities, Some(SoundModeCategory::Music));
+        assert!(rows
+            .iter()
+            .all(|(category, _)| *category == SoundModeCategory::Music));
+        assert!(selected_sound_mode_index(&rows, Some("DOLBY SURROUND")).is_some());
+        assert_eq!(selected_sound_mode_index(&rows, Some("PURE DIRECT")), None);
     }
 }

@@ -9,7 +9,8 @@ Start here for current project guidance.
 | Prerequisites, commands, and verification gates | [Development](development.md) |
 | CLI operation | [CLI user guide](cli-user-guide.md) |
 | Desktop operation and logs | [Desktop user guide](desktop-user-guide.md) |
-| Current V3 documentation-consolidation work | [Phase 6 overview](v3/phase-6-documentation-consolidation-overview.md) and [architecture](v3/phase-6-documentation-consolidation-architecture.md) |
+| Current V3 work | [Phase 6 documentation consolidation](v3/phase-6-documentation-consolidation-overview.md) |
+| Completed V3 work | [Phase 7 sound-mode redesign](v3/phase-7-sound-mode-current-design-supplement.md) |
 | Protocol and receiver evidence | [Research](research/) |
 | Completed plans, releases, changelogs, and validation records | [Archive](archive/README.md) |
 

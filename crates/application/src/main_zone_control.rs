@@ -32,22 +32,31 @@ pub fn admit_main_zone_control(
     control: &MainZoneControl,
     expected_version: Option<u64>,
 ) -> ControlAdmission {
-    if let Some(expected_version) = expected_version {
-        if preflight.resource_version() != expected_version {
-            warn!(
-                ?control,
-                expected_version,
-                current_version = preflight.resource_version(),
-                "control rejected due to stale resource version"
-            );
-            return ControlAdmission::Rejected(OperationError::new(
-                OperationErrorKind::Conflict,
-                "checking resource version",
-                format!(
-                    "expected {expected_version}, current {}",
-                    preflight.resource_version()
-                ),
-            ));
+    // Power controls express an absolute target (On or Standby), so an
+    // unrelated Main Zone update must not block them. The stale aggregate
+    // version may have advanced because volume, input, sound mode, or
+    // supplemental information changed while the user was clicking. The
+    // target-state/no-op check below still prevents redundant dispatch when
+    // the receiver already reports the requested power state.
+    let versioned_control = !matches!(control, MainZoneControl::Power(_));
+    if versioned_control {
+        if let Some(expected_version) = expected_version {
+            if preflight.resource_version() != expected_version {
+                warn!(
+                    ?control,
+                    expected_version,
+                    current_version = preflight.resource_version(),
+                    "control rejected due to stale resource version"
+                );
+                return ControlAdmission::Rejected(OperationError::new(
+                    OperationErrorKind::Conflict,
+                    "checking resource version",
+                    format!(
+                        "expected {expected_version}, current {}",
+                        preflight.resource_version()
+                    ),
+                ));
+            }
         }
     }
     if !capabilities.supports_control(control) {
@@ -179,7 +188,7 @@ mod tests {
         let result = admit_main_zone_control(
             &snapshot,
             &capabilities,
-            &MainZoneControl::Power(denon_avr_domain::PowerState::On),
+            &MainZoneControl::Mute(denon_avr_domain::MuteState::On),
             Some(snapshot.resource_version().saturating_add(1)),
         );
         assert!(matches!(
@@ -189,6 +198,32 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn power_target_is_not_blocked_by_unrelated_main_zone_version_changes() {
+        let mut snapshot = MainZoneSnapshot::default();
+        snapshot.set_value(
+            denon_avr_domain::MainZoneValue::Power(denon_avr_domain::PowerState::Standby),
+            denon_avr_domain::StateAuthority::Authoritative,
+        );
+        let expected_version = snapshot.resource_version();
+        snapshot.set_value(
+            denon_avr_domain::MainZoneValue::Mute(denon_avr_domain::MuteState::Off),
+            denon_avr_domain::StateAuthority::Event,
+        );
+        assert_ne!(snapshot.resource_version(), expected_version);
+
+        let capabilities = ModelCapabilities::for_model(Model::AvrX3800h);
+        assert_eq!(
+            admit_main_zone_control(
+                &snapshot,
+                &capabilities,
+                &MainZoneControl::Power(denon_avr_domain::PowerState::On),
+                Some(expected_version),
+            ),
+            ControlAdmission::Dispatch
+        );
     }
 
     #[test]

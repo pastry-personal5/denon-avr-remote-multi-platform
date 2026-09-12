@@ -16,6 +16,7 @@ pub fn core_frame(frame: X3800hFrame) -> Option<CoreFrame> {
         X3800hFrame::VolumeUnavailable => Some(CoreFrame::VolumeUnavailable {
             raw: "MV---".into(),
         }),
+        X3800hFrame::VolumeLimit(_) => None,
         X3800hFrame::Unknown(_) => None,
     }
 }
@@ -28,6 +29,7 @@ mod tests {
     #[test]
     fn unknown_wire_frame_cannot_mutate_typed_state() {
         assert!(core_frame(X3800hFrame::Unknown("ZZanything".into())).is_none());
+        assert!(core_frame(X3800hFrame::VolumeLimit("MVMAX 80".into())).is_none());
         assert_eq!(
             core_frame(X3800hFrame::MainZonePower(ZonePower::On)),
             Some(CoreFrame::MainZonePower(ZonePower::On))

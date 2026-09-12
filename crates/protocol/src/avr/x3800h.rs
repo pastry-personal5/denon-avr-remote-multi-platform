@@ -16,6 +16,8 @@ pub enum X3800hFrame {
     Mute(MuteState),
     SoundMode(SoundModeStatus),
     VolumeUnavailable,
+    /// Receiver-reported volume ceiling; not the current Main Zone volume.
+    VolumeLimit(String),
     Unknown(String),
 }
 
@@ -65,6 +67,9 @@ pub fn parse(line: &str) -> Result<X3800hFrame, AvrProtocolError> {
         "MUON" => Ok(X3800hFrame::Mute(MuteState::On)),
         "MUOFF" => Ok(X3800hFrame::Mute(MuteState::Off)),
         "MV---" => Ok(X3800hFrame::VolumeUnavailable),
+        // The AVR periodically reports its configured volume ceiling in this
+        // auxiliary form. It is not the current `MV` level.
+        _ if line.starts_with("MVMAX ") => Ok(X3800hFrame::VolumeLimit(line.to_owned())),
         _ if line.starts_with("MV") => parse_volume(line).map(X3800hFrame::Volume),
         _ if line.starts_with("SI") => SourceId::new(&line[2..])
             .map(X3800hFrame::Source)
@@ -175,6 +180,10 @@ mod tests {
         assert_eq!(
             parse("MV005").unwrap(),
             X3800hFrame::Volume(MasterVolume::db_half_steps(-159).unwrap())
+        );
+        assert_eq!(
+            parse("MVMAX 80").unwrap(),
+            X3800hFrame::VolumeLimit("MVMAX 80".into())
         );
     }
 

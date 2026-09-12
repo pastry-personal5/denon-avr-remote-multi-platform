@@ -2,7 +2,7 @@
 set -euo pipefail
 
 root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ledger="$root_dir/docs/v3/phase-5-requirement-ledger.md"
+ledger="$root_dir/docs/archive/v3/phase-5-requirement-ledger.md"
 
 test -f "$ledger" || {
   echo "missing Phase 5 requirement ledger: $ledger" >&2

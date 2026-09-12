@@ -108,14 +108,16 @@ pub struct Gui {
     pub quick_select: QuickSelectSnapshot,
     pub eq_status: EqStatus,
     pub source_catalog: SourceCatalog,
-    /// The AVR reports only the detailed MS mode, not its UI category. Keep
-    /// the last requested category to disambiguate shared rows in the table.
-    sound_mode_category_preference: Option<SoundModeCategory>,
+    /// Local table filter only. The AVR reports a detailed MS mode, not a
+    /// category, so this value never represents receiver-observed state.
+    sound_mode_category_filter: Option<SoundModeCategory>,
     sound_mode_request_id: Option<u64>,
-    sound_mode_request_is_recall: bool,
     sound_mode_save_in_flight: bool,
     pending_sound_mode_config: Option<ConfiguredReceivers>,
     volume_command_pending: bool,
+    /// True after the receiver has reported a volume or the user has
+    /// initialized an unknown volume once from the safe minimum.
+    volume_baseline_initialized: bool,
     /// Request identity is separate from the GUI-wide freshness counter:
     /// background catalog/status reads may legitimately advance that counter
     /// while a volume confirmation is still in flight.
@@ -153,7 +155,10 @@ impl Gui {
             lifecycle: denon_avr_application::Lifecycle::NoReceiver,
             snapshot: MainZoneSnapshot::default(),
             zone2: Zone2Snapshot::default(),
-            volume_slider: 0.0,
+            // Keep the visible thumb at the safe minimum until canonical
+            // receiver volume arrives. The slider remains non-interactive
+            // while the snapshot has no authoritative volume.
+            volume_slider: MIN_VOLUME_DB,
             volume_value: None,
             volume_value_request_id: 0,
             source_picker_open: false,
@@ -166,12 +171,12 @@ impl Gui {
             quick_select: QuickSelectSnapshot::default(),
             eq_status: EqStatus::default(),
             source_catalog: SourceCatalog::default(),
-            sound_mode_category_preference: None,
+            sound_mode_category_filter: None,
             sound_mode_request_id: None,
-            sound_mode_request_is_recall: false,
             sound_mode_save_in_flight: false,
             pending_sound_mode_config: None,
             volume_command_pending: false,
+            volume_baseline_initialized: false,
             volume_command_request_id: None,
             status_confirmed_generation: None,
             messages: VecDeque::new(),
@@ -382,9 +387,8 @@ impl Gui {
             Message::CommandFinished(Err(error)) => {
                 self.volume_command_pending = false;
                 self.volume_command_request_id = None;
-                self.sound_mode_category_preference = None;
+                self.sound_mode_category_filter = None;
                 self.sound_mode_request_id = None;
-                self.sound_mode_request_is_recall = false;
                 self.announce(format!("Operation failed: {error}"));
                 Task::none()
             }
@@ -480,12 +484,14 @@ impl Gui {
                 self.selection = Some(selection.clone());
                 self.route = Route::Dashboard;
                 self.snapshot.invalidate();
+                self.volume_slider = MIN_VOLUME_DB;
+                self.volume_baseline_initialized = false;
                 self.zone2.invalidate();
                 self.status_wait_ticks = 0;
                 self.invalidate_quick_select_eq();
                 self.volume_command_pending = false;
                 self.volume_command_request_id = None;
-                self.sound_mode_category_preference = None;
+                self.sound_mode_category_filter = None;
                 self.sound_mode_request_id = None;
                 self.status_confirmed_generation = None;
                 let id = self.next_request();
@@ -507,6 +513,14 @@ impl Gui {
                     self.volume_command_pending = false;
                     self.volume_command_request_id = None;
                 }
+                // Sound-mode controls have the same independent confirmation
+                // lifetime as volume controls. A supplemental read may advance
+                // the GUI request counter before this control result arrives.
+                if matches!(&event.event, ReceiverEvent::Control(_))
+                    && self.sound_mode_request_id == Some(event_request_id)
+                {
+                    self.sound_mode_request_id = None;
+                }
                 // Supplemental receiver reads run after the core status reply.
                 // A core snapshot can immediately start a newer source-catalog
                 // request, while the Quick Select-name event from the earlier
@@ -520,14 +534,28 @@ impl Gui {
                         | ReceiverEvent::EqStatus(_)
                         | ReceiverEvent::SourceCatalog(_)
                 );
-                if (event.request_id < self.request_id && !supplemental_state)
+                // A receiver snapshot is not the result of just one GUI
+                // request. It may be emitted by the session monitor while an
+                // unrelated catalog request has already advanced
+                // `request_id`. Accept only a strictly newer snapshot from
+                // this connection (or a newer connection) in that case.
+                let newer_connection_snapshot = matches!(
+                    &event.event,
+                    ReceiverEvent::Snapshot(snapshot)
+                        if event.generation != 0
+                            && event.generation >= self.generation
+                            && snapshot.resource_version() > self.snapshot.resource_version()
+                );
+                if (event.request_id < self.request_id
+                    && !supplemental_state
+                    && !newer_connection_snapshot)
                     || (event.generation != 0
                         && self.generation != 0
                         && event.generation < self.generation)
                 {
                     return Task::none();
                 }
-                self.request_id = event.request_id;
+                self.request_id = self.request_id.max(event.request_id);
                 if event.generation > self.generation {
                     self.generation = event.generation;
                 }
@@ -549,9 +577,8 @@ impl Gui {
                             self.snapshot.invalidate();
                             self.zone2.invalidate();
                             self.status_wait_ticks = 0;
-                            self.sound_mode_category_preference = None;
+                            self.sound_mode_category_filter = None;
                             self.sound_mode_request_id = None;
-                            self.sound_mode_request_is_recall = false;
                             self.volume_command_pending = false;
                             self.volume_command_request_id = None;
                         }
@@ -581,7 +608,10 @@ impl Gui {
                                 self.status_confirmed_generation = Some(self.generation);
                             }
                         }
-                        self.volume_slider = slider_volume(&snapshot).unwrap_or(self.volume_slider);
+                        if let Some(volume) = slider_volume(&snapshot) {
+                            self.volume_slider = volume;
+                            self.volume_baseline_initialized = true;
+                        }
                         self.snapshot = snapshot;
                         self.complete_launch_if_ready();
                         if self.launch_ready
@@ -621,23 +651,6 @@ impl Gui {
                             self.volume_command_pending = false;
                             self.volume_command_request_id = None;
                         }
-                        if self.sound_mode_request_id == Some(event_request_id) {
-                            let is_recall = self.sound_mode_request_is_recall;
-                            self.sound_mode_request_id = None;
-                            self.sound_mode_request_is_recall = false;
-                            let keep_preference = matches!(
-                                &result,
-                                denon_avr_application::ControlResult::Confirmed { .. }
-                                    | denon_avr_application::ControlResult::NoOp { .. }
-                            ) || (is_recall
-                                && matches!(
-                                    &result,
-                                    denon_avr_application::ControlResult::Unconfirmed(_)
-                                ));
-                            if !keep_preference {
-                                self.sound_mode_category_preference = None;
-                            }
-                        }
                         self.announce(feedback::control_message(&result))
                     }
                     ReceiverEvent::FieldError { field, error } => {
@@ -646,9 +659,8 @@ impl Gui {
                     ReceiverEvent::Diagnostic(diagnostic) => {
                         self.volume_command_pending = false;
                         self.volume_command_request_id = None;
-                        self.sound_mode_category_preference = None;
+                        self.sound_mode_category_filter = None;
                         self.sound_mode_request_id = None;
-                        self.sound_mode_request_is_recall = false;
                         self.announce(format!("Diagnostic: {diagnostic:?}"))
                     }
                     _ => {}
@@ -740,30 +752,51 @@ impl Gui {
                 }
                 Task::none()
             }
+            Message::SoundModeControlTimedOut(request_id) => {
+                if self.sound_mode_request_id == Some(request_id) {
+                    self.sound_mode_request_id = None;
+                    self.announce("Sound Mode request timed out; controls re-enabled.");
+                }
+                Task::none()
+            }
             Message::LaunchTick => {
-                if !self.launch_ready {
+                if !self.launch_ready
+                    || self.status_waiting()
+                    || self.sound_mode_request_id.is_some()
+                {
                     self.launch_frame = self.launch_frame.wrapping_add(1);
                 }
                 self.status_wait_ticks = self.status_wait_ticks.saturating_add(1);
                 Task::none()
             }
-            Message::SelectSoundModeCategory(category) => self
-                .control_sound_mode(category, MainZoneControl::RecallSoundModeCategory(category)),
+            Message::SelectSoundModeCategory(category) => {
+                if self.sound_mode_request_id.is_some() {
+                    return Task::none();
+                }
+                self.sound_mode_category_filter = Some(category);
+                if category == SoundModeCategory::Pure {
+                    Task::none()
+                } else {
+                    self.control_sound_mode(MainZoneControl::RecallSoundModeCategory(category))
+                }
+            }
             Message::SelectSurroundMode(category, value) => {
+                if self.sound_mode_request_id.is_some() {
+                    return Task::none();
+                }
                 match denon_avr_domain::SurroundMode::new(value) {
-                    Ok(mode) => self.control_sound_mode(
-                        category,
-                        MainZoneControl::SelectSoundMode { category, mode },
-                    ),
+                    Ok(mode) => {
+                        self.control_sound_mode(MainZoneControl::SelectSoundMode { category, mode })
+                    }
                     Err(error) => {
                         self.announce(error);
                         Task::none()
                     }
                 }
             }
-            Message::ToggleSoundModeFavorite(category, mode) => {
+            Message::ToggleSoundModeFavorite(mode) => {
                 let mut config = self.configured.clone();
-                let favorite = match config.toggle_current_sound_mode_favorite(category, &mode) {
+                let favorite = match config.toggle_current_sound_mode_favorite(&mode) {
                     Ok(favorite) => favorite,
                     Err(error) => {
                         self.announce(error);
@@ -980,27 +1013,41 @@ impl Gui {
         ))
     }
 
-    fn control_sound_mode(
-        &mut self,
-        category: SoundModeCategory,
-        control: MainZoneControl,
-    ) -> Task<Message> {
+    fn control_sound_mode(&mut self, control: MainZoneControl) -> Task<Message> {
+        const SOUND_MODE_CONTROL_TIMEOUT: Duration = Duration::from_secs(3);
         let id = self.next_request();
-        self.sound_mode_category_preference = Some(category);
         self.sound_mode_request_id = Some(id);
-        self.sound_mode_request_is_recall =
-            matches!(control, MainZoneControl::RecallSoundModeCategory(_));
         self.announce("Command pending; waiting for receiver confirmation…");
-        self.command(BridgeCommand::Control(
+        let command = self.command(BridgeCommand::Control(
             id,
             control,
             Some(self.snapshot.resource_version()),
-        ))
+        ));
+        let timeout = Task::perform(
+            async move {
+                tokio::time::sleep(SOUND_MODE_CONTROL_TIMEOUT).await;
+                id
+            },
+            Message::SoundModeControlTimedOut,
+        );
+        Task::batch([command, timeout])
     }
 
     fn adjust_volume(&mut self, delta: f32) -> Task<Message> {
-        if !self.volume_is_interactive() {
+        if self.selection.is_none() || self.volume_command_pending {
             return Task::none();
+        }
+        // Until the AVR has supplied a canonical level, the first volume
+        // button press establishes a safe minimum baseline. Apply later
+        // button presses relative to that baseline, even if the receiver has
+        // not yet returned a usable volume observation.
+        if !self.volume_baseline_initialized {
+            self.volume_slider = MIN_VOLUME_DB;
+            self.volume_baseline_initialized = true;
+            let minimum = volume_level_for_slider(MIN_VOLUME_DB)
+                .expect("minimum volume is inside the validated receiver range");
+            let value_task = self.show_volume_value();
+            return Task::batch([self.submit_volume(minimum), value_task]);
         }
         let requested = self.volume_slider + delta;
         let target = requested.clamp(MIN_VOLUME_DB, MAX_VOLUME_DB);
@@ -1120,7 +1167,7 @@ impl Gui {
             .into()
         };
         let base_body: Element<'_, Message> = match self.route {
-            Route::Dashboard => self.dashboard().into(),
+            Route::Dashboard => self.dashboard(),
             Route::Receivers => self.receivers().into(),
             Route::Settings => self.settings().into(),
             Route::Advanced => self.advanced().into(),
@@ -1351,7 +1398,7 @@ pub fn subscription(gui: &Gui) -> Subscription<Message> {
             .subscription()
             .map(|event| Message::Bridge(Box::new(event))),
         iced::keyboard::listen().map(Message::Keyboard),
-        if gui.launch_ready && !gui.status_waiting() {
+        if gui.launch_ready && !gui.status_waiting() && gui.sound_mode_request_id.is_none() {
             Subscription::none()
         } else {
             iced::time::every(Duration::from_millis(180)).map(|_| Message::LaunchTick)
@@ -1477,6 +1524,26 @@ mod tests {
         assert_eq!(gui.power_popup, Some(PowerPopup::Zone2));
         let _ = gui.update(Message::ClosePowerPopup);
         assert_eq!(gui.power_popup, None);
+    }
+
+    #[tokio::test]
+    async fn pure_filters_without_a_receiver_recall_while_movie_starts_one() {
+        let bridge = ControllerBridge::new(TestSessionFactory);
+        let mut gui = Gui::new(bridge);
+
+        let _ = gui.update(Message::SelectSoundModeCategory(SoundModeCategory::Pure));
+        assert_eq!(
+            gui.sound_mode_category_filter,
+            Some(SoundModeCategory::Pure)
+        );
+        assert_eq!(gui.sound_mode_request_id, None);
+
+        let _ = gui.update(Message::SelectSoundModeCategory(SoundModeCategory::Movie));
+        assert_eq!(
+            gui.sound_mode_category_filter,
+            Some(SoundModeCategory::Movie)
+        );
+        assert!(gui.sound_mode_request_id.is_some());
     }
 
     #[test]
@@ -1628,6 +1695,39 @@ mod tests {
             }),
         })));
         assert_eq!(gui.lifecycle, denon_avr_application::Lifecycle::NoReceiver);
+    }
+
+    #[tokio::test]
+    async fn newer_same_generation_snapshot_is_not_dropped_by_an_unrelated_request() {
+        let bridge = ControllerBridge::new(TestSessionFactory);
+        let mut gui = Gui::new(bridge);
+        gui.request_id = 14;
+        gui.generation = 1;
+
+        let mut displayed = MainZoneSnapshot::default();
+        displayed.set_value(
+            MainZoneValue::Power(PowerState::Standby),
+            StateAuthority::Authoritative,
+        );
+        gui.snapshot = displayed.clone();
+
+        let mut newer = displayed;
+        newer.set_value(
+            MainZoneValue::Mute(MuteState::Off),
+            StateAuthority::Authoritative,
+        );
+
+        let _ = gui.update(Message::Bridge(Box::new(BridgeEvent {
+            // A source-catalog request has already advanced the GUI request
+            // counter, but this is newer receiver state from the same
+            // connection and must remain usable for the next control.
+            request_id: 13,
+            generation: 1,
+            event: ReceiverEvent::Snapshot(newer.clone()),
+        })));
+
+        assert_eq!(gui.snapshot, newer);
+        assert_eq!(gui.request_id, 14);
     }
 
     #[tokio::test]
@@ -1787,6 +1887,7 @@ mod tests {
             MainZoneValue::Volume(Volume::from_parts("95", 150)),
             StateAuthority::Authoritative,
         );
+        gui.volume_baseline_initialized = true;
         gui.volume_slider = 15.0;
 
         let _ = gui.update(Message::AdjustVolume(10.0));
@@ -1806,16 +1907,34 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unavailable_volume_does_not_create_a_low_volume_command() {
+    async fn unknown_volume_steps_initialize_to_minimum_once_then_adjust() {
         let bridge = ControllerBridge::new(TestSessionFactory);
         let mut gui = Gui::new(bridge);
-        gui.volume_slider = MIN_VOLUME_DB;
+        gui.selection = Some(ReceiverSelection::ExplicitHost(
+            denon_avr_domain::ReceiverIdentity {
+                host: "receiver.local".into(),
+                model: Some("AVR-X3800H".into()),
+                friendly_name: None,
+            },
+        ));
+        assert_eq!(gui.volume_slider, MIN_VOLUME_DB);
 
         let _ = gui.update(Message::AdjustVolume(0.5));
-        let _ = gui.update(Message::CommitVolume);
 
         assert_eq!(gui.volume_slider, MIN_VOLUME_DB);
-        assert!(!gui.volume_command_pending);
+        assert!(gui.volume_command_pending);
+        assert!(gui.volume_baseline_initialized);
+
+        let request_id = gui.volume_command_request_id.expect("volume was submitted");
+        let _ = gui.update(Message::Bridge(Box::new(BridgeEvent {
+            request_id,
+            generation: 0,
+            event: ReceiverEvent::Control(denon_avr_application::ControlResult::Cancelled),
+        })));
+        let _ = gui.update(Message::AdjustVolume(0.5));
+
+        assert_eq!(gui.volume_slider, MIN_VOLUME_DB + 0.5);
+        assert!(gui.volume_command_pending);
     }
 
     #[tokio::test]
@@ -1853,6 +1972,41 @@ mod tests {
 
         assert!(!gui.volume_command_pending);
         assert_eq!(gui.volume_command_request_id, None);
+    }
+
+    #[tokio::test]
+    async fn stale_sound_mode_confirmation_reenables_mode_controls() {
+        let bridge = ControllerBridge::new(TestSessionFactory);
+        let mut gui = Gui::new(bridge);
+        gui.sound_mode_request_id = Some(4);
+        // Simulate an unrelated catalog/status request begun after the sound
+        // mode command but before its receiver confirmation arrives.
+        gui.request_id = 5;
+
+        let _ = gui.update(Message::Bridge(Box::new(BridgeEvent {
+            request_id: 4,
+            generation: 0,
+            event: ReceiverEvent::Control(denon_avr_application::ControlResult::Cancelled),
+        })));
+
+        assert_eq!(gui.sound_mode_request_id, None);
+    }
+
+    #[tokio::test]
+    async fn sound_mode_timeout_only_clears_its_own_pending_control() {
+        let bridge = ControllerBridge::new(TestSessionFactory);
+        let mut gui = Gui::new(bridge);
+        gui.sound_mode_request_id = Some(4);
+
+        let _ = gui.update(Message::SoundModeControlTimedOut(3));
+        assert_eq!(gui.sound_mode_request_id, Some(4));
+
+        let _ = gui.update(Message::SoundModeControlTimedOut(4));
+        assert_eq!(gui.sound_mode_request_id, None);
+        assert_eq!(
+            gui.announcement,
+            "Sound Mode request timed out; controls re-enabled."
+        );
     }
 
     #[tokio::test]

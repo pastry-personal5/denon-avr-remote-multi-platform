@@ -670,6 +670,43 @@ impl<F: SessionFactory> State<F> {
         // when the receiver's optional HTTP endpoint is unavailable.
         Ok(())
     }
+
+    /// Refreshes one field for control confirmation while retaining all other
+    /// last-known Main Zone observations.
+    async fn refresh_field(
+        &mut self,
+        field: MainZoneField,
+        events: &mpsc::Sender<ReceiverEvent>,
+    ) -> Result<(), OperationError> {
+        if self.session.is_none() {
+            self.connect(events).await?;
+        }
+        let before = self.snapshot.resource_version();
+        let result = {
+            let session = self.session.as_mut().ok_or_else(stopped)?;
+            session.query_field(field).await
+        };
+        match result {
+            Ok(value) => self
+                .snapshot
+                .set_value(value, StateAuthority::Authoritative),
+            Err(error) => {
+                let error = field_error(error);
+                self.snapshot.set_error(field, error.clone());
+                Self::emit(events, ReceiverEvent::FieldError { field, error }).await;
+            }
+        }
+        if self.snapshot.resource_version() != before {
+            Self::emit(
+                events,
+                ReceiverEvent::ResourceVersionChanged(self.snapshot.resource_version()),
+            )
+            .await;
+        }
+        Self::emit(events, ReceiverEvent::Snapshot(self.snapshot.clone())).await;
+        Ok(())
+    }
+
     async fn refresh_zone2(
         &mut self,
         events: &mpsc::Sender<ReceiverEvent>,
@@ -972,7 +1009,16 @@ impl<F: SessionFactory> State<F> {
                 .sleep(self.config.power_on_quiet_time)
                 .await;
         }
-        match tokio::time::timeout(self.config.confirmation_timeout, self.refresh(events)).await {
+        // A control needs receiver evidence for its own target field, not a
+        // second full dashboard refresh. In particular, querying every field
+        // after an MS command can turn an otherwise usable volume observation
+        // into unavailable when an unrelated MV query is delayed or fails.
+        match tokio::time::timeout(
+            self.config.confirmation_timeout,
+            self.refresh_field(field, events),
+        )
+        .await
+        {
             Ok(Ok(()))
                 if self.snapshot.value(field).is_some_and(|v| {
                     control_matches(&control, &v, &capabilities)
@@ -982,9 +1028,10 @@ impl<F: SessionFactory> State<F> {
                 }) =>
             {
                 if let Some(category) = sound_mode_category_from_control(&control) {
-                    // `refresh` has just queried `MS?` authoritatively. Pair
-                    // that reported detailed mode with the category that was
-                    // actually dispatched, then publish the confirmed pair.
+                    // Targeted confirmation has just queried `MS?`
+                    // authoritatively. Pair that reported detailed mode with
+                    // the category that was actually dispatched, then publish
+                    // the confirmed pair.
                     self.snapshot.confirm_sound_mode_category(category);
                     Self::emit(events, ReceiverEvent::Snapshot(self.snapshot.clone())).await;
                 }
@@ -1047,7 +1094,7 @@ mod tests {
     use super::*;
     use denon_avr_domain::{AudioContextSnapshot, QuickSelectRecallConfirmation, ReceiverIdentity};
     use std::collections::VecDeque;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::Mutex;
 
     #[derive(Clone)]
@@ -1074,6 +1121,17 @@ mod tests {
     struct EventFloodFactory;
 
     struct EventFloodSession;
+
+    #[derive(Clone)]
+    struct SoundModeConfirmationFactory {
+        queried_fields: Arc<Mutex<Vec<MainZoneField>>>,
+        selected_dolby: Arc<AtomicBool>,
+    }
+
+    struct SoundModeConfirmationSession {
+        queried_fields: Arc<Mutex<Vec<MainZoneField>>>,
+        selected_dolby: Arc<AtomicBool>,
+    }
 
     #[derive(Clone)]
     struct CatalogFactory {
@@ -1131,6 +1189,22 @@ mod tests {
             _identity: ReceiverIdentity,
         ) -> BoxFuture<'_, Result<Box<dyn ReceiverSession>, OperationError>> {
             Box::pin(async { Ok(Box::new(EventFloodSession) as Box<dyn ReceiverSession>) })
+        }
+    }
+
+    impl SessionFactory for SoundModeConfirmationFactory {
+        fn connect(
+            &self,
+            _identity: ReceiverIdentity,
+        ) -> BoxFuture<'_, Result<Box<dyn ReceiverSession>, OperationError>> {
+            let queried_fields = Arc::clone(&self.queried_fields);
+            let selected_dolby = Arc::clone(&self.selected_dolby);
+            Box::pin(async move {
+                Ok(Box::new(SoundModeConfirmationSession {
+                    queried_fields,
+                    selected_dolby,
+                }) as Box<dyn ReceiverSession>)
+            })
         }
     }
 
@@ -1353,6 +1427,61 @@ mod tests {
         }
     }
 
+    impl ReceiverSession for SoundModeConfirmationSession {
+        fn query_field(
+            &mut self,
+            field: MainZoneField,
+        ) -> BoxFuture<'_, Result<MainZoneValue, OperationError>> {
+            self.queried_fields
+                .lock()
+                .expect("test queried-fields lock")
+                .push(field);
+            let selected_dolby = self.selected_dolby.load(Ordering::SeqCst);
+            Box::pin(async move {
+                Ok(match field {
+                    MainZoneField::Power => MainZoneValue::Power(denon_avr_domain::PowerState::On),
+                    MainZoneField::Input => MainZoneValue::Input(
+                        denon_avr_domain::Input::new("CD").expect("test input"),
+                    ),
+                    MainZoneField::Volume => {
+                        MainZoneValue::Volume(denon_avr_domain::Volume::from_parts("50", -300))
+                    }
+                    MainZoneField::Mute => MainZoneValue::Mute(denon_avr_domain::MuteState::Off),
+                    MainZoneField::SurroundMode => MainZoneValue::SurroundMode(
+                        denon_avr_domain::SurroundMode::new(if selected_dolby {
+                            "DOLBY SURROUND"
+                        } else {
+                            "STEREO"
+                        })
+                        .expect("test mode"),
+                    ),
+                })
+            })
+        }
+
+        fn execute_once(
+            &mut self,
+            control: MainZoneControl,
+        ) -> BoxFuture<'_, Result<(), OperationError>> {
+            if matches!(control, MainZoneControl::SelectSoundMode { .. }) {
+                self.selected_dolby.store(true, Ordering::SeqCst);
+            }
+            Box::pin(async { Ok(()) })
+        }
+
+        fn query_audio_context(&mut self) -> BoxFuture<'_, AudioContextSnapshot> {
+            Box::pin(async { AudioContextSnapshot::default() })
+        }
+
+        fn next_event(&mut self) -> BoxFuture<'_, Result<SessionEvent, OperationError>> {
+            Box::pin(async { std::future::pending::<Result<SessionEvent, OperationError>>().await })
+        }
+
+        fn close(&mut self) -> BoxFuture<'_, Result<(), OperationError>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
     impl ReceiverSession for CatalogSession {
         fn query_field(
             &mut self,
@@ -1497,6 +1626,45 @@ mod tests {
         assert_eq!(
             snapshot.power.value(),
             Some(&denon_avr_domain::PowerState::On)
+        );
+    }
+
+    #[tokio::test]
+    async fn sound_mode_confirmation_preserves_volume_and_queries_only_surround_mode() {
+        let queried_fields = Arc::new(Mutex::new(Vec::new()));
+        let factory = SoundModeConfirmationFactory {
+            queried_fields: Arc::clone(&queried_fields),
+            selected_dolby: Arc::new(AtomicBool::new(false)),
+        };
+        let handle = ReceiverController::spawn(factory, ControllerConfig::default());
+        handle.select(selection()).await.unwrap();
+        let Some(ReceiverEvent::Snapshot(snapshot)) = handle.refresh().await.unwrap() else {
+            panic!("refresh did not return a Main Zone snapshot");
+        };
+        assert!(snapshot.volume.value().is_some());
+        queried_fields
+            .lock()
+            .expect("test queried-fields lock")
+            .clear();
+
+        let reply = handle
+            .control(
+                MainZoneControl::SelectSoundMode {
+                    category: denon_avr_domain::SoundModeCategory::Movie,
+                    mode: denon_avr_domain::SurroundMode::new("DOLBY SURROUND").expect("test mode"),
+                },
+                None,
+            )
+            .await
+            .unwrap();
+
+        let Some(ReceiverEvent::Control(ControlResult::Confirmed { snapshot })) = reply else {
+            panic!("sound mode control was not confirmed: {reply:?}");
+        };
+        assert!(snapshot.volume.value().is_some());
+        assert_eq!(
+            *queried_fields.lock().expect("test queried-fields lock"),
+            vec![MainZoneField::SurroundMode]
         );
     }
 

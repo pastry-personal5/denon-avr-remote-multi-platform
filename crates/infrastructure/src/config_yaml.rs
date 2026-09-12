@@ -3,9 +3,7 @@
 use denon_avr_application::ports::{
     AsyncConfigRepository, BoxFuture, ConfigRepository, OperationError, OperationErrorKind,
 };
-use denon_avr_domain::{
-    ConfiguredReceivers, ReceiverIdentity, SoundModeCategory, SoundModeFavorite,
-};
+use denon_avr_domain::{ConfiguredReceivers, ReceiverIdentity, SoundModeFavorite};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -61,37 +59,39 @@ struct ConfigFile {
     sound_mode_favorites: SoundModeFavoritesFile,
 }
 
-/// Older files keyed a favorite only by its detailed mode. As that format did
-/// not retain the originating table row, migration assigns it to Movie (the
-/// table's first group); the next save writes the explicit paired form.
+/// The canonical form is one detailed-mode list per receiver. Category-keyed
+/// files written by the prior UI are accepted so no favorite is lost during
+/// migration; their category labels are deliberately discarded.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(untagged)]
 enum SoundModeFavoritesFile {
-    Paired(BTreeMap<String, BTreeMap<String, BTreeSet<String>>>),
-    Legacy(BTreeMap<String, BTreeSet<String>>),
+    CategoryKeyed(BTreeMap<String, BTreeMap<String, BTreeSet<String>>>),
+    Simple(BTreeMap<String, BTreeSet<String>>),
 }
 
 impl Default for SoundModeFavoritesFile {
     fn default() -> Self {
-        Self::Paired(BTreeMap::new())
+        Self::Simple(BTreeMap::new())
     }
 }
 
 impl SoundModeFavoritesFile {
     fn is_empty(&self) -> bool {
         match self {
-            Self::Paired(favorites) => favorites.is_empty(),
-            Self::Legacy(favorites) => favorites.is_empty(),
+            Self::CategoryKeyed(favorites) => favorites.is_empty(),
+            Self::Simple(favorites) => favorites.is_empty(),
         }
     }
 
-    fn into_paired(self) -> BTreeMap<String, BTreeMap<String, BTreeSet<String>>> {
+    fn into_modes(self) -> BTreeMap<String, BTreeSet<String>> {
         match self {
-            Self::Paired(favorites) => favorites,
-            Self::Legacy(favorites) => favorites
+            Self::CategoryKeyed(favorites) => favorites
                 .into_iter()
-                .map(|(receiver, modes)| (receiver, BTreeMap::from([("movie".into(), modes)])))
+                .map(|(receiver, categories)| {
+                    (receiver, categories.into_values().flatten().collect())
+                })
                 .collect(),
+            Self::Simple(favorites) => favorites,
         }
     }
 }
@@ -240,19 +240,12 @@ fn decode_config_file(file: ConfigFile) -> ConfiguredReceivers {
         receivers: BTreeMap::from([(name, identity)]),
         sound_mode_favorites: file
             .sound_mode_favorites
-            .into_paired()
+            .into_modes()
             .into_iter()
-            .map(|(receiver, categories)| {
-                let favorites = categories
+            .map(|(receiver, modes)| {
+                let favorites = modes
                     .into_iter()
-                    .filter_map(|(category, modes)| {
-                        SoundModeCategory::from_key(&category).map(|category| {
-                            modes
-                                .into_iter()
-                                .filter_map(move |mode| SoundModeFavorite::new(category, mode).ok())
-                        })
-                    })
-                    .flatten()
+                    .filter_map(|mode| SoundModeFavorite::new(mode).ok())
                     .collect();
                 (receiver, favorites)
             })
@@ -292,23 +285,19 @@ fn encode_config_file(config: &ConfiguredReceivers) -> Result<ConfigFile, Operat
         .friendly_name
         .clone()
         .unwrap_or_else(|| "default".into());
-    let paired_favorites = config
+    let favorites = config
         .sound_mode_favorites
         .values()
         .next()
         .into_iter()
         .map(|favorites| {
-            let categories = favorites.iter().fold(
-                BTreeMap::<String, BTreeSet<String>>::new(),
-                |mut categories, favorite| {
-                    categories
-                        .entry(favorite.category.key().into())
-                        .or_default()
-                        .insert(favorite.mode.clone());
-                    categories
-                },
-            );
-            (receiver_name.clone(), categories)
+            (
+                receiver_name.clone(),
+                favorites
+                    .iter()
+                    .map(|favorite| favorite.mode.clone())
+                    .collect(),
+            )
         })
         .collect();
     Ok(ConfigFile {
@@ -317,7 +306,7 @@ fn encode_config_file(config: &ConfiguredReceivers) -> Result<ConfigFile, Operat
             model: optional_text(identity.model.clone()),
             friendly_name: optional_text(identity.friendly_name.clone()),
         },
-        sound_mode_favorites: SoundModeFavoritesFile::Paired(paired_favorites),
+        sound_mode_favorites: SoundModeFavoritesFile::Simple(favorites),
     })
 }
 fn read_config(path: &Path) -> Result<ConfiguredReceivers, OperationError> {
@@ -531,7 +520,7 @@ mod tests {
     }
 
     #[test]
-    fn sound_mode_favorites_round_trip_by_category_and_mode() {
+    fn sound_mode_favorites_round_trip_as_a_simple_mode_list() {
         let path = path("sound-mode-favorites");
         let config = ConfiguredReceivers {
             current: Some("living-room".into()),
@@ -546,8 +535,8 @@ mod tests {
             sound_mode_favorites: BTreeMap::from([(
                 "living-room".into(),
                 BTreeSet::from([
-                    SoundModeFavorite::new(SoundModeCategory::Movie, "DTS NEURAL:X").unwrap(),
-                    SoundModeFavorite::new(SoundModeCategory::Music, "DTS NEURAL:X").unwrap(),
+                    SoundModeFavorite::new("DTS NEURAL:X").unwrap(),
+                    SoundModeFavorite::new("DOLBY SURROUND").unwrap(),
                 ]),
             )]),
         };
@@ -555,25 +544,31 @@ mod tests {
 
         ConfigRepository::save(&repository, &config).unwrap();
         let stored = fs::read_to_string(&path).unwrap();
-        assert!(stored.contains("movie:\n    - DTS NEURAL:X"));
-        assert!(stored.contains("music:\n    - DTS NEURAL:X"));
+        assert!(stored.contains("living-room:\n  - DOLBY SURROUND\n  - DTS NEURAL:X"));
         assert_eq!(ConfigRepository::load(&repository).unwrap(), config);
 
         let _ = fs::remove_file(path);
     }
 
     #[test]
-    fn legacy_unpaired_favorites_migrate_without_preventing_startup() {
-        let path = path("legacy-sound-mode-favorites");
+    fn category_keyed_favorites_flatten_without_discarding_modes() {
+        let path = path("category-keyed-sound-mode-favorites");
         fs::write(
             &path,
-            "receiver:\n  host: 192.0.2.10\nsound_mode_favorites:\n  default:\n    - DTS NEURAL:X\n",
+            "receiver:\n  host: 192.0.2.10\nsound_mode_favorites:\n  default:\n    movie:\n      - DTS NEURAL:X\n      - DOLBY SURROUND\n    music:\n      - DTS NEURAL:X\n",
         )
         .unwrap();
 
-        let config = ConfigRepository::load(&YamlConfigRepository::new(&path)).unwrap();
-        assert!(config.is_sound_mode_favorite(SoundModeCategory::Movie, "DTS NEURAL:X"));
-        assert!(!config.is_sound_mode_favorite(SoundModeCategory::Music, "DTS NEURAL:X"));
+        let repository = YamlConfigRepository::new(&path);
+        let config = ConfigRepository::load(&repository).unwrap();
+        assert!(config.is_sound_mode_favorite("DTS NEURAL:X"));
+        assert!(config.is_sound_mode_favorite("DOLBY SURROUND"));
+        assert_eq!(config.sound_mode_favorites["default"].len(), 2);
+
+        ConfigRepository::save(&repository, &config).unwrap();
+        let stored = fs::read_to_string(&path).unwrap();
+        assert!(stored.contains("default:\n  - DOLBY SURROUND\n  - DTS NEURAL:X"));
+        assert!(!stored.contains("movie:"));
 
         let _ = fs::remove_file(path);
     }
