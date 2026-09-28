@@ -6,7 +6,7 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
   exit 1
 fi
 
-for tool in cargo hdiutil iconutil sips; do
+for tool in cargo hdiutil iconutil sips codesign; do
   if ! command -v "$tool" >/dev/null 2>&1; then
     echo "package-macos: required tool not found: $tool" >&2
     exit 1
@@ -94,6 +94,8 @@ cat > "$app/Contents/Info.plist" <<PLIST
 </dict>
 </plist>
 PLIST
+
+codesign --force --deep --sign - --identifier com.denonavr.remote "$app"
 
 cp -R "$app" "$work_dir/dmg/"
 ln -s /Applications "$work_dir/dmg/Applications"
