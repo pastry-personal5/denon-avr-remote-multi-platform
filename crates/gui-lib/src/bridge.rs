@@ -1,13 +1,19 @@
-//! Serialized adapter between Iced subscriptions and the application controller.
+//! Serialized adapter between Iced subscriptions and the control-service port.
+//!
+//! One task owns the port handle and the state subscription for the selected
+//! receiver. Commands from the GUI arrive in order. A control, a refresh, and a
+//! supplemental read each run on a task of their own, so a slow receiver never
+//! holds back state updates; their results come back as events tagged with the
+//! subscription they were started under, and the GUI drops the ones that belong
+//! to a receiver it has since left.
 
-use denon_avr_application::ports::AsyncReceiverDiscovery;
-use denon_avr_application::ports::{AsyncConfigRepository, OperationError, SessionFactory};
+use denon_avr_application::ports::{BoxFuture, OperationError, OperationErrorKind};
 use denon_avr_application::{
-    ControllerHandle, ReceiverController, ReceiverEvent, ReceiverSelection,
+    ControlError, OperationSnapshot, OperationSubmission, SharedOperatorControl, StateSubscription,
 };
 use denon_avr_domain::{
-    MainZoneControl, PowerState, QuickSelectEqCapabilities, QuickSelectSlot,
-    SourceCatalogCapabilities,
+    FieldBaseline, HttpInformationSnapshot, QuickSelectNameObservation, ReceiverId, ReceiverIntent,
+    ReceiverState, SourceCatalogObservation,
 };
 use iced::futures::SinkExt;
 use iced::Subscription;
@@ -16,71 +22,107 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, Mutex};
 
+/// How long one wait for an operation may last, and how many waits are made
+/// before the bridge reports that the receiver never answered. The service caps
+/// a single wait at 30 s.
+const OPERATION_WAIT: Duration = Duration::from_secs(30);
+const OPERATION_WAITS: u32 = 2;
+
+/// Supplied by the composition root. The GUI never names the service that owns
+/// the receiver connection.
+pub type ShutdownHook = Arc<dyn Fn() -> BoxFuture<'static, ()> + Send + Sync>;
+
+/// Presentation-facing services supplied by the desktop composition root.
+#[derive(Clone)]
+pub struct GuiServices {
+    pub control: SharedOperatorControl,
+    pub shutdown: ShutdownHook,
+}
+
+/// How a control ended, as far as the GUI is concerned.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ControlReport {
+    /// The service resolved the operation. The snapshot says how.
+    Finished(Box<OperationSnapshot>),
+    /// What the user saw when they acted is no longer what the receiver shows.
+    /// Nothing was submitted.
+    Conflict,
+    /// The operation could not be submitted, or its outcome could not be read.
+    Failed(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PortEvent {
+    /// The newest state of the selected receiver. The first one follows a
+    /// connect and synchronization, so it is complete.
+    State(Box<ReceiverState>),
+    /// The session behind the subscription closed. The bridge is subscribing
+    /// again; a `State` follows if that works.
+    SessionEnded,
+    ConnectFailed(String),
+    /// A refresh finished. The state it read arrives as `State`.
+    Refreshed,
+    Control(ControlReport),
+    /// Reads are stamped with the connection generation they were started in,
+    /// so one that finishes after a reconnect can be told from a current one.
+    SourceCatalog {
+        generation: u64,
+        result: Result<Box<SourceCatalogObservation>, OperationError>,
+    },
+    QuickSelectNames {
+        generation: u64,
+        result: Result<Box<QuickSelectNameObservation>, OperationError>,
+    },
+    HttpInformation {
+        generation: u64,
+        result: Result<Box<HttpInformationSnapshot>, OperationError>,
+    },
+    /// A call failed in a way that has no event of its own.
+    Failed(String),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BridgeEvent {
+    /// The GUI request that caused the event, or the one that selected the
+    /// receiver for events nobody asked for.
     pub request_id: u64,
-    pub generation: u64,
-    pub event: ReceiverEvent,
+    /// The `Select` request the receiver was chosen with.
+    pub subscription: u64,
+    pub event: PortEvent,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) enum BridgeCommand {
-    Select(u64, ReceiverSelection),
-    Connect(u64),
+    Select(u64, ReceiverId),
     Refresh(u64),
-    Disconnect(u64),
-    Control(u64, MainZoneControl, Option<u64>),
-    ControlZone2(u64, PowerState),
-    RefreshQuickSelectEq(u64),
-    RefreshSourceCatalog(u64),
-    RecallQuickSelect(u64, QuickSelectSlot, Option<u64>),
-    Shutdown(u64),
+    Control {
+        id: u64,
+        intent: ReceiverIntent,
+        /// What the user saw of the target field when they acted. The control
+        /// is refused if the receiver now shows something else.
+        guard: Option<FieldBaseline>,
+    },
+    ReadSourceCatalog(u64, u64),
+    ReadQuickSelectNames(u64, u64),
+    ReadHttpInformation(u64, u64),
+    Shutdown,
 }
 
-/// A single serialized owner of `ControllerHandle`.
+/// A single serialized owner of the port handle.
 #[derive(Clone)]
-pub struct ControllerBridge {
+pub struct PortBridge {
     commands: mpsc::Sender<BridgeCommand>,
     events: Arc<Mutex<mpsc::Receiver<BridgeEvent>>>,
-    pub(crate) validated_quick_select_eq: Option<QuickSelectEqCapabilities>,
-    pub(crate) validated_source_catalog: Option<SourceCatalogCapabilities>,
 }
 
-/// Presentation-facing service ports supplied by the desktop composition root.
-#[derive(Clone)]
-pub struct GuiServices {
-    pub factory: Arc<dyn SessionFactory>,
-    pub configuration: Arc<dyn AsyncConfigRepository>,
-    pub discovery: Arc<dyn AsyncReceiverDiscovery>,
-}
-
-impl ControllerBridge {
-    pub fn new<F: SessionFactory>(factory: F) -> Self {
-        Self::new_with_config(factory, Default::default())
-    }
-
-    pub fn new_with_config<F: SessionFactory>(
-        factory: F,
-        config: denon_avr_application::ControllerConfig,
-    ) -> Self {
-        let validated_quick_select_eq = config.validated_quick_select_eq;
-        let validated_source_catalog = config.validated_source_catalog;
-        let (commands, mut command_rx) = mpsc::channel(16);
+impl PortBridge {
+    pub fn new(services: GuiServices) -> Self {
+        let (commands, command_rx) = mpsc::channel(16);
         let (event_sender, event_rx) = mpsc::channel(32);
-        let events = Arc::new(Mutex::new(event_rx));
-        tokio::spawn(async move {
-            let handle = ReceiverController::spawn_with_observability(
-                factory,
-                config,
-                Arc::new(TracingObservability),
-            );
-            run_bridge(handle, &mut command_rx, event_sender).await;
-        });
+        tokio::spawn(run_bridge(services, command_rx, event_sender));
         Self {
             commands,
-            events: Arc::clone(&events),
-            validated_quick_select_eq,
-            validated_source_catalog,
+            events: Arc::new(Mutex::new(event_rx)),
         }
     }
 
@@ -101,11 +143,17 @@ impl ControllerBridge {
         })
     }
 
+    /// The next event, for a driver that does not run the Iced subscription
+    /// (headless tests). The subscription and this share one queue, so use one.
+    pub async fn recv(&self) -> Option<BridgeEvent> {
+        self.events.lock().await.recv().await
+    }
+
     pub(crate) async fn send(&self, command: BridgeCommand) -> Result<(), String> {
         self.commands
             .send(command)
             .await
-            .map_err(|_| "controller bridge stopped".into())
+            .map_err(|_| "receiver bridge stopped".into())
     }
 }
 
@@ -118,172 +166,309 @@ impl Hash for SubscriptionData {
     }
 }
 
+enum Step {
+    Command(Option<BridgeCommand>),
+    State(Result<Box<ReceiverState>, OperationError>),
+}
+
+/// The receiver the GUI has chosen, and the `Select` request that chose it.
+#[derive(Clone)]
+struct Selected {
+    receiver: ReceiverId,
+    subscription: u64,
+}
+
+async fn next_state(
+    active: &mut Option<StateSubscription>,
+) -> Result<Box<ReceiverState>, OperationError> {
+    match active {
+        Some(subscription) => subscription.changed().await.map(Box::new),
+        None => std::future::pending().await,
+    }
+}
+
 async fn run_bridge(
-    handle: ControllerHandle,
-    commands: &mut mpsc::Receiver<BridgeCommand>,
-    event_sender: mpsc::Sender<BridgeEvent>,
+    services: GuiServices,
+    mut commands: mpsc::Receiver<BridgeCommand>,
+    events: mpsc::Sender<BridgeEvent>,
 ) {
-    let mut handle = handle;
-    let mut pending_request_id: Option<u64> = None;
-    // Receiver state is authoritative within a connection generation, while
-    // GUI request IDs also advance for unrelated work (for example, a source
-    // catalog read). Keep the generation on every forwarded event so the GUI
-    // can distinguish a late same-connection snapshot from old-receiver data.
-    let mut connection_generation: u64 = 0;
+    let mut selected: Option<Selected> = None;
+    let mut active: Option<StateSubscription> = None;
     loop {
-        tokio::select! {
-            Some(command) = commands.recv() => {
-                let is_shutdown = matches!(&command, BridgeCommand::Shutdown(_));
+        let step = tokio::select! {
+            command = commands.recv() => Step::Command(command),
+            next = next_state(&mut active) => Step::State(next),
+        };
+        match step {
+            Step::Command(None) => break,
+            Step::Command(Some(command)) => {
                 tracing::debug!(command = command_name(&command), "processing GUI command");
-                let (request_id, result) = match command {
-                    BridgeCommand::Select(id, selection) => {
-                        let selected = handle.select(selection).await;
-                        if selected.is_ok() { (id, connect_and_refresh(&handle).await) } else { (id, selected) }
-                    }
-                    BridgeCommand::Connect(id) => (id, connect_and_refresh(&handle).await),
-                    BridgeCommand::Refresh(id) => (id, handle.refresh().await),
-                    BridgeCommand::Disconnect(id) => (id, handle.disconnect().await),
-                    BridgeCommand::Control(id, control, version) => (id, handle.control(control, version).await),
-                    BridgeCommand::ControlZone2(id, power) => (id, handle.control_zone2(power).await),
-                    BridgeCommand::RefreshQuickSelectEq(id) => (id, handle.refresh_quick_select_eq().await),
-                    BridgeCommand::RefreshSourceCatalog(id) => (id, handle.refresh_source_catalog().await),
-                    BridgeCommand::RecallQuickSelect(id, slot, version) => (id, handle.recall_quick_select(slot, version).await),
-                    BridgeCommand::Shutdown(id) => (id, handle.shutdown().await),
-                };
-                let event = result
-                    .map(|reply| reply.unwrap_or(ReceiverEvent::Cancelled))
-                    .unwrap_or_else(|error| ReceiverEvent::Diagnostic(
-                        denon_avr_application::Diagnostic::Timeout { context: error.to_string() }
-                    ));
-                pending_request_id = Some(request_id);
-                let mut reply_already_forwarded = false;
-                while let Ok(Some(controller_event)) =
-                    tokio::time::timeout(Duration::from_millis(1), handle.next_event()).await
-                {
-                    reply_already_forwarded |= controller_event == event;
-                    let generation = bridge_event_generation(
-                        &controller_event,
-                        &mut connection_generation,
-                    );
-                    let _ = event_sender.send(BridgeEvent { request_id, generation, event: controller_event }).await;
-                }
-                if !reply_already_forwarded {
-                    let generation = bridge_event_generation(&event, &mut connection_generation);
-                    let _ = event_sender.send(BridgeEvent { request_id, generation, event }).await;
-                }
-                if is_shutdown {
-                    tracing::info!("controller bridge stopped");
+                let stop = matches!(command, BridgeCommand::Shutdown);
+                handle(&services, command, &mut selected, &mut active, &events).await;
+                if stop {
+                    tracing::info!("receiver bridge stopped");
                     break;
                 }
             }
-            Some(controller_event) = handle.next_event() => {
-                let generation = bridge_event_generation(&controller_event, &mut connection_generation);
-                let request_id = pending_request_id.unwrap_or(0);
-                let _ = event_sender.send(BridgeEvent { request_id, generation, event: controller_event }).await;
+            Step::State(Ok(state)) => {
+                if let Some(chosen) = &selected {
+                    send(
+                        &events,
+                        chosen.subscription,
+                        chosen.subscription,
+                        PortEvent::State(state),
+                    )
+                    .await;
+                }
+            }
+            Step::State(Err(error)) => {
+                // The service closed the session: its entry changed, or it was
+                // shut down. Subscribe again, which connects at the address now
+                // in the file.
+                tracing::info!(%error, "receiver session ended; subscribing again");
+                active = None;
+                if let Some(chosen) = selected.clone() {
+                    send(
+                        &events,
+                        chosen.subscription,
+                        chosen.subscription,
+                        PortEvent::SessionEnded,
+                    )
+                    .await;
+                    active = subscribe(&services, &chosen, &events).await;
+                }
             }
         }
     }
 }
 
-fn bridge_event_generation(event: &ReceiverEvent, connection_generation: &mut u64) -> u64 {
-    match event {
-        ReceiverEvent::Lifecycle(denon_avr_application::Lifecycle::Connected { generation })
-        | ReceiverEvent::Lifecycle(denon_avr_application::Lifecycle::Reconnecting { generation }) =>
-        {
-            *connection_generation = *generation;
-            *generation
+async fn handle(
+    services: &GuiServices,
+    command: BridgeCommand,
+    selected: &mut Option<Selected>,
+    active: &mut Option<StateSubscription>,
+    events: &mpsc::Sender<BridgeEvent>,
+) {
+    match command {
+        BridgeCommand::Select(id, receiver) => {
+            // Dropping the old subscription lets the service release the old
+            // receiver after its idle time.
+            *active = None;
+            let chosen = Selected {
+                receiver,
+                subscription: id,
+            };
+            *selected = Some(chosen.clone());
+            *active = subscribe(services, &chosen, events).await;
         }
-        // A selection starts a new receiver context. Do not label any
-        // selection-era event with the previous receiver's generation.
-        ReceiverEvent::Lifecycle(denon_avr_application::Lifecycle::Selected) => {
-            *connection_generation = 0;
-            0
+        BridgeCommand::Refresh(id) => {
+            let Some(chosen) = selected.clone() else {
+                send(
+                    events,
+                    id,
+                    0,
+                    PortEvent::Failed("no receiver selected".into()),
+                )
+                .await;
+                return;
+            };
+            if active.is_none() {
+                // The connection failed or ended: retrying is connecting again.
+                *active = subscribe(services, &chosen, events).await;
+                return;
+            }
+            let control = Arc::clone(&services.control);
+            let events = events.clone();
+            tokio::spawn(async move {
+                let event = match control.refresh(&chosen.receiver).await {
+                    Ok(_) => PortEvent::Refreshed,
+                    Err(error) => PortEvent::Failed(error.to_string()),
+                };
+                send(&events, id, chosen.subscription, event).await;
+            });
         }
-        _ => *connection_generation,
+        BridgeCommand::Control { id, intent, guard } => {
+            let Some(chosen) = selected.clone() else {
+                send(
+                    events,
+                    id,
+                    0,
+                    PortEvent::Failed("no receiver selected".into()),
+                )
+                .await;
+                return;
+            };
+            if let (Some(baseline), Some(subscription)) = (&guard, active.as_ref()) {
+                if !baseline.holds_in(&subscription.latest()) {
+                    let report = PortEvent::Control(ControlReport::Conflict);
+                    send(events, id, chosen.subscription, report).await;
+                    return;
+                }
+            }
+            let control = Arc::clone(&services.control);
+            let events = events.clone();
+            tokio::spawn(async move {
+                let report = run_control(&control, &chosen.receiver, intent).await;
+                send(&events, id, chosen.subscription, PortEvent::Control(report)).await;
+            });
+        }
+        BridgeCommand::ReadSourceCatalog(id, generation) => {
+            spawn_read(services, events, selected, id, move |control, receiver| {
+                Box::pin(async move {
+                    let result = control
+                        .source_catalog(&receiver)
+                        .await
+                        .map(Box::new)
+                        .map_err(operation_error);
+                    PortEvent::SourceCatalog { generation, result }
+                })
+            })
+        }
+        BridgeCommand::ReadQuickSelectNames(id, generation) => {
+            spawn_read(services, events, selected, id, move |control, receiver| {
+                Box::pin(async move {
+                    let result = control
+                        .quick_select_names(&receiver)
+                        .await
+                        .map(Box::new)
+                        .map_err(operation_error);
+                    PortEvent::QuickSelectNames { generation, result }
+                })
+            })
+        }
+        BridgeCommand::ReadHttpInformation(id, generation) => {
+            spawn_read(services, events, selected, id, move |control, receiver| {
+                Box::pin(async move {
+                    let result = control
+                        .http_information(&receiver)
+                        .await
+                        .map(Box::new)
+                        .map_err(operation_error);
+                    PortEvent::HttpInformation { generation, result }
+                })
+            })
+        }
+        BridgeCommand::Shutdown => {
+            *active = None;
+            (services.shutdown)().await;
+        }
+    }
+}
+
+fn spawn_read(
+    services: &GuiServices,
+    events: &mpsc::Sender<BridgeEvent>,
+    selected: &Option<Selected>,
+    id: u64,
+    read: impl FnOnce(SharedOperatorControl, ReceiverId) -> BoxFuture<'static, PortEvent>
+        + Send
+        + 'static,
+) {
+    let Some(chosen) = selected.clone() else {
+        return;
+    };
+    let control = Arc::clone(&services.control);
+    let events = events.clone();
+    tokio::spawn(async move {
+        let event = read(control, chosen.receiver).await;
+        send(&events, id, chosen.subscription, event).await;
+    });
+}
+
+/// Subscribe to the chosen receiver, which connects and synchronizes it first.
+async fn subscribe(
+    services: &GuiServices,
+    chosen: &Selected,
+    events: &mpsc::Sender<BridgeEvent>,
+) -> Option<StateSubscription> {
+    match services.control.state(&chosen.receiver).await {
+        Ok(subscription) => {
+            let initial = subscription.latest();
+            send(
+                events,
+                chosen.subscription,
+                chosen.subscription,
+                PortEvent::State(Box::new(initial)),
+            )
+            .await;
+            Some(subscription)
+        }
+        Err(error) => {
+            send(
+                events,
+                chosen.subscription,
+                chosen.subscription,
+                PortEvent::ConnectFailed(error.to_string()),
+            )
+            .await;
+            None
+        }
+    }
+}
+
+/// Submit an operation and wait for it to end.
+async fn run_control(
+    control: &SharedOperatorControl,
+    receiver: &ReceiverId,
+    intent: ReceiverIntent,
+) -> ControlReport {
+    let mut snapshot = match control
+        .submit(receiver, OperationSubmission::new(intent))
+        .await
+    {
+        Ok(snapshot) => snapshot,
+        Err(error) => return ControlReport::Failed(error.to_string()),
+    };
+    for _ in 0..OPERATION_WAITS {
+        if snapshot.status.is_terminal() {
+            return ControlReport::Finished(Box::new(snapshot));
+        }
+        snapshot = match control.operation(snapshot.id, Some(OPERATION_WAIT)).await {
+            Ok(snapshot) => snapshot,
+            Err(error) => return ControlReport::Failed(error.to_string()),
+        };
+    }
+    if snapshot.status.is_terminal() {
+        ControlReport::Finished(Box::new(snapshot))
+    } else {
+        ControlReport::Failed("the receiver did not finish the operation in time".into())
+    }
+}
+
+async fn send(
+    events: &mpsc::Sender<BridgeEvent>,
+    request_id: u64,
+    subscription: u64,
+    event: PortEvent,
+) {
+    let _ = events
+        .send(BridgeEvent {
+            request_id,
+            subscription,
+            event,
+        })
+        .await;
+}
+
+fn operation_error(error: ControlError) -> OperationError {
+    match error {
+        ControlError::Receiver(error) => error,
+        other => OperationError::new(
+            OperationErrorKind::Connection,
+            "receiver",
+            other.to_string(),
+        ),
     }
 }
 
 fn command_name(command: &BridgeCommand) -> &'static str {
     match command {
         BridgeCommand::Select(..) => "select",
-        BridgeCommand::Connect(..) => "connect",
         BridgeCommand::Refresh(..) => "refresh",
-        BridgeCommand::Disconnect(..) => "disconnect",
-        BridgeCommand::Control(..) => "control",
-        BridgeCommand::ControlZone2(..) => "control_zone2",
-        BridgeCommand::RefreshQuickSelectEq(..) => "refresh_quick_select_eq",
-        BridgeCommand::RefreshSourceCatalog(..) => "refresh_source_catalog",
-        BridgeCommand::RecallQuickSelect(..) => "recall_quick_select",
-        BridgeCommand::Shutdown(..) => "shutdown",
-    }
-}
-
-struct TracingObservability;
-
-impl denon_avr_application::Observability for TracingObservability {
-    fn record(&self, diagnostic: denon_avr_application::Diagnostic) {
-        match diagnostic {
-            denon_avr_application::Diagnostic::ConnectionGeneration(generation) => {
-                tracing::info!(generation, "receiver connection established")
-            }
-            denon_avr_application::Diagnostic::ReconnectAttempt { attempt } => {
-                tracing::warn!(attempt, "receiver reconnecting")
-            }
-            denon_avr_application::Diagnostic::Timeout { context } => {
-                tracing::warn!(%context, "receiver operation timed out")
-            }
-            denon_avr_application::Diagnostic::MalformedFrame { context } => {
-                tracing::warn!(%context, "receiver returned a malformed frame")
-            }
-            denon_avr_application::Diagnostic::QueuePressure { queued } => {
-                tracing::warn!(queued, "receiver command queue under pressure")
-            }
-            denon_avr_application::Diagnostic::Shutdown => {
-                tracing::info!("receiver controller shut down")
-            }
-        }
-    }
-}
-
-async fn connect_and_refresh(
-    handle: &ControllerHandle,
-) -> Result<Option<ReceiverEvent>, OperationError> {
-    let connected = handle.connect().await;
-    if connected.is_ok() {
-        handle.refresh().await
-    } else {
-        connected
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use denon_avr_application::Lifecycle;
-
-    #[test]
-    fn snapshots_keep_the_current_connection_generation() {
-        let mut generation = 0;
-        assert_eq!(
-            bridge_event_generation(
-                &ReceiverEvent::Lifecycle(Lifecycle::Connected { generation: 7 }),
-                &mut generation,
-            ),
-            7
-        );
-        assert_eq!(
-            bridge_event_generation(
-                &ReceiverEvent::Snapshot(denon_avr_domain::MainZoneSnapshot::default()),
-                &mut generation,
-            ),
-            7
-        );
-        assert_eq!(
-            bridge_event_generation(
-                &ReceiverEvent::Lifecycle(Lifecycle::Selected),
-                &mut generation
-            ),
-            0
-        );
+        BridgeCommand::Control { .. } => "control",
+        BridgeCommand::ReadSourceCatalog(..) => "read_source_catalog",
+        BridgeCommand::ReadQuickSelectNames(..) => "read_quick_select_names",
+        BridgeCommand::ReadHttpInformation(..) => "read_http_information",
+        BridgeCommand::Shutdown => "shutdown",
     }
 }

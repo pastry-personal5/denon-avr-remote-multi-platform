@@ -5,7 +5,7 @@ use denon_avr_domain::{
     CatalogResponseEvidence, Freshness, ModelCapabilities, SourceCatalog, SourceCatalogObservation,
 };
 
-pub(crate) fn ensure_supported(capabilities: &ModelCapabilities) -> Result<(), OperationError> {
+pub fn ensure_supported(capabilities: &ModelCapabilities) -> Result<(), OperationError> {
     if capabilities.source_catalog_read {
         Ok(())
     } else {
@@ -17,7 +17,7 @@ pub(crate) fn ensure_supported(capabilities: &ModelCapabilities) -> Result<(), O
     }
 }
 
-pub(crate) fn merge_refresh(
+pub fn merge_refresh(
     previous: SourceCatalog,
     generation: u64,
     result: Result<SourceCatalogObservation, OperationError>,

@@ -1,8 +1,7 @@
 //! Presentation messages consumed by the GUI reducer.
 
-use crate::{BridgeEvent, ContrastPreference, MotionPreference, Route};
-use denon_avr_application::ReceiverSelection;
-use denon_avr_domain::{ConfiguredReceivers, PowerState, QuickSelectSlot, SoundModeCategory};
+use crate::{BridgeEvent, ContrastPreference, MotionPreference, Route, Selection};
+use denon_avr_domain::{ConfiguredReceivers, PowerState, SoundModeCategory};
 use std::path::PathBuf;
 
 #[derive(Debug, Clone)]
@@ -15,13 +14,13 @@ pub enum Message {
     Discover,
     DiscoveryFinished(Result<Vec<denon_avr_domain::DiscoveredReceiver>, String>),
     SaveDiscovered(denon_avr_domain::DiscoveredReceiver),
-    DiscoveredSaved(Result<(ConfiguredReceivers, ReceiverSelection), String>),
+    DiscoveredSaved(Result<(ConfiguredReceivers, Selection), String>),
     ManualSetup,
-    ManualSaved(Result<(ConfiguredReceivers, ReceiverSelection), String>),
-    Select(ReceiverSelection),
-    Connect,
+    ManualSaved(Result<(ConfiguredReceivers, Selection), String>),
+    Select(Selection),
     Refresh,
-    Disconnect,
+    /// Read the receiver's HTTP information again, on the timer.
+    HttpTick,
     /// Toggle the receiver's Main Zone (Zone 1) power state.
     ToggleMainZonePower,
     ToggleZone2Power,
@@ -45,9 +44,7 @@ pub enum Message {
     OpenSourcePicker,
     CloseSourcePicker,
     SelectInput(String),
-    RefreshQuickSelectEq,
     RefreshSourceCatalog,
-    RecallQuickSelect(QuickSelectSlot),
     Shutdown,
     ToggleMessages,
     ClearMessages,

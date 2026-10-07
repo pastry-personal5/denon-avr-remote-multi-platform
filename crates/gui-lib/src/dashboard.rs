@@ -119,7 +119,7 @@ pub(crate) fn main_zone_power_control(power: Option<&PowerState>) -> Option<Main
 }
 
 pub(crate) fn power_recovery(
-    lifecycle: &denon_avr_application::Lifecycle,
+    lifecycle: &Lifecycle,
     snapshot: &MainZoneSnapshot,
 ) -> (&'static str, String, Option<(&'static str, Message)>) {
     let error = match &snapshot.power {
@@ -127,36 +127,30 @@ pub(crate) fn power_recovery(
         denon_avr_domain::FieldStatus::Value(_) => "power status is not currently available",
     };
     match lifecycle {
-        denon_avr_application::Lifecycle::Connecting
-        | denon_avr_application::Lifecycle::Selected => (
+        Lifecycle::Connecting | Lifecycle::Selected => (
             "CONNECTING",
             "Connecting to the selected receiver and requesting its status.".into(),
             None,
         ),
-        denon_avr_application::Lifecycle::Reconnecting { .. } => (
+        Lifecycle::Reconnecting { .. } => (
             "RECONNECTING",
             "The receiver connection was interrupted; status refresh is being retried.".into(),
             None,
         ),
-        denon_avr_application::Lifecycle::Disconnected => (
+        Lifecycle::Disconnected => (
             "RECEIVER UNAVAILABLE",
             format!("Could not read power status: {error}"),
             Some(("Retry Status", Message::Refresh)),
         ),
-        denon_avr_application::Lifecycle::NoReceiver => (
+        Lifecycle::NoReceiver => (
             "NO RECEIVER SELECTED",
             "Choose a receiver before requesting Main Zone status.".into(),
             Some(("Choose Receiver", Message::Navigate(Route::Receivers))),
         ),
-        denon_avr_application::Lifecycle::Connected { .. } => (
+        Lifecycle::Connected { .. } => (
             "POWER STATUS UNAVAILABLE",
             format!("Could not read power status: {error}"),
             Some(("Retry Status", Message::Refresh)),
-        ),
-        denon_avr_application::Lifecycle::Stopping | denon_avr_application::Lifecycle::Stopped => (
-            "CONNECTION CLOSED",
-            "The receiver session is stopping or has stopped.".into(),
-            None,
         ),
     }
 }
@@ -694,26 +688,16 @@ pub(crate) fn channel_state(layout: Option<&str>, channel: &str) -> &'static str
 
 pub(crate) fn quick_select_bar<'a>(
     snapshot: &QuickSelectSnapshot,
-    recall_supported: bool,
     names_supported: bool,
     catalog: SourceCatalog,
 ) -> Element<'a, Message> {
-    let content: Element<'a, Message> = if recall_supported || names_supported {
+    let content: Element<'a, Message> = if names_supported {
         container(
             QuickSelectSlot::ALL
                 .into_iter()
                 .fold(row![].spacing(8), |row, slot| {
                     let label = text(quick_select_slot_label(snapshot, slot, &catalog)).size(12);
-                    if recall_supported {
-                        row.push(
-                            button(label)
-                                .padding([7, 10])
-                                .style(design::secondary)
-                                .on_press(Message::RecallQuickSelect(slot)),
-                        )
-                    } else {
-                        row.push(container(label).padding([7, 10]))
-                    }
+                    row.push(container(label).padding([7, 10]))
                 }),
         )
         .width(Length::Fill)
@@ -760,17 +744,6 @@ pub(crate) fn quick_select_slot_label(
         |name| format!("{} {name}", slot.number()),
     );
     source.map_or(base.clone(), |source| format!("{base} · {source}"))
-}
-
-/// Unknown EQ observations carry no usable display value. Keep that state
-/// distinct internally, but leave the dashboard summary blank until at least
-/// one receiver-reported value is available.
-#[allow(dead_code)]
-pub(crate) fn eq_summary_if_reported(status: &EqStatus) -> Option<String> {
-    denon_avr_domain::EqFeature::ALL
-        .into_iter()
-        .any(|feature| !matches!(status.state(feature), denon_avr_domain::EqState::Unknown))
-        .then(|| feedback::eq_summary(status))
 }
 
 #[cfg(test)]

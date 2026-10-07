@@ -1,37 +1,69 @@
 //! Iced presentation layer for the desktop client.
 //!
-//! This module deliberately contains no AVR protocol knowledge.  All receiver
-//! policy, confirmation, retry, and lifecycle decisions remain in the typed
-//! application controller.
+//! This module deliberately contains no AVR protocol knowledge. It observes and
+//! controls the receiver only through the control-service port: it projects the
+//! state it is given, and submits operations that the service decides on.
 
-use denon_avr_application::ports::{
-    AsyncConfigRepository, AsyncReceiverDiscovery, BoxFuture, OperationError,
+use denon_avr_application::{
+    http_information as http_policy, quick_select as names_policy, source_catalog as catalog_policy,
 };
-use denon_avr_application::{ReceiverEvent, ReceiverSelection};
+use denon_avr_application::{OperationStatus, SharedOperatorControl};
 use denon_avr_domain::{
-    ChannelSlot, ChannelSlotState, ConfiguredReceivers, EqStatus, FieldStatus, Input,
+    ChannelSlot, ChannelSlotState, ConfiguredReceivers, FieldBaseline, FieldStatus, Input,
     MainZoneControl, MainZoneSnapshot, MainZoneValue, Model, ModelCapabilities, MuteState,
-    PowerState, QuickSelectEqCapabilities, QuickSelectSlot, QuickSelectSnapshot, ReceiverIdentity,
-    SoundModeCategory, SourceCatalog, SourceCatalogCapabilities, SourceVisibility, StateAuthority,
+    PowerState, QuickSelectSlot, QuickSelectSnapshot, ReceiverId, ReceiverIdentity, ReceiverIntent,
+    ReceiverState, SoundModeCategory, SourceCatalog, SourceVisibility, StateAuthority,
     SurroundMode, Volume, Zone2Snapshot,
 };
 use iced::widget::{column, container, row, scrollable, space, stack, text, text_input};
 use iced::{Element, Length, Subscription, Task};
-use std::collections::BTreeMap;
 use std::collections::VecDeque;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::Duration;
 
-async fn save_sound_mode_config(
-    configuration: Arc<dyn AsyncConfigRepository>,
+/// Save `config` through the port and hand it back.
+async fn save_configuration(
+    control: SharedOperatorControl,
     config: ConfiguredReceivers,
 ) -> Result<ConfiguredReceivers, String> {
-    configuration
-        .save(&config)
+    control
+        .save_configuration(&config)
         .await
         .map(|_| config)
         .map_err(|error| error.to_string())
+}
+
+/// Save the sound mode favorites in `config`, leaving the rest of the stored
+/// configuration as it is now on disk.
+async fn save_favorites(
+    control: SharedOperatorControl,
+    config: ConfiguredReceivers,
+) -> Result<ConfiguredReceivers, String> {
+    let mut stored = control
+        .configuration()
+        .await
+        .map_err(|error| error.to_string())?;
+    stored.sound_mode_favorites = config.sound_mode_favorites.clone();
+    save_configuration(control, stored).await?;
+    Ok(config)
+}
+
+/// Add or replace one receiver in the saved configuration and make it current,
+/// keeping every other receiver and every sound mode favorite. The file is read
+/// first, so an edit made by hand since the last load is not overwritten.
+async fn save_receiver(
+    control: SharedOperatorControl,
+    name: String,
+    identity: ReceiverIdentity,
+) -> Result<(ConfiguredReceivers, Selection), String> {
+    let mut config = control
+        .configuration()
+        .await
+        .map_err(|error| error.to_string())?;
+    config.receivers.insert(name.clone(), identity.clone());
+    config.current = Some(name.clone());
+    let config = save_configuration(control, config).await?;
+    Ok((config, Selection { name, identity }))
 }
 
 mod bridge;
@@ -39,17 +71,46 @@ mod capture;
 pub mod components;
 mod dashboard;
 pub mod design;
-pub mod desktop_projection;
 mod feedback;
 mod messages;
+pub mod projection;
 mod receiver_setup;
 mod settings_diagnostics;
 mod views;
 
 use bridge::BridgeCommand;
-pub use bridge::{BridgeEvent, ControllerBridge, GuiServices};
+pub use bridge::{BridgeEvent, ControlReport, GuiServices, PortBridge, PortEvent, ShutdownHook};
 use dashboard::*;
 pub use messages::Message;
+
+/// A saved receiver the user has chosen. The name is the configuration entry
+/// name, which is the receiver's id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Selection {
+    pub name: String,
+    pub identity: ReceiverIdentity,
+}
+
+impl Selection {
+    pub fn identity(&self) -> ReceiverIdentity {
+        self.identity.clone()
+    }
+
+    pub fn receiver_id(&self) -> Result<ReceiverId, &'static str> {
+        ReceiverId::new(self.name.as_str())
+    }
+}
+
+/// Where the connection to the selected receiver stands, as the views show it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Lifecycle {
+    NoReceiver,
+    Selected,
+    Connecting,
+    Connected { generation: u64 },
+    Reconnecting { generation: u64 },
+    Disconnected,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Route {
@@ -91,8 +152,8 @@ pub struct Gui {
     pub window_class: WindowClass,
     pub configured: ConfiguredReceivers,
     pub discovered: Vec<denon_avr_domain::DiscoveredReceiver>,
-    pub selection: Option<ReceiverSelection>,
-    pub lifecycle: denon_avr_application::Lifecycle,
+    pub selection: Option<Selection>,
+    pub lifecycle: Lifecycle,
     pub snapshot: MainZoneSnapshot,
     pub zone2: Zone2Snapshot,
     pub volume_slider: f32,
@@ -106,7 +167,6 @@ pub struct Gui {
     pub request_id: u64,
     pub generation: u64,
     pub quick_select: QuickSelectSnapshot,
-    pub eq_status: EqStatus,
     pub source_catalog: SourceCatalog,
     /// Local table filter only. The AVR reports a detailed MS mode, not a
     /// category, so this value never represents receiver-observed state.
@@ -132,27 +192,37 @@ pub struct Gui {
     pub contrast_preference: ContrastPreference,
     capture_directory: Option<PathBuf>,
     capture_scenario: Option<String>,
-    launch_ready: bool,
+    pub launch_ready: bool,
     launch_frame: u8,
     status_wait_ticks: u16,
-    validated_quick_select_eq: Option<QuickSelectEqCapabilities>,
-    validated_source_catalog: Option<SourceCatalogCapabilities>,
-    bridge: ControllerBridge,
-    discovery: Arc<dyn AsyncReceiverDiscovery>,
-    configuration: Arc<dyn AsyncConfigRepository>,
+    /// The newest receiver state the views were built from. It is what a
+    /// control's guard is captured against.
+    state: Option<ReceiverState>,
+    /// The `Select` request the displayed receiver was chosen with. Events from
+    /// an earlier one belong to a receiver the user has left.
+    subscription: u64,
+    http_read_in_flight: bool,
+    http_read_again: bool,
+    catalog_read_in_flight: bool,
+    names_read_in_flight: bool,
+    /// The connection generation the source catalog was last requested for on
+    /// its own, so a receiver that cannot answer is asked once per connection.
+    catalog_auto_generation: Option<u64>,
+    bridge: PortBridge,
+    control: SharedOperatorControl,
 }
 
 impl Gui {
-    pub fn new(bridge: ControllerBridge) -> Self {
-        let validated_quick_select_eq = bridge.validated_quick_select_eq;
-        let validated_source_catalog = bridge.validated_source_catalog;
+    pub fn new(services: GuiServices) -> Self {
+        let control = std::sync::Arc::clone(&services.control);
+        let bridge = PortBridge::new(services);
         Self {
             route: Route::Dashboard,
             window_class: WindowClass::Wide,
             configured: ConfiguredReceivers::default(),
             discovered: Vec::new(),
             selection: None,
-            lifecycle: denon_avr_application::Lifecycle::NoReceiver,
+            lifecycle: Lifecycle::NoReceiver,
             snapshot: MainZoneSnapshot::default(),
             zone2: Zone2Snapshot::default(),
             // Keep the visible thumb at the safe minimum until canonical
@@ -169,7 +239,6 @@ impl Gui {
             request_id: 0,
             generation: 0,
             quick_select: QuickSelectSnapshot::default(),
-            eq_status: EqStatus::default(),
             source_catalog: SourceCatalog::default(),
             sound_mode_category_filter: None,
             sound_mode_request_id: None,
@@ -189,12 +258,22 @@ impl Gui {
             launch_ready: false,
             launch_frame: 0,
             status_wait_ticks: 0,
-            validated_quick_select_eq,
-            validated_source_catalog,
+            state: None,
+            subscription: 0,
+            http_read_in_flight: false,
+            http_read_again: false,
+            catalog_read_in_flight: false,
+            names_read_in_flight: false,
+            catalog_auto_generation: None,
             bridge,
-            discovery: Arc::new(NoopDiscovery),
-            configuration: Arc::new(NoopConfiguration),
+            control,
         }
+    }
+
+    /// The bridge to the port, for a headless driver that feeds its events back
+    /// as messages.
+    pub fn bridge(&self) -> &PortBridge {
+        &self.bridge
     }
 
     fn next_request(&mut self) -> u64 {
@@ -237,13 +316,16 @@ impl Gui {
         self.messages.clear();
         self.messages_collapsed = false;
         self.route = Route::Dashboard;
-        self.selection = Some(ReceiverSelection::ExplicitHost(ReceiverIdentity {
-            host: "capture.invalid".into(),
-            model: Some("AVR-X3800H".into()),
-            friendly_name: Some("Capture receiver".into()),
-        }));
+        self.selection = Some(Selection {
+            name: "Capture receiver".into(),
+            identity: ReceiverIdentity {
+                host: "capture.invalid".into(),
+                model: Some("AVR-X3800H".into()),
+                friendly_name: Some("Capture receiver".into()),
+            },
+        });
         self.generation = 1;
-        self.lifecycle = denon_avr_application::Lifecycle::Connected { generation: 1 };
+        self.lifecycle = Lifecycle::Connected { generation: 1 };
         self.snapshot = MainZoneSnapshot::default();
         self.snapshot.set_value(
             MainZoneValue::Power(PowerState::On),
@@ -282,7 +364,7 @@ impl Gui {
             }
             "unavailable" => {
                 self.snapshot.invalidate();
-                self.lifecycle = denon_avr_application::Lifecycle::Disconnected;
+                self.lifecycle = Lifecycle::Disconnected;
                 self.announce("Deterministic capture scenario: unavailable receiver.");
             }
             "settings" => {
@@ -323,8 +405,6 @@ impl Gui {
             .map(|model| Model::from_reported(&model))
             .unwrap_or(Model::Unknown);
         ModelCapabilities::for_model(model)
-            .with_validated_quick_select_eq(self.validated_quick_select_eq.unwrap_or_default())
-            .with_validated_source_catalog(self.validated_source_catalog.unwrap_or_default())
     }
 
     fn status_waiting(&self) -> bool {
@@ -344,12 +424,14 @@ impl Gui {
             .any(|waiting| waiting)
     }
 
-    fn invalidate_quick_select_eq(&mut self) {
+    /// Forget what was read over HTTP for a connection that is gone: the Quick
+    /// Select names, the source catalog, and the audio, video, and Audyssey
+    /// information.
+    fn invalidate_supplemental(&mut self) {
         self.quick_select.invalidate();
-        self.eq_status.invalidate();
         self.quick_select.generation = self.generation;
-        self.eq_status.generation = self.generation;
         self.source_catalog.invalidate(self.generation);
+        self.snapshot.invalidate_http_information(self.generation);
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
@@ -357,7 +439,7 @@ impl Gui {
             Message::ConfigLoaded(Ok(config)) => {
                 self.configured = config;
                 let message: String = if let Some((name, identity)) = self.configured.current() {
-                    self.selection = Some(ReceiverSelection::Saved {
+                    self.selection = Some(Selection {
                         name: name.into(),
                         identity: identity.clone(),
                     });
@@ -370,11 +452,9 @@ impl Gui {
                     "Connect a receiver to see its status.".into()
                 };
                 self.announce(message);
-                if let Some(selection) = self.selection.clone() {
-                    let id = self.next_request();
-                    self.command(BridgeCommand::Select(id, selection))
-                } else {
-                    Task::none()
+                match self.selection.clone() {
+                    Some(selection) => self.connect_to(&selection),
+                    None => Task::none(),
                 }
             }
             Message::ConfigLoaded(Err(error)) => {
@@ -488,196 +568,32 @@ impl Gui {
                 self.volume_baseline_initialized = false;
                 self.zone2.invalidate();
                 self.status_wait_ticks = 0;
-                self.invalidate_quick_select_eq();
+                self.invalidate_supplemental();
                 self.volume_command_pending = false;
                 self.volume_command_request_id = None;
                 self.sound_mode_category_filter = None;
                 self.sound_mode_request_id = None;
                 self.status_confirmed_generation = None;
-                let id = self.next_request();
                 self.announce(format!(
                     "{} selected; connecting for confirmed status…",
                     selection_label(&selection)
                 ));
-                self.command(BridgeCommand::Select(id, selection))
+                self.connect_to(&selection)
             }
-            Message::Bridge(event) => {
-                let event = *event;
-                let event_request_id = event.request_id;
-                // A control confirmation for the in-flight volume command is
-                // terminal even if a newer, unrelated read request has since
-                // advanced the global request counter.
-                if matches!(&event.event, ReceiverEvent::Control(_))
-                    && self.volume_command_request_id == Some(event_request_id)
-                {
-                    self.volume_command_pending = false;
-                    self.volume_command_request_id = None;
-                }
-                // Sound-mode controls have the same independent confirmation
-                // lifetime as volume controls. A supplemental read may advance
-                // the GUI request counter before this control result arrives.
-                if matches!(&event.event, ReceiverEvent::Control(_))
-                    && self.sound_mode_request_id == Some(event_request_id)
-                {
-                    self.sound_mode_request_id = None;
-                }
-                // Supplemental receiver reads run after the core status reply.
-                // A core snapshot can immediately start a newer source-catalog
-                // request, while the Quick Select-name event from the earlier
-                // refresh is still in transit. Those observations are tagged
-                // with their connection generation and must not be discarded
-                // merely because an unrelated GUI request has a newer ID.
-                let supplemental_state = matches!(
-                    &event.event,
-                    ReceiverEvent::QuickSelect(_)
-                        | ReceiverEvent::QuickSelectNames(_)
-                        | ReceiverEvent::EqStatus(_)
-                        | ReceiverEvent::SourceCatalog(_)
-                );
-                // A receiver snapshot is not the result of just one GUI
-                // request. It may be emitted by the session monitor while an
-                // unrelated catalog request has already advanced
-                // `request_id`. Accept only a strictly newer snapshot from
-                // this connection (or a newer connection) in that case.
-                let newer_connection_snapshot = matches!(
-                    &event.event,
-                    ReceiverEvent::Snapshot(snapshot)
-                        if event.generation != 0
-                            && event.generation >= self.generation
-                            && snapshot.resource_version() > self.snapshot.resource_version()
-                );
-                if (event.request_id < self.request_id
-                    && !supplemental_state
-                    && !newer_connection_snapshot)
-                    || (event.generation != 0
-                        && self.generation != 0
-                        && event.generation < self.generation)
-                {
-                    return Task::none();
-                }
-                self.request_id = self.request_id.max(event.request_id);
-                if event.generation > self.generation {
-                    self.generation = event.generation;
-                }
-                match event.event {
-                    ReceiverEvent::Lifecycle(lifecycle) => {
-                        if matches!(
-                            &lifecycle,
-                            denon_avr_application::Lifecycle::Selected
-                                | denon_avr_application::Lifecycle::Reconnecting { .. }
-                                | denon_avr_application::Lifecycle::Disconnected
-                        ) {
-                            self.invalidate_quick_select_eq();
-                        }
-                        if matches!(
-                            &lifecycle,
-                            denon_avr_application::Lifecycle::Reconnecting { .. }
-                                | denon_avr_application::Lifecycle::Disconnected
-                        ) {
-                            self.snapshot.invalidate();
-                            self.zone2.invalidate();
-                            self.status_wait_ticks = 0;
-                            self.sound_mode_category_filter = None;
-                            self.sound_mode_request_id = None;
-                            self.volume_command_pending = false;
-                            self.volume_command_request_id = None;
-                        }
-                        if matches!(
-                            &lifecycle,
-                            denon_avr_application::Lifecycle::Selected
-                                | denon_avr_application::Lifecycle::Connected { .. }
-                                | denon_avr_application::Lifecycle::Reconnecting { .. }
-                                | denon_avr_application::Lifecycle::Disconnected
-                        ) {
-                            self.status_confirmed_generation = None;
-                        }
-                        self.lifecycle = lifecycle;
-                        self.complete_launch_if_ready();
-                    }
-                    ReceiverEvent::Snapshot(snapshot) => {
-                        // Replace the stale "connecting for confirmed status…" message
-                        // with a connected/status-confirmed message once core status is available.
-                        if let Some(selection) = &self.selection {
-                            if snapshot.power.value().is_some()
-                                && self.status_confirmed_generation != Some(self.generation)
-                            {
-                                self.announce(format!(
-                                    "{} selected; connected; status confirmed.",
-                                    selection_label(selection)
-                                ));
-                                self.status_confirmed_generation = Some(self.generation);
-                            }
-                        }
-                        if let Some(volume) = slider_volume(&snapshot) {
-                            self.volume_slider = volume;
-                            self.volume_baseline_initialized = true;
-                        }
-                        self.snapshot = snapshot;
-                        self.complete_launch_if_ready();
-                        if self.launch_ready
-                            && self.selected_capabilities().source_catalog_read
-                            && matches!(
-                                self.source_catalog.freshness,
-                                denon_avr_domain::Freshness::Unknown
-                                    | denon_avr_domain::Freshness::Invalidated
-                            )
-                            && self.snapshot.power.value().is_some()
-                        {
-                            let id = self.next_request();
-                            self.announce("Refreshing source list…");
-                            return self.command(BridgeCommand::RefreshSourceCatalog(id));
-                        }
-                    }
-                    ReceiverEvent::Zone2Snapshot(snapshot) => self.zone2 = snapshot,
-                    ReceiverEvent::QuickSelect(snapshot) => self.quick_select = *snapshot,
-                    ReceiverEvent::EqStatus(status) => self.eq_status = *status,
-                    ReceiverEvent::SourceCatalog(observation) => {
-                        if observation.catalog.generation == self.generation || self.generation == 0
-                        {
-                            self.source_catalog = observation.catalog;
-                            self.announce("Source list refreshed.");
-                        }
-                    }
-                    ReceiverEvent::QuickSelectNames(observation) => {
-                        if observation.generation == self.generation || self.generation == 0 {
-                            self.announce("Quick Select names refreshed.");
-                        }
-                    }
-                    ReceiverEvent::QuickSelectRecall(outcome) => {
-                        self.announce(feedback::quick_select_recall_message(&outcome))
-                    }
-                    ReceiverEvent::Control(result) => {
-                        if self.volume_command_request_id == Some(event_request_id) {
-                            self.volume_command_pending = false;
-                            self.volume_command_request_id = None;
-                        }
-                        self.announce(feedback::control_message(&result))
-                    }
-                    ReceiverEvent::FieldError { field, error } => {
-                        self.announce(format!("{} unavailable: {}", field.name(), error.message))
-                    }
-                    ReceiverEvent::Diagnostic(diagnostic) => {
-                        self.volume_command_pending = false;
-                        self.volume_command_request_id = None;
-                        self.sound_mode_category_filter = None;
-                        self.sound_mode_request_id = None;
-                        self.announce(format!("Diagnostic: {diagnostic:?}"))
-                    }
-                    _ => {}
-                }
-                Task::none()
-            }
-            Message::Connect => {
-                let id = self.next_request();
-                self.command(BridgeCommand::Connect(id))
-            }
+            Message::Bridge(event) => self.on_bridge(*event),
             Message::Refresh => {
                 let id = self.next_request();
+                if self.lifecycle == Lifecycle::Disconnected {
+                    self.lifecycle = Lifecycle::Connecting;
+                }
                 self.command(BridgeCommand::Refresh(id))
             }
-            Message::Disconnect => {
-                let id = self.next_request();
-                self.command(BridgeCommand::Disconnect(id))
+            Message::HttpTick => {
+                if self.state.is_some() && matches!(self.lifecycle, Lifecycle::Connected { .. }) {
+                    self.request_http_information()
+                } else {
+                    Task::none()
+                }
             }
             Message::ToggleMainZonePower => main_zone_power_control(self.snapshot.power.value())
                 .map_or_else(Task::none, |control| self.control(control)),
@@ -687,8 +603,7 @@ impl Gui {
                     Some(PowerState::Standby) => PowerState::On,
                     None => return Task::none(),
                 };
-                let id = self.next_request();
-                self.command(BridgeCommand::ControlZone2(id, power))
+                self.control_zone2(power)
             }
             Message::OpenMainZonePowerPopup => {
                 self.power_popup = self
@@ -718,8 +633,7 @@ impl Gui {
             }
             Message::SetZone2Power(power) => {
                 self.power_popup = None;
-                let id = self.next_request();
-                self.command(BridgeCommand::ControlZone2(id, power))
+                self.control_zone2(power)
             }
             Message::Mute => self.control(MainZoneControl::Mute(denon_avr_domain::MuteState::On)),
             Message::Unmute => {
@@ -803,7 +717,7 @@ impl Gui {
                         return Task::none();
                     }
                 };
-                let configuration = Arc::clone(&self.configuration);
+                let control = self.control.clone();
                 self.announce(format!(
                     "{} {} favorite…",
                     if favorite { "Saving" } else { "Removing" },
@@ -819,7 +733,7 @@ impl Gui {
                 }
                 self.sound_mode_save_in_flight = true;
                 Task::perform(
-                    save_sound_mode_config(configuration, config),
+                    save_favorites(control, config),
                     Message::SoundModeFavoritesSaved,
                 )
             }
@@ -828,9 +742,9 @@ impl Gui {
                 self.announce("Sound mode favorites saved.");
                 if let Some(next) = self.pending_sound_mode_config.take() {
                     self.configured = next.clone();
-                    let configuration = Arc::clone(&self.configuration);
+                    let control = self.control.clone();
                     return Task::perform(
-                        save_sound_mode_config(configuration, next),
+                        save_favorites(control, next),
                         Message::SoundModeFavoritesSaved,
                     );
                 }
@@ -852,9 +766,8 @@ impl Gui {
                             | denon_avr_domain::Freshness::Invalidated
                     )
                 {
-                    let id = self.next_request();
                     self.announce("Refreshing source list…");
-                    self.command(BridgeCommand::RefreshSourceCatalog(id))
+                    self.request_source_catalog()
                 } else {
                     Task::none()
                 }
@@ -873,34 +786,16 @@ impl Gui {
                     }
                 }
             }
-            Message::RefreshQuickSelectEq => {
-                let id = self.next_request();
-                self.announce("Refreshing EQ status…");
-                self.command(BridgeCommand::RefreshQuickSelectEq(id))
-            }
             Message::RefreshSourceCatalog => {
-                let id = self.next_request();
                 self.announce("Refreshing source list…");
-                self.command(BridgeCommand::RefreshSourceCatalog(id))
-            }
-            Message::RecallQuickSelect(slot) => {
-                let id = self.next_request();
-                self.announce(format!(
-                    "Recalling Main Zone Quick Select {}…",
-                    slot.number()
-                ));
-                self.command(BridgeCommand::RecallQuickSelect(
-                    id,
-                    slot,
-                    Some(self.quick_select.resource_version()),
-                ))
+                self.request_source_catalog()
             }
             Message::Discover => {
                 self.announce("Searching for receivers…");
-                let discovery = Arc::clone(&self.discovery);
+                let control = self.control.clone();
                 Task::perform(
                     async move {
-                        discovery
+                        control
                             .discover(Duration::from_secs(3))
                             .await
                             .map_err(|error| error.to_string())
@@ -924,20 +819,14 @@ impl Gui {
                 Task::none()
             }
             Message::SaveDiscovered(receiver) => {
-                let (config, selection) = configuration_for_discovered(&receiver);
-                let configuration = Arc::clone(&self.configuration);
+                let (name, identity) = receiver_entry_for_discovered(&receiver);
+                let control = self.control.clone();
                 self.announce(format!(
                     "Saving {} as the current receiver…",
-                    selection_label(&selection)
+                    identity_label(&identity)
                 ));
                 Task::perform(
-                    async move {
-                        configuration
-                            .save(&config)
-                            .await
-                            .map(|_| (config, selection))
-                            .map_err(|error| error.to_string())
-                    },
+                    save_receiver(control, name, identity),
                     Message::DiscoveredSaved,
                 )
             }
@@ -965,27 +854,12 @@ impl Gui {
                     .friendly_name
                     .clone()
                     .unwrap_or_else(|| identity.host.clone());
-                let config = ConfiguredReceivers {
-                    current: Some(name.clone()),
-                    receivers: BTreeMap::from([(name.clone(), identity.clone())]),
-                    ..ConfiguredReceivers::default()
-                };
-                let selection = ReceiverSelection::Saved { name, identity };
-                let configuration = Arc::clone(&self.configuration);
+                let control = self.control.clone();
                 self.announce(format!(
                     "Saving {} as the current receiver…",
-                    selection_label(&selection)
+                    identity_label(&identity)
                 ));
-                Task::perform(
-                    async move {
-                        configuration
-                            .save(&config)
-                            .await
-                            .map(|_| (config, selection))
-                            .map_err(|error| error.to_string())
-                    },
-                    Message::ManualSaved,
-                )
+                Task::perform(save_receiver(control, name, identity), Message::ManualSaved)
             }
             Message::ManualSaved(Ok((config, selection))) => {
                 self.configured = config;
@@ -996,33 +870,63 @@ impl Gui {
                 self.announce(format!("Could not save receiver: {error}"));
                 Task::none()
             }
-            Message::Shutdown => {
-                let id = self.next_request();
-                self.command(BridgeCommand::Shutdown(id))
-            }
+            Message::Shutdown => self.command(BridgeCommand::Shutdown),
         }
     }
 
     fn control(&mut self, control: MainZoneControl) -> Task<Message> {
+        let intent = match projection::intent_for(&control) {
+            Ok(intent) => intent,
+            Err(error) => {
+                self.announce(error);
+                return Task::none();
+            }
+        };
         let id = self.next_request();
         self.announce("Command pending; waiting for receiver confirmation…");
-        self.command(BridgeCommand::Control(
-            id,
-            control,
-            Some(self.snapshot.resource_version()),
-        ))
+        self.submit(id, intent)
+    }
+
+    fn control_zone2(&mut self, power: PowerState) -> Task<Message> {
+        let id = self.next_request();
+        self.submit(id, projection::zone2_power_intent(power))
+    }
+
+    /// Send an operation to the receiver. A control that depends on what the
+    /// user saw, which is every one but a power control, carries the value the
+    /// target field showed, so a change since then is reported and not overwritten.
+    fn submit(&mut self, id: u64, intent: ReceiverIntent) -> Task<Message> {
+        let guard = self.guard_for(&intent);
+        self.command(BridgeCommand::Control { id, intent, guard })
+    }
+
+    /// Power controls state an absolute target, so an unrelated change must not
+    /// stop them.
+    fn guard_for(&self, intent: &ReceiverIntent) -> Option<FieldBaseline> {
+        match intent {
+            ReceiverIntent::SystemPower(_)
+            | ReceiverIntent::MainZonePower(_)
+            | ReceiverIntent::Zone2Power(_) => None,
+            _ => self
+                .state
+                .as_ref()
+                .map(|state| FieldBaseline::capture(state, intent.field())),
+        }
     }
 
     fn control_sound_mode(&mut self, control: MainZoneControl) -> Task<Message> {
         const SOUND_MODE_CONTROL_TIMEOUT: Duration = Duration::from_secs(3);
+        let intent = match projection::intent_for(&control) {
+            Ok(intent) => intent,
+            Err(error) => {
+                self.announce(error);
+                return Task::none();
+            }
+        };
         let id = self.next_request();
         self.sound_mode_request_id = Some(id);
         self.announce("Command pending; waiting for receiver confirmation…");
-        let command = self.command(BridgeCommand::Control(
-            id,
-            control,
-            Some(self.snapshot.resource_version()),
-        ));
+        let command = self.submit(id, intent);
         let timeout = Task::perform(
             async move {
                 tokio::time::sleep(SOUND_MODE_CONTROL_TIMEOUT).await;
@@ -1082,11 +986,7 @@ impl Gui {
         let id = self.next_request();
         self.volume_command_request_id = Some(id);
         self.announce("Command pending; waiting for receiver confirmation…");
-        self.command(BridgeCommand::Control(
-            id,
-            MainZoneControl::Volume(level),
-            Some(self.snapshot.resource_version()),
-        ))
+        self.submit(id, ReceiverIntent::Volume(projection::master_volume(level)))
     }
 
     fn show_volume_value(&mut self) -> Task<Message> {
@@ -1102,12 +1002,304 @@ impl Gui {
         )
     }
 
+    /// Choose `selection` and ask the bridge to connect to it.
+    fn connect_to(&mut self, selection: &Selection) -> Task<Message> {
+        let receiver = match selection.receiver_id() {
+            Ok(receiver) => receiver,
+            Err(error) => {
+                self.announce(format!(
+                    "Cannot use the receiver name {:?}: {error}",
+                    selection.name
+                ));
+                self.launch_ready = true;
+                return Task::none();
+            }
+        };
+        let id = self.next_request();
+        self.subscription = id;
+        self.state = None;
+        self.generation = 0;
+        self.lifecycle = Lifecycle::Selected;
+        self.http_read_in_flight = false;
+        self.http_read_again = false;
+        self.catalog_read_in_flight = false;
+        self.names_read_in_flight = false;
+        self.catalog_auto_generation = None;
+        self.command(BridgeCommand::Select(id, receiver))
+    }
+
+    fn reset_pending_controls(&mut self) {
+        self.volume_command_pending = false;
+        self.volume_command_request_id = None;
+        self.sound_mode_category_filter = None;
+        self.sound_mode_request_id = None;
+    }
+
+    /// The receiver stopped answering and the transport is reconnecting.
+    fn connection_lost(&mut self) {
+        self.generation = self.generation.saturating_add(1);
+        self.lifecycle = Lifecycle::Reconnecting {
+            generation: self.generation,
+        };
+        self.snapshot.invalidate();
+        self.zone2.invalidate();
+        self.invalidate_supplemental();
+        self.status_wait_ticks = 0;
+        self.status_confirmed_generation = None;
+        self.reset_pending_controls();
+    }
+
+    /// Take in the newest receiver state: the connection lifecycle, the display
+    /// model, and the reads that follow a connection or a change.
+    fn apply_state(&mut self, state: ReceiverState) -> Task<Message> {
+        let projected = projection::project(&state);
+        let mut tasks: Vec<Task<Message>> = Vec::new();
+        let was_connected = matches!(self.lifecycle, Lifecycle::Connected { .. });
+        let was_reconnecting = matches!(self.lifecycle, Lifecycle::Reconnecting { .. });
+        match state.epoch.map(|epoch| epoch.0) {
+            None => {
+                if !was_reconnecting {
+                    self.connection_lost();
+                }
+            }
+            Some(epoch) => {
+                // The channel coalesces, so a disconnect and the reconnect after
+                // it can arrive as one step to a higher epoch.
+                let reconnected = was_reconnecting
+                    || (was_connected && self.generation != 0 && epoch > self.generation);
+                if reconnected {
+                    if was_connected {
+                        self.connection_lost();
+                    }
+                    // A reconnect gives the receiver's evidence back only at the
+                    // next sweep. Ask for it now.
+                    let id = self.next_request();
+                    tasks.push(self.command(BridgeCommand::Refresh(id)));
+                }
+                if !was_connected || reconnected {
+                    self.generation = epoch;
+                    self.lifecycle = Lifecycle::Connected { generation: epoch };
+                    self.status_wait_ticks = 0;
+                    tasks.push(self.request_quick_select_names());
+                }
+            }
+        }
+
+        let previous = std::mem::replace(&mut self.snapshot, projected.snapshot);
+        self.snapshot.http_information = previous.http_information.clone();
+        if self.snapshot.power.value() == Some(&PowerState::Standby) {
+            self.snapshot.http_information.invalidate(0);
+        }
+        self.zone2 = projected.zone2;
+        // Slide the thumb only when the receiver's level changed, not at every
+        // state: the state also changes for reasons that say nothing about the
+        // volume, and a drag in progress must not snap back.
+        if let Some(volume) = slider_volume(&self.snapshot) {
+            let changed = slider_volume(&previous) != Some(volume);
+            if changed || !self.volume_baseline_initialized {
+                self.volume_slider = volume;
+                self.volume_baseline_initialized = true;
+            }
+        }
+        if let Some(selection) = &self.selection {
+            if self.snapshot.power.value().is_some()
+                && self.status_confirmed_generation != Some(self.generation)
+            {
+                self.announce(format!(
+                    "{} selected; connected; status confirmed.",
+                    selection_label(selection)
+                ));
+                self.status_confirmed_generation = Some(self.generation);
+            }
+        }
+        self.state = Some(state);
+        self.complete_launch_if_ready();
+
+        // What the receiver reports over HTTP follows its input, sound mode, and
+        // power.
+        let powered_on = self.snapshot.power.value() == Some(&PowerState::On)
+            && previous.power.value() != Some(&PowerState::On);
+        let input_changed = self.snapshot.input.value().is_some()
+            && self.snapshot.input.value() != previous.input.value();
+        let mode_changed = self.snapshot.surround_mode.value().is_some()
+            && self.snapshot.surround_mode.value() != previous.surround_mode.value();
+        if powered_on || input_changed || mode_changed {
+            tasks.push(self.request_http_information());
+        }
+        if self.launch_ready
+            && self.selected_capabilities().source_catalog_read
+            && matches!(
+                self.source_catalog.freshness,
+                denon_avr_domain::Freshness::Unknown | denon_avr_domain::Freshness::Invalidated
+            )
+            && self.snapshot.power.value().is_some()
+            && self.catalog_auto_generation != Some(self.generation)
+        {
+            // Once per connection: a receiver that cannot answer must not be
+            // asked again at every state.
+            self.catalog_auto_generation = Some(self.generation);
+            self.announce("Refreshing source list…");
+            tasks.push(self.request_source_catalog());
+        }
+        Task::batch(tasks)
+    }
+
+    fn on_bridge(&mut self, event: BridgeEvent) -> Task<Message> {
+        // A receiver the user has since left no longer speaks for this window.
+        if event.subscription != self.subscription {
+            return Task::none();
+        }
+        let request_id = event.request_id;
+        match event.event {
+            PortEvent::State(state) => self.apply_state(*state),
+            PortEvent::SessionEnded => {
+                self.connection_lost();
+                Task::none()
+            }
+            PortEvent::ConnectFailed(message) => {
+                self.lifecycle = Lifecycle::Disconnected;
+                self.state = None;
+                self.snapshot.invalidate();
+                self.zone2.invalidate();
+                self.invalidate_supplemental();
+                self.reset_pending_controls();
+                // The unavailable screen, with its retry, is where to be: the
+                // launch screen would wait for ever on a receiver that is not there.
+                self.launch_ready = true;
+                self.announce(format!("Operation failed: {message}"));
+                Task::none()
+            }
+            PortEvent::Refreshed => Task::none(),
+            PortEvent::Control(report) => self.on_control(request_id, report),
+            PortEvent::SourceCatalog { generation, result } => {
+                self.catalog_read_in_flight = false;
+                if generation == self.generation {
+                    let previous = self.source_catalog.clone();
+                    let (catalog, _, outcome) =
+                        catalog_policy::merge_refresh(previous, generation, result.map(|r| *r));
+                    self.source_catalog = catalog;
+                    match outcome {
+                        Ok(()) => self.announce("Source list refreshed."),
+                        Err(error) => self.announce(format!("Source list unavailable: {error}")),
+                    }
+                }
+                Task::none()
+            }
+            PortEvent::QuickSelectNames { generation, result } => {
+                self.names_read_in_flight = false;
+                if generation == self.generation {
+                    match result {
+                        Ok(observation) => {
+                            names_policy::apply_names(
+                                &mut self.quick_select,
+                                *observation,
+                                generation,
+                            );
+                            self.announce("Quick Select names refreshed.");
+                        }
+                        Err(error) => {
+                            tracing::debug!(%error, "Quick Select names unavailable");
+                        }
+                    }
+                }
+                Task::none()
+            }
+            PortEvent::HttpInformation { generation, result } => {
+                self.http_read_in_flight = false;
+                let again = std::mem::take(&mut self.http_read_again);
+                if generation == self.generation {
+                    let previous = self.snapshot.http_information.clone();
+                    let (information, _) =
+                        http_policy::merge_refresh(previous, generation, result.map(|r| *r));
+                    self.snapshot.set_http_information(information);
+                }
+                if again {
+                    self.request_http_information()
+                } else {
+                    Task::none()
+                }
+            }
+            PortEvent::Failed(message) => {
+                self.reset_pending_controls();
+                self.announce(format!("Operation failed: {message}"));
+                Task::none()
+            }
+        }
+    }
+
+    fn on_control(&mut self, request_id: u64, report: ControlReport) -> Task<Message> {
+        // A control's end is terminal for the command that asked for it, even if
+        // an unrelated read has since advanced the request counter.
+        if self.volume_command_request_id == Some(request_id) {
+            self.volume_command_pending = false;
+            self.volume_command_request_id = None;
+        }
+        if self.sound_mode_request_id == Some(request_id) {
+            self.sound_mode_request_id = None;
+        }
+        if matches!(report, ControlReport::Failed(_)) {
+            self.sound_mode_category_filter = None;
+        }
+        self.announce(feedback::control_message(&report));
+        if let ControlReport::Finished(snapshot) = &report {
+            if snapshot.status == OperationStatus::Completed
+                && http_policy::intent_may_have_changed(&snapshot.intent)
+            {
+                return self.request_http_information();
+            }
+        }
+        Task::none()
+    }
+
+    /// Read the receiver's audio, video, and Audyssey information, one read at a
+    /// time. A request that arrives while one is running runs once more after it.
+    fn request_http_information(&mut self) -> Task<Message> {
+        if self.selection.is_none()
+            || !http_policy::should_read(&self.selected_capabilities(), true)
+        {
+            return Task::none();
+        }
+        if self.snapshot.power.value() != Some(&PowerState::On) {
+            self.snapshot.invalidate_http_information(self.generation);
+            return Task::none();
+        }
+        if self.http_read_in_flight {
+            self.http_read_again = true;
+            return Task::none();
+        }
+        self.http_read_in_flight = true;
+        let id = self.next_request();
+        self.command(BridgeCommand::ReadHttpInformation(id, self.generation))
+    }
+
+    fn request_source_catalog(&mut self) -> Task<Message> {
+        if self.selection.is_none() || self.catalog_read_in_flight {
+            return Task::none();
+        }
+        if !self.selected_capabilities().source_catalog_read {
+            self.announce("The selected receiver has no validated source catalog capability.");
+            return Task::none();
+        }
+        self.catalog_read_in_flight = true;
+        let id = self.next_request();
+        self.command(BridgeCommand::ReadSourceCatalog(id, self.generation))
+    }
+
+    fn request_quick_select_names(&mut self) -> Task<Message> {
+        if self.selection.is_none()
+            || self.names_read_in_flight
+            || !self.selected_capabilities().quick_select_names
+        {
+            return Task::none();
+        }
+        self.names_read_in_flight = true;
+        let id = self.next_request();
+        self.command(BridgeCommand::ReadQuickSelectNames(id, self.generation))
+    }
+
     fn complete_launch_if_ready(&mut self) {
-        let saved_receiver = matches!(self.selection, Some(ReceiverSelection::Saved { .. }));
-        let connected = matches!(
-            self.lifecycle,
-            denon_avr_application::Lifecycle::Connected { .. }
-        );
+        let saved_receiver = self.selection.is_some();
+        let connected = matches!(self.lifecycle, Lifecycle::Connected { .. });
         // Connection establishment is sufficient to open the dashboard. Core
         // status and HTTP/Quick Select reads are supplemental: a receiver can
         // accept the session while an individual query is delayed,
@@ -1270,19 +1462,24 @@ fn route_title(route: Route) -> &'static str {
     }
 }
 
-fn selection_label(selection: &ReceiverSelection) -> String {
-    let identity = selection.identity();
-    match (identity.model, identity.friendly_name) {
+fn selection_label(selection: &Selection) -> String {
+    identity_label(&selection.identity)
+}
+
+fn identity_label(identity: &ReceiverIdentity) -> String {
+    match (&identity.model, &identity.friendly_name) {
         (Some(model), Some(name)) => format!("{name} ({model})"),
-        (Some(model), None) => model,
-        (None, Some(name)) => name,
-        (None, None) => identity.host,
+        (Some(model), None) => model.clone(),
+        (None, Some(name)) => name.clone(),
+        (None, None) => identity.host.clone(),
     }
 }
 
-fn configuration_for_discovered(
+/// The configuration entry a discovered receiver is saved under: its model name,
+/// or its address when it reports none.
+fn receiver_entry_for_discovered(
     receiver: &denon_avr_domain::DiscoveredReceiver,
-) -> (ConfiguredReceivers, ReceiverSelection) {
+) -> (String, ReceiverIdentity) {
     let name = receiver
         .model
         .clone()
@@ -1290,34 +1487,22 @@ fn configuration_for_discovered(
         .unwrap_or_else(|| receiver.address.host.clone());
     let mut identity = receiver.identity();
     identity.friendly_name = Some(name.clone());
-    let config = ConfiguredReceivers {
-        current: Some(name.clone()),
-        receivers: BTreeMap::from([(name.clone(), identity.clone())]),
-        ..ConfiguredReceivers::default()
-    };
-    let selection = ReceiverSelection::Saved { name, identity };
-    (config, selection)
+    (name, identity)
 }
 
-fn lifecycle_label(lifecycle: &denon_avr_application::Lifecycle) -> &'static str {
+fn lifecycle_label(lifecycle: &Lifecycle) -> &'static str {
     match lifecycle {
-        denon_avr_application::Lifecycle::Connected { .. } => "connected",
-        denon_avr_application::Lifecycle::Reconnecting { .. } => "reconnecting",
-        denon_avr_application::Lifecycle::Disconnected => "disconnected",
-        denon_avr_application::Lifecycle::Selected => "selected",
-        denon_avr_application::Lifecycle::NoReceiver => "no receiver",
-        _ => "waiting",
+        Lifecycle::Connected { .. } => "connected",
+        Lifecycle::Reconnecting { .. } => "reconnecting",
+        Lifecycle::Disconnected => "disconnected",
+        Lifecycle::Selected => "selected",
+        Lifecycle::NoReceiver => "no receiver",
+        Lifecycle::Connecting => "connecting",
     }
 }
 
 pub fn boot_with_services(services: GuiServices) -> (Gui, Task<Message>) {
-    let controller_config = denon_avr_application::ControllerConfig::default();
-    let mut gui = Gui::new(ControllerBridge::new_with_config(
-        services.factory,
-        controller_config,
-    ));
-    gui.discovery = services.discovery;
-    gui.configuration = Arc::clone(&services.configuration);
+    let mut gui = Gui::new(services);
     if let Some(scenario) = std::env::var_os("DENON_AVR_CAPTURE_SCENARIO") {
         let scenario = scenario.to_string_lossy();
         let message = match gui.configure_capture_scenario(&scenario) {
@@ -1340,11 +1525,16 @@ pub fn boot_with_services(services: GuiServices) -> (Gui, Task<Message>) {
         };
         return (gui, task);
     }
-    let repository = services.configuration;
+    let control = gui.control.clone();
     (
         gui,
         Task::perform(
-            async move { repository.load().await.map_err(|error| error.to_string()) },
+            async move {
+                control
+                    .configuration()
+                    .await
+                    .map_err(|error| error.to_string())
+            },
             Message::ConfigLoaded,
         ),
     )
@@ -1392,6 +1582,9 @@ fn launch_waiting_animation(frame: u8) -> Element<'static, Message> {
 pub fn view(gui: &Gui) -> Element<'_, Message> {
     gui.view()
 }
+/// How often the receiver's HTTP information is read while connected.
+const HTTP_REFRESH_INTERVAL: Duration = Duration::from_secs(15);
+
 pub fn subscription(gui: &Gui) -> Subscription<Message> {
     Subscription::batch([
         gui.bridge
@@ -1402,6 +1595,13 @@ pub fn subscription(gui: &Gui) -> Subscription<Message> {
             Subscription::none()
         } else {
             iced::time::every(Duration::from_millis(180)).map(|_| Message::LaunchTick)
+        },
+        // The receiver offers no push for what it reports over HTTP, so it is
+        // read again on a timer while connected.
+        if gui.state.is_some() && matches!(gui.lifecycle, Lifecycle::Connected { .. }) {
+            iced::time::every(HTTP_REFRESH_INTERVAL).map(|_| Message::HttpTick)
+        } else {
+            Subscription::none()
         },
     ])
 }
@@ -1444,47 +1644,32 @@ fn is_close_window_shortcut(event: &iced::keyboard::Event) -> bool {
     )
 }
 
-struct NoopDiscovery;
-impl AsyncReceiverDiscovery for NoopDiscovery {
-    fn discover(
-        &self,
-        _timeout: Duration,
-    ) -> BoxFuture<'_, Result<Vec<denon_avr_domain::DiscoveredReceiver>, OperationError>> {
-        Box::pin(async { Ok(Vec::new()) })
-    }
-}
-
-struct NoopConfiguration;
-impl AsyncConfigRepository for NoopConfiguration {
-    fn load(&self) -> BoxFuture<'_, Result<ConfiguredReceivers, OperationError>> {
-        Box::pin(async { Ok(ConfiguredReceivers::default()) })
-    }
-
-    fn save<'a>(
-        &'a self,
-        _config: &'a ConfiguredReceivers,
-    ) -> BoxFuture<'a, Result<(), OperationError>> {
-        Box::pin(async { Ok(()) })
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use denon_avr_application::ports::{ReceiverSession, SessionFactory};
-    use denon_avr_domain::ReceiverIdentity;
+    use denon_avr_application::ports::{
+        AsyncConfigRepository, AsyncReceiverDiscovery, BoxFuture, OperationError,
+        OperationErrorKind, ReceiverConnector,
+    };
+    use denon_avr_application::{ControlService, ServiceConfig, SharedReceiverSession};
+    use denon_avr_domain::{
+        CoreFrame, DiscoveredReceiver, Epoch, FrameSeq, MasterVolume, MonotonicMillis,
+        ObservationOrigin, ReceiverEndpoint, SoundModeStatus, SourceId, ZonePower,
+    };
+    use std::sync::{Arc, Mutex};
 
-    #[derive(Clone, Default)]
-    struct TestSessionFactory;
+    /// A connector that never reaches a receiver, so reducer tests need none.
+    struct Unreachable;
 
-    impl SessionFactory for TestSessionFactory {
-        fn connect(
-            &self,
-            _identity: ReceiverIdentity,
-        ) -> BoxFuture<'_, Result<Box<dyn ReceiverSession>, OperationError>> {
+    impl ReceiverConnector for Unreachable {
+        fn connect<'a>(
+            &'a self,
+            _: &'a ReceiverId,
+            _: &'a ReceiverIdentity,
+        ) -> BoxFuture<'a, Result<SharedReceiverSession, OperationError>> {
             Box::pin(async {
                 Err(OperationError::new(
-                    denon_avr_application::ports::OperationErrorKind::Connection,
+                    OperationErrorKind::Connection,
                     "test session",
                     "no receiver session is required by GUI reducer tests",
                 ))
@@ -1492,10 +1677,120 @@ mod tests {
         }
     }
 
+    struct Empty(Mutex<ConfiguredReceivers>);
+
+    impl AsyncConfigRepository for Empty {
+        fn load(&self) -> BoxFuture<'_, Result<ConfiguredReceivers, OperationError>> {
+            Box::pin(async { Ok(self.0.lock().unwrap().clone()) })
+        }
+        fn save<'a>(
+            &'a self,
+            config: &'a ConfiguredReceivers,
+        ) -> BoxFuture<'a, Result<(), OperationError>> {
+            Box::pin(async move {
+                *self.0.lock().unwrap() = config.clone();
+                Ok(())
+            })
+        }
+    }
+
+    struct Nobody;
+
+    impl AsyncReceiverDiscovery for Nobody {
+        fn discover(
+            &self,
+            _: Duration,
+        ) -> BoxFuture<'_, Result<Vec<DiscoveredReceiver>, OperationError>> {
+            Box::pin(async { Ok(Vec::new()) })
+        }
+    }
+
+    fn gui() -> Gui {
+        let service = Arc::new(ControlService::new(
+            Arc::new(Unreachable),
+            Arc::new(Empty(Mutex::new(ConfiguredReceivers::default()))),
+            Arc::new(Nobody),
+            ServiceConfig::default(),
+        ));
+        Gui::new(GuiServices {
+            control: service.operator(),
+            shutdown: Arc::new(|| Box::pin(async {})),
+        })
+    }
+
+    fn living_room() -> Selection {
+        Selection {
+            name: "living-room".into(),
+            identity: ReceiverIdentity {
+                host: "receiver.local".into(),
+                model: Some("AVR-X3800H".into()),
+                friendly_name: None,
+            },
+        }
+    }
+
+    /// A GUI with the living room chosen, as `Select` leaves it.
+    fn selected_gui() -> Gui {
+        let mut gui = gui();
+        gui.selection = Some(living_room());
+        gui.subscription = 1;
+        gui.lifecycle = Lifecycle::Selected;
+        gui
+    }
+
+    fn event(gui: &Gui, request_id: u64, event: PortEvent) -> Message {
+        Message::Bridge(Box::new(BridgeEvent {
+            request_id,
+            subscription: gui.subscription,
+            event,
+        }))
+    }
+
+    /// The receiver's state at `epoch` with the given frames read.
+    fn state_at(epoch: Option<u64>, frames: Vec<CoreFrame>) -> ReceiverState {
+        let id = ReceiverId::new("living-room").unwrap();
+        let mut state = ReceiverState::new(id.clone());
+        let at = Epoch(epoch.unwrap_or(1));
+        state.establish_epoch(at);
+        for (index, frame) in frames.into_iter().enumerate() {
+            let seq = index as u64 + 1;
+            state.reduce(
+                &id,
+                at,
+                FrameSeq(seq),
+                MonotonicMillis(seq),
+                MonotonicMillis(10_000),
+                ObservationOrigin::ReceiverFrame,
+                frame,
+            );
+        }
+        if epoch.is_none() {
+            state.mark_disconnected();
+        }
+        state
+    }
+
+    fn powered_on() -> Vec<CoreFrame> {
+        vec![
+            CoreFrame::MainZonePower(ZonePower::On),
+            CoreFrame::Source(SourceId::new("GAME").unwrap()),
+            CoreFrame::Volume(MasterVolume::db_half_steps(-90).unwrap()),
+            CoreFrame::Mute(MuteState::Off),
+            CoreFrame::SoundMode(SoundModeStatus {
+                id: "STEREO".into(),
+                raw: "MSSTEREO".into(),
+            }),
+            CoreFrame::Zone2Power(ZonePower::Off),
+        ]
+    }
+
+    fn state_message(gui: &Gui, state: ReceiverState) -> Message {
+        event(gui, gui.subscription, PortEvent::State(Box::new(state)))
+    }
+
     #[tokio::test]
     async fn accessibility_overrides_are_session_only_and_update_theme_state() {
-        let bridge = ControllerBridge::new(TestSessionFactory);
-        let mut gui = Gui::new(bridge);
+        let mut gui = gui();
         let _ = gui.update(Message::SetTextScale(200));
         let _ = gui.update(Message::SetMotion(MotionPreference::Reduced));
         let _ = gui.update(Message::SetContrast(ContrastPreference::High));
@@ -1509,8 +1804,7 @@ mod tests {
 
     #[tokio::test]
     async fn power_popups_are_independent_and_only_open_for_known_state() {
-        let bridge = ControllerBridge::new(TestSessionFactory);
-        let mut gui = Gui::new(bridge);
+        let mut gui = gui();
         gui.snapshot.set_value(
             MainZoneValue::Power(PowerState::On),
             StateAuthority::Authoritative,
@@ -1528,8 +1822,7 @@ mod tests {
 
     #[tokio::test]
     async fn pure_filters_without_a_receiver_recall_while_movie_starts_one() {
-        let bridge = ControllerBridge::new(TestSessionFactory);
-        let mut gui = Gui::new(bridge);
+        let mut gui = gui();
 
         let _ = gui.update(Message::SelectSoundModeCategory(SoundModeCategory::Pure));
         assert_eq!(
@@ -1546,30 +1839,20 @@ mod tests {
         assert!(gui.sound_mode_request_id.is_some());
     }
 
-    #[test]
-    fn compact_source_picker_omits_aux_3_and_later() {
-        assert!(source_is_picker_entry("AUX1"));
-        assert!(source_is_picker_entry("AUX2"));
-        assert!(!source_is_picker_entry("AUX3"));
-        assert!(!source_is_picker_entry("AUX7"));
-    }
-
     #[tokio::test]
     async fn launch_opens_receiver_setup_when_no_receiver_is_saved() {
-        let bridge = ControllerBridge::new(TestSessionFactory);
-        let mut gui = Gui::new(bridge);
+        let mut gui = gui();
 
         let _ = gui.update(Message::ConfigLoaded(Ok(ConfiguredReceivers::default())));
 
         assert!(gui.launch_ready);
         assert!(gui.selection.is_none());
-        assert_eq!(gui.lifecycle, denon_avr_application::Lifecycle::NoReceiver);
+        assert_eq!(gui.lifecycle, Lifecycle::NoReceiver);
     }
 
     #[tokio::test]
     async fn launch_opens_receiver_setup_when_configuration_fails() {
-        let bridge = ControllerBridge::new(TestSessionFactory);
-        let mut gui = Gui::new(bridge);
+        let mut gui = gui();
 
         let _ = gui.update(Message::ConfigLoaded(Err(
             "configuration unavailable".into()
@@ -1579,70 +1862,539 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn launch_opens_after_saved_receiver_connection() {
-        let bridge = ControllerBridge::new(TestSessionFactory);
-        let mut gui = Gui::new(bridge);
-        gui.selection = Some(ReceiverSelection::Saved {
-            name: "Living room".into(),
-            identity: ReceiverIdentity {
-                host: "receiver.local".into(),
-                model: Some("AVR-X3800H".into()),
-                friendly_name: None,
-            },
-        });
-        gui.lifecycle = denon_avr_application::Lifecycle::Connected { generation: 1 };
+    async fn a_saved_receiver_is_selected_and_connected_at_launch() {
+        let mut gui = gui();
+        let config = ConfiguredReceivers {
+            current: Some("living-room".into()),
+            receivers: [("living-room".into(), living_room().identity)].into(),
+            ..ConfiguredReceivers::default()
+        };
 
-        gui.complete_launch_if_ready();
-        assert!(gui.launch_ready);
+        let _ = gui.update(Message::ConfigLoaded(Ok(config)));
+
+        assert_eq!(gui.selection, Some(living_room()));
+        assert_eq!(gui.lifecycle, Lifecycle::Selected);
+        assert!(
+            !gui.launch_ready,
+            "the launch screen waits for the connection"
+        );
+        assert_ne!(
+            gui.subscription, 0,
+            "the receiver was chosen with a request"
+        );
     }
 
     #[tokio::test]
-    async fn connected_lifecycle_event_opens_saved_receiver_without_status_snapshot() {
-        let bridge = ControllerBridge::new(TestSessionFactory);
-        let mut gui = Gui::new(bridge);
-        gui.selection = Some(ReceiverSelection::Saved {
-            name: "Living room".into(),
-            identity: ReceiverIdentity {
-                host: "receiver.local".into(),
-                model: Some("AVR-X3800H".into()),
-                friendly_name: None,
-            },
-        });
-
-        let _ = gui.update(Message::Bridge(Box::new(BridgeEvent {
-            request_id: 1,
-            generation: 1,
-            event: ReceiverEvent::Lifecycle(denon_avr_application::Lifecycle::Connected {
-                generation: 1,
-            }),
-        })));
-
+    async fn a_name_the_port_cannot_use_is_reported_not_connected() {
+        let mut gui = gui();
+        let _ = gui.update(Message::Select(Selection {
+            name: "adhoc:192.0.2.1".into(),
+            identity: ReceiverIdentity::ad_hoc("192.0.2.1"),
+        }));
         assert!(gui.launch_ready);
+        assert_eq!(gui.subscription, 0);
+        assert!(gui.announcement.starts_with("Cannot use the receiver name"));
+    }
+
+    #[tokio::test]
+    async fn the_first_state_connects_and_opens_the_saved_receiver() {
+        let mut gui = selected_gui();
+
+        let _ = gui.update(state_message(&gui, state_at(Some(1), powered_on())));
+
+        assert_eq!(gui.lifecycle, Lifecycle::Connected { generation: 1 });
+        assert_eq!(gui.generation, 1);
+        assert!(gui.launch_ready);
+        assert_eq!(gui.snapshot.power.value(), Some(&PowerState::On));
+        assert_eq!(gui.zone2.power.value(), Some(&PowerState::Standby));
+        assert!(gui.state.is_some());
     }
 
     #[tokio::test]
     async fn fixed_capture_scenarios_do_not_need_a_receiver_connection() {
-        let bridge = ControllerBridge::new(TestSessionFactory);
-        let mut gui = Gui::new(bridge);
+        let mut gui = gui();
         gui.configure_capture_scenario("source-picker").unwrap();
-        assert_eq!(
-            gui.lifecycle,
-            denon_avr_application::Lifecycle::Connected { generation: 1 }
-        );
+        assert_eq!(gui.lifecycle, Lifecycle::Connected { generation: 1 });
         assert_eq!(gui.snapshot.power.value(), Some(&PowerState::On));
         assert!(gui.source_picker_open);
 
         gui.configure_capture_scenario("unavailable").unwrap();
-        assert_eq!(
-            gui.lifecycle,
-            denon_avr_application::Lifecycle::Disconnected
-        );
+        assert_eq!(gui.lifecycle, Lifecycle::Disconnected);
         assert!(gui.snapshot.power.value().is_none());
 
         gui.configure_capture_scenario("diagnostics").unwrap();
         assert_eq!(gui.route, Route::Diagnostics);
         gui.configure_capture_scenario("messages").unwrap();
         assert!(gui.messages.len() >= 3);
+    }
+
+    #[tokio::test]
+    async fn results_from_a_receiver_the_user_left_are_ignored() {
+        let mut gui = selected_gui();
+        gui.subscription = 4;
+        let stale = Message::Bridge(Box::new(BridgeEvent {
+            request_id: 3,
+            subscription: 3,
+            event: PortEvent::State(Box::new(state_at(Some(1), powered_on()))),
+        }));
+        let _ = gui.update(stale);
+        assert_eq!(gui.lifecycle, Lifecycle::Selected);
+        assert!(gui.state.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_lost_connection_invalidates_the_visible_status_and_a_new_epoch_recovers() {
+        let mut gui = selected_gui();
+        let _ = gui.update(state_message(&gui, state_at(Some(1), powered_on())));
+
+        let _ = gui.update(state_message(&gui, state_at(None, powered_on())));
+        assert_eq!(gui.lifecycle, Lifecycle::Reconnecting { generation: 2 });
+        assert!(gui.snapshot.power.value().is_none());
+        assert_eq!(
+            gui.snapshot.freshness,
+            denon_avr_domain::Freshness::Invalidated
+        );
+
+        let _ = gui.update(state_message(&gui, state_at(Some(2), powered_on())));
+        assert_eq!(gui.lifecycle, Lifecycle::Connected { generation: 2 });
+        assert_eq!(gui.generation, 2);
+        assert_eq!(gui.snapshot.power.value(), Some(&PowerState::On));
+    }
+
+    #[tokio::test]
+    async fn a_reconnect_seen_only_as_a_higher_epoch_is_still_a_reconnect() {
+        let mut gui = selected_gui();
+        let _ = gui.update(state_message(&gui, state_at(Some(1), powered_on())));
+        gui.status_confirmed_generation = Some(1);
+        gui.status_wait_ticks = 99;
+        gui.volume_command_pending = true;
+
+        // The channel coalesced the disconnect away.
+        let _ = gui.update(state_message(&gui, state_at(Some(3), powered_on())));
+
+        assert_eq!(gui.lifecycle, Lifecycle::Connected { generation: 3 });
+        assert_eq!(gui.generation, 3);
+        assert!(
+            !gui.volume_command_pending,
+            "a command from the old connection ended"
+        );
+        assert_eq!(gui.status_wait_ticks, 0);
+        assert!(
+            gui.messages
+                .iter()
+                .filter(|message| message.contains("status confirmed"))
+                .count()
+                >= 2
+        );
+    }
+
+    #[tokio::test]
+    async fn an_ended_session_reads_as_a_reconnect_until_the_next_state() {
+        let mut gui = selected_gui();
+        let _ = gui.update(state_message(&gui, state_at(Some(1), powered_on())));
+
+        let _ = gui.update(event(&gui, 1, PortEvent::SessionEnded));
+        assert_eq!(gui.lifecycle, Lifecycle::Reconnecting { generation: 2 });
+        assert!(gui.snapshot.power.value().is_none());
+
+        let _ = gui.update(state_message(&gui, state_at(Some(1), powered_on())));
+        assert_eq!(gui.lifecycle, Lifecycle::Connected { generation: 1 });
+    }
+
+    #[tokio::test]
+    async fn a_failed_connection_opens_the_unavailable_screen_and_retry_asks_again() {
+        let mut gui = selected_gui();
+        let _ = gui.update(event(&gui, 1, PortEvent::ConnectFailed("refused".into())));
+
+        assert_eq!(gui.lifecycle, Lifecycle::Disconnected);
+        assert!(gui.launch_ready, "the launch screen must not wait for ever");
+        assert!(gui.announcement.contains("refused"));
+        let (title, _, action) = power_recovery(&gui.lifecycle, &gui.snapshot);
+        assert_eq!(title, "RECEIVER UNAVAILABLE");
+        assert!(matches!(action, Some(("Retry Status", Message::Refresh))));
+
+        let _ = gui.update(Message::Refresh);
+        assert_eq!(gui.lifecycle, Lifecycle::Connecting);
+    }
+
+    #[tokio::test]
+    async fn the_slider_follows_the_receivers_level_only_when_it_changes() {
+        let mut gui = selected_gui();
+        let _ = gui.update(state_message(&gui, state_at(Some(1), powered_on())));
+        assert_eq!(gui.volume_slider, -45.0);
+
+        // The user drags; a state that says nothing new about volume arrives.
+        gui.volume_slider = -30.0;
+        let mut frames = powered_on();
+        frames.push(CoreFrame::Zone2Power(ZonePower::On));
+        let _ = gui.update(state_message(&gui, state_at(Some(1), frames)));
+        assert_eq!(
+            gui.volume_slider, -30.0,
+            "an unrelated change must not snap it back"
+        );
+
+        // The receiver's own level changes.
+        let mut frames = powered_on();
+        frames[2] = CoreFrame::Volume(MasterVolume::db_half_steps(-40).unwrap());
+        let _ = gui.update(state_message(&gui, state_at(Some(1), frames)));
+        assert_eq!(gui.volume_slider, -20.0);
+    }
+
+    #[tokio::test]
+    async fn confirmed_status_is_logged_once_per_connection_generation() {
+        let mut gui = selected_gui();
+        for _ in 0..2 {
+            let _ = gui.update(state_message(&gui, state_at(Some(1), powered_on())));
+        }
+        assert_eq!(
+            gui.messages
+                .iter()
+                .filter(|message| message.contains("status confirmed"))
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn a_control_carries_what_the_user_saw_and_a_power_control_carries_nothing() {
+        let mut gui = selected_gui();
+        let _ = gui.update(state_message(&gui, state_at(Some(1), powered_on())));
+
+        let volume = ReceiverIntent::Volume(MasterVolume::db_half_steps(-80).unwrap());
+        assert_eq!(
+            gui.guard_for(&volume),
+            Some(FieldBaseline::capture(
+                gui.state.as_ref().unwrap(),
+                denon_avr_domain::CoreField::Volume
+            ))
+        );
+        for power in [
+            ReceiverIntent::MainZonePower(ZonePower::Off),
+            ReceiverIntent::Zone2Power(ZonePower::On),
+        ] {
+            assert_eq!(gui.guard_for(&power), None, "{power:?}");
+        }
+        // Before any state there is nothing the user could have seen.
+        assert_eq!(selected_gui().guard_for(&volume), None);
+    }
+
+    #[tokio::test]
+    async fn an_input_control_becomes_a_source_intent_and_the_picker_closes() {
+        let mut gui = selected_gui();
+        let _ = gui.update(Message::OpenSourcePicker);
+        assert!(gui.source_picker_open);
+        let _ = gui.update(Message::SelectInput("TV AUDIO".into()));
+        assert!(!gui.source_picker_open);
+        assert_eq!(
+            projection::intent_for(&MainZoneControl::Input(Input::new("TV AUDIO").unwrap())),
+            Ok(ReceiverIntent::Source(SourceId::new("TV AUDIO").unwrap()))
+        );
+    }
+
+    #[tokio::test]
+    async fn http_reads_run_one_at_a_time_and_a_request_during_one_runs_after_it() {
+        let mut gui = selected_gui();
+        let _ = gui.update(state_message(&gui, state_at(Some(1), powered_on())));
+        // The first state asked for one read.
+        assert!(gui.http_read_in_flight);
+        assert!(!gui.http_read_again);
+
+        let _ = gui.request_http_information();
+        assert!(gui.http_read_again, "a second request waits its turn");
+
+        let generation = gui.generation;
+        let _ = gui.update(event(
+            &gui,
+            2,
+            PortEvent::HttpInformation {
+                generation,
+                result: Err(OperationError::new(
+                    OperationErrorKind::Timeout,
+                    "HTTP information",
+                    "late",
+                )),
+            },
+        ));
+        assert!(gui.http_read_in_flight, "the waiting request started");
+        assert!(!gui.http_read_again);
+    }
+
+    #[tokio::test]
+    async fn a_read_that_finishes_after_a_reconnect_is_dropped() {
+        let mut gui = selected_gui();
+        let _ = gui.update(state_message(&gui, state_at(Some(1), powered_on())));
+        let _ = gui.update(state_message(&gui, state_at(Some(2), powered_on())));
+        assert_eq!(gui.generation, 2);
+
+        let before = gui.snapshot.http_information.clone();
+        let _ = gui.update(event(
+            &gui,
+            2,
+            PortEvent::HttpInformation {
+                generation: 1,
+                result: Ok(Box::new(denon_avr_domain::HttpInformationSnapshot {
+                    generation: 1,
+                    ..Default::default()
+                })),
+            },
+        ));
+        assert_eq!(gui.snapshot.http_information, before);
+    }
+
+    #[tokio::test]
+    async fn the_source_catalog_is_asked_for_once_per_connection() {
+        let mut gui = selected_gui();
+        let _ = gui.update(state_message(&gui, state_at(Some(1), powered_on())));
+        assert!(gui.catalog_read_in_flight);
+        assert_eq!(gui.catalog_auto_generation, Some(1));
+
+        // A failed read leaves the catalog unknown; further states must not ask again.
+        let _ = gui.update(event(
+            &gui,
+            3,
+            PortEvent::SourceCatalog {
+                generation: 1,
+                result: Err(OperationError::new(
+                    OperationErrorKind::Connection,
+                    "source catalog",
+                    "refused",
+                )),
+            },
+        ));
+        assert!(!gui.catalog_read_in_flight);
+        let _ = gui.update(state_message(&gui, state_at(Some(1), powered_on())));
+        assert!(!gui.catalog_read_in_flight, "not asked a second time");
+    }
+
+    fn finished(
+        status: denon_avr_application::OperationStatus,
+        dispatch: denon_avr_domain::DispatchCertainty,
+    ) -> ControlReport {
+        ControlReport::Finished(Box::new(denon_avr_application::OperationSnapshot {
+            id: denon_avr_domain::OperationId(1),
+            receiver: ReceiverId::new("living-room").unwrap(),
+            intent: ReceiverIntent::Mute(MuteState::On),
+            status,
+            dispatch,
+            confirmed: false,
+            reason: Some("because".into()),
+            observation: None,
+        }))
+    }
+
+    #[tokio::test]
+    async fn bridge_failure_reenables_volume_controls() {
+        let mut gui = selected_gui();
+        gui.volume_command_pending = true;
+
+        let _ = gui.update(event(&gui, 1, PortEvent::Failed("setting volume".into())));
+
+        assert!(!gui.volume_command_pending);
+        assert!(gui.announcement.contains("setting volume"));
+    }
+
+    #[tokio::test]
+    async fn unknown_volume_steps_initialize_to_minimum_once_then_adjust() {
+        let mut gui = selected_gui();
+        assert_eq!(gui.volume_slider, MIN_VOLUME_DB);
+
+        let _ = gui.update(Message::AdjustVolume(0.5));
+
+        assert_eq!(gui.volume_slider, MIN_VOLUME_DB);
+        assert!(gui.volume_command_pending);
+        assert!(gui.volume_baseline_initialized);
+
+        let request_id = gui.volume_command_request_id.expect("volume was submitted");
+        let _ = gui.update(event(
+            &gui,
+            request_id,
+            PortEvent::Control(finished(
+                denon_avr_application::OperationStatus::Cancelled,
+                denon_avr_domain::DispatchCertainty::NotDispatched,
+            )),
+        ));
+        let _ = gui.update(Message::AdjustVolume(0.5));
+
+        assert_eq!(gui.volume_slider, MIN_VOLUME_DB + 0.5);
+        assert!(gui.volume_command_pending);
+    }
+
+    #[tokio::test]
+    async fn volume_step_respects_the_receiver_ceiling_and_blocks_duplicates() {
+        let mut gui = selected_gui();
+        gui.snapshot.set_value(
+            MainZoneValue::Volume(Volume::from_parts("95", 150)),
+            StateAuthority::Authoritative,
+        );
+        gui.volume_baseline_initialized = true;
+        gui.volume_slider = 15.0;
+
+        let _ = gui.update(Message::AdjustVolume(10.0));
+
+        assert_eq!(gui.volume_slider, MAX_VOLUME_DB);
+        assert_eq!(gui.volume_value, Some(MAX_VOLUME_DB));
+        assert!(gui.volume_command_pending);
+
+        let _ = gui.update(Message::AdjustVolume(-0.5));
+        assert_eq!(gui.volume_slider, MAX_VOLUME_DB);
+
+        let current_request = gui.volume_value_request_id;
+        let _ = gui.update(Message::HideVolumeValue(current_request.saturating_sub(1)));
+        assert_eq!(gui.volume_value, Some(MAX_VOLUME_DB));
+        let _ = gui.update(Message::HideVolumeValue(current_request));
+        assert_eq!(gui.volume_value, None);
+    }
+
+    #[tokio::test]
+    async fn a_volume_confirmation_reenables_the_slider_whatever_the_request_counter_says() {
+        let mut gui = selected_gui();
+        gui.volume_command_pending = true;
+        gui.volume_command_request_id = Some(4);
+        // An unrelated read begun after the command, before its confirmation.
+        gui.request_id = 5;
+
+        let _ = gui.update(event(
+            &gui,
+            4,
+            PortEvent::Control(finished(
+                denon_avr_application::OperationStatus::Completed,
+                denon_avr_domain::DispatchCertainty::CompleteWrite,
+            )),
+        ));
+
+        assert!(!gui.volume_command_pending);
+        assert_eq!(gui.volume_command_request_id, None);
+        assert_eq!(gui.announcement, "Command confirmed by the receiver.");
+    }
+
+    #[tokio::test]
+    async fn a_sound_mode_confirmation_reenables_mode_controls() {
+        let mut gui = selected_gui();
+        gui.sound_mode_request_id = Some(4);
+        gui.request_id = 5;
+
+        let _ = gui.update(event(&gui, 4, PortEvent::Control(ControlReport::Conflict)));
+
+        assert_eq!(gui.sound_mode_request_id, None);
+        assert_eq!(
+            gui.announcement,
+            "Receiver state changed before the command; retry."
+        );
+    }
+
+    #[tokio::test]
+    async fn a_write_that_went_out_but_was_not_confirmed_is_not_called_a_send_failure() {
+        let mut gui = selected_gui();
+        let _ = gui.update(event(
+            &gui,
+            2,
+            PortEvent::Control(finished(
+                denon_avr_application::OperationStatus::Indeterminate,
+                denon_avr_domain::DispatchCertainty::CompleteWrite,
+            )),
+        ));
+        assert!(gui
+            .announcement
+            .starts_with("Command sent, but confirmation is unavailable"));
+    }
+
+    #[tokio::test]
+    async fn sound_mode_timeout_only_clears_its_own_pending_control() {
+        let mut gui = gui();
+        gui.sound_mode_request_id = Some(4);
+
+        let _ = gui.update(Message::SoundModeControlTimedOut(3));
+        assert_eq!(gui.sound_mode_request_id, Some(4));
+
+        let _ = gui.update(Message::SoundModeControlTimedOut(4));
+        assert_eq!(gui.sound_mode_request_id, None);
+        assert_eq!(
+            gui.announcement,
+            "Sound Mode request timed out; controls re-enabled."
+        );
+    }
+
+    #[test]
+    fn unavailable_power_offers_a_recovery_action() {
+        let (title, detail, action) =
+            power_recovery(&Lifecycle::Disconnected, &MainZoneSnapshot::default());
+
+        assert_eq!(title, "RECEIVER UNAVAILABLE");
+        assert!(detail.contains("not queried"));
+        assert!(matches!(action, Some(("Retry Status", Message::Refresh))));
+    }
+
+    #[tokio::test]
+    async fn message_panel_is_bounded_and_preserves_chronological_order() {
+        let mut gui = gui();
+        gui.record_message("same message");
+        gui.record_message("same message");
+        assert_eq!(gui.messages.len(), 1);
+        for index in 0..=design::MAX_SESSION_MESSAGES {
+            gui.record_message(format!("message {index}"));
+        }
+        assert_eq!(gui.messages.len(), design::MAX_SESSION_MESSAGES);
+        assert_eq!(gui.messages.front().map(String::as_str), Some("message 1"));
+        assert_eq!(gui.messages.back().map(String::as_str), Some("message 100"));
+        let _ = gui.update(Message::ToggleMessages);
+        assert!(gui.messages_collapsed);
+        let _ = gui.update(Message::ClearMessages);
+        assert!(gui.messages.is_empty());
+    }
+
+    #[tokio::test]
+    async fn selecting_a_receiver_opens_the_console_and_records_context() {
+        let mut gui = gui();
+        gui.route = Route::Receivers;
+        let selection = Selection {
+            name: "Denon AVC-X3800H".into(),
+            identity: ReceiverIdentity {
+                host: "192.168.0.8".into(),
+                model: Some("Denon AVC-X3800H".into()),
+                friendly_name: Some("Denon AVC-X3800H".into()),
+            },
+        };
+
+        let _ = gui.update(Message::Select(selection));
+
+        assert_eq!(gui.route, Route::Dashboard);
+        assert_eq!(
+            gui.selection.as_ref().map(|s| s.identity().host),
+            Some("192.168.0.8".into())
+        );
+        assert_eq!(gui.lifecycle, Lifecycle::Selected);
+        assert!(gui
+            .messages
+            .back()
+            .is_some_and(|message| message.contains("AVC-X3800H")));
+    }
+
+    #[test]
+    fn a_discovered_receiver_is_saved_under_its_model_name() {
+        let receiver = DiscoveredReceiver {
+            address: ReceiverEndpoint {
+                host: "192.168.0.8".into(),
+                port: 23,
+            },
+            location: None,
+            server: None,
+            model: Some("Denon AVC-X3800H".into()),
+            search_target: None,
+            unique_service_name: None,
+        };
+        let (name, identity) = receiver_entry_for_discovered(&receiver);
+
+        assert_eq!(name, "Denon AVC-X3800H");
+        assert_eq!(identity.host, "192.168.0.8");
+        assert_eq!(identity.friendly_name.as_deref(), Some("Denon AVC-X3800H"));
+    }
+
+    #[test]
+    fn compact_source_picker_omits_aux_3_and_later() {
+        assert!(source_is_picker_entry("AUX1"));
+        assert!(source_is_picker_entry("AUX2"));
+        assert!(!source_is_picker_entry("AUX3"));
+        assert!(!source_is_picker_entry("AUX7"));
     }
 
     #[test]
@@ -1679,83 +2431,6 @@ mod tests {
             repeat: false,
         };
         assert!(is_close_window_shortcut(&event));
-    }
-    #[tokio::test]
-    async fn stale_bridge_results_are_ignored() {
-        // State construction is kept independent of widgets, making ordering
-        // and stale-result behavior deterministic in unit tests.
-        let bridge = ControllerBridge::new(TestSessionFactory);
-        let mut gui = Gui::new(bridge);
-        gui.request_id = 4;
-        let _ = gui.update(Message::Bridge(Box::new(BridgeEvent {
-            request_id: 3,
-            generation: 0,
-            event: ReceiverEvent::Lifecycle(denon_avr_application::Lifecycle::Connected {
-                generation: 1,
-            }),
-        })));
-        assert_eq!(gui.lifecycle, denon_avr_application::Lifecycle::NoReceiver);
-    }
-
-    #[tokio::test]
-    async fn newer_same_generation_snapshot_is_not_dropped_by_an_unrelated_request() {
-        let bridge = ControllerBridge::new(TestSessionFactory);
-        let mut gui = Gui::new(bridge);
-        gui.request_id = 14;
-        gui.generation = 1;
-
-        let mut displayed = MainZoneSnapshot::default();
-        displayed.set_value(
-            MainZoneValue::Power(PowerState::Standby),
-            StateAuthority::Authoritative,
-        );
-        gui.snapshot = displayed.clone();
-
-        let mut newer = displayed;
-        newer.set_value(
-            MainZoneValue::Mute(MuteState::Off),
-            StateAuthority::Authoritative,
-        );
-
-        let _ = gui.update(Message::Bridge(Box::new(BridgeEvent {
-            // A source-catalog request has already advanced the GUI request
-            // counter, but this is newer receiver state from the same
-            // connection and must remain usable for the next control.
-            request_id: 13,
-            generation: 1,
-            event: ReceiverEvent::Snapshot(newer.clone()),
-        })));
-
-        assert_eq!(gui.snapshot, newer);
-        assert_eq!(gui.request_id, 14);
-    }
-
-    #[tokio::test]
-    async fn disconnected_lifecycle_invalidates_visible_main_zone_status() {
-        let bridge = ControllerBridge::new(TestSessionFactory);
-        let mut gui = Gui::new(bridge);
-        gui.request_id = 1;
-        gui.lifecycle = denon_avr_application::Lifecycle::Connected { generation: 1 };
-        gui.snapshot.set_value(
-            denon_avr_domain::MainZoneValue::Power(denon_avr_domain::PowerState::On),
-            denon_avr_domain::StateAuthority::Authoritative,
-        );
-
-        let _ = gui.update(Message::Bridge(Box::new(BridgeEvent {
-            request_id: 1,
-            generation: 1,
-            event: ReceiverEvent::Lifecycle(denon_avr_application::Lifecycle::Disconnected),
-        })));
-
-        assert_eq!(
-            gui.lifecycle,
-            denon_avr_application::Lifecycle::Disconnected
-        );
-        assert!(gui.snapshot.power.value().is_none());
-        assert_eq!(
-            gui.snapshot.freshness,
-            denon_avr_domain::Freshness::Invalidated
-        );
     }
 
     #[test]
@@ -1812,16 +2487,6 @@ mod tests {
     }
 
     #[test]
-    fn dashboard_omits_unknown_eq_summary() {
-        assert_eq!(eq_summary_if_reported(&EqStatus::default()), None);
-        let status = EqStatus {
-            dynamic_eq: denon_avr_domain::EqState::Off,
-            ..EqStatus::default()
-        };
-        assert!(eq_summary_if_reported(&status).is_some());
-    }
-
-    #[test]
     fn volume_slider_spans_the_validated_receiver_decibel_range() {
         assert_eq!(
             volume_level_for_slider(MIN_VOLUME_DB)
@@ -1872,161 +2537,6 @@ mod tests {
         assert_eq!(main_zone_power_control(None), None);
     }
 
-    #[tokio::test]
-    async fn volume_step_respects_the_receiver_ceiling_and_blocks_duplicates() {
-        let bridge = ControllerBridge::new(TestSessionFactory);
-        let mut gui = Gui::new(bridge);
-        gui.selection = Some(ReceiverSelection::ExplicitHost(
-            denon_avr_domain::ReceiverIdentity {
-                host: "receiver.local".into(),
-                model: Some("AVR-X3800H".into()),
-                friendly_name: None,
-            },
-        ));
-        gui.snapshot.set_value(
-            MainZoneValue::Volume(Volume::from_parts("95", 150)),
-            StateAuthority::Authoritative,
-        );
-        gui.volume_baseline_initialized = true;
-        gui.volume_slider = 15.0;
-
-        let _ = gui.update(Message::AdjustVolume(10.0));
-
-        assert_eq!(gui.volume_slider, MAX_VOLUME_DB);
-        assert_eq!(gui.volume_value, Some(MAX_VOLUME_DB));
-        assert!(gui.volume_command_pending);
-
-        let _ = gui.update(Message::AdjustVolume(-0.5));
-        assert_eq!(gui.volume_slider, MAX_VOLUME_DB);
-
-        let current_request = gui.volume_value_request_id;
-        let _ = gui.update(Message::HideVolumeValue(current_request.saturating_sub(1)));
-        assert_eq!(gui.volume_value, Some(MAX_VOLUME_DB));
-        let _ = gui.update(Message::HideVolumeValue(current_request));
-        assert_eq!(gui.volume_value, None);
-    }
-
-    #[tokio::test]
-    async fn unknown_volume_steps_initialize_to_minimum_once_then_adjust() {
-        let bridge = ControllerBridge::new(TestSessionFactory);
-        let mut gui = Gui::new(bridge);
-        gui.selection = Some(ReceiverSelection::ExplicitHost(
-            denon_avr_domain::ReceiverIdentity {
-                host: "receiver.local".into(),
-                model: Some("AVR-X3800H".into()),
-                friendly_name: None,
-            },
-        ));
-        assert_eq!(gui.volume_slider, MIN_VOLUME_DB);
-
-        let _ = gui.update(Message::AdjustVolume(0.5));
-
-        assert_eq!(gui.volume_slider, MIN_VOLUME_DB);
-        assert!(gui.volume_command_pending);
-        assert!(gui.volume_baseline_initialized);
-
-        let request_id = gui.volume_command_request_id.expect("volume was submitted");
-        let _ = gui.update(Message::Bridge(Box::new(BridgeEvent {
-            request_id,
-            generation: 0,
-            event: ReceiverEvent::Control(denon_avr_application::ControlResult::Cancelled),
-        })));
-        let _ = gui.update(Message::AdjustVolume(0.5));
-
-        assert_eq!(gui.volume_slider, MIN_VOLUME_DB + 0.5);
-        assert!(gui.volume_command_pending);
-    }
-
-    #[tokio::test]
-    async fn bridge_failure_reenables_volume_controls() {
-        let bridge = ControllerBridge::new(TestSessionFactory);
-        let mut gui = Gui::new(bridge);
-        gui.volume_command_pending = true;
-
-        let _ = gui.update(Message::Bridge(Box::new(BridgeEvent {
-            request_id: 1,
-            generation: 0,
-            event: ReceiverEvent::Diagnostic(denon_avr_application::Diagnostic::Timeout {
-                context: "setting volume".into(),
-            }),
-        })));
-
-        assert!(!gui.volume_command_pending);
-    }
-
-    #[tokio::test]
-    async fn stale_volume_confirmation_still_reenables_the_slider() {
-        let bridge = ControllerBridge::new(TestSessionFactory);
-        let mut gui = Gui::new(bridge);
-        gui.volume_command_pending = true;
-        gui.volume_command_request_id = Some(4);
-        // Simulate an unrelated catalog/status request begun after the volume
-        // command but before its receiver confirmation arrives.
-        gui.request_id = 5;
-
-        let _ = gui.update(Message::Bridge(Box::new(BridgeEvent {
-            request_id: 4,
-            generation: 0,
-            event: ReceiverEvent::Control(denon_avr_application::ControlResult::Cancelled),
-        })));
-
-        assert!(!gui.volume_command_pending);
-        assert_eq!(gui.volume_command_request_id, None);
-    }
-
-    #[tokio::test]
-    async fn stale_sound_mode_confirmation_reenables_mode_controls() {
-        let bridge = ControllerBridge::new(TestSessionFactory);
-        let mut gui = Gui::new(bridge);
-        gui.sound_mode_request_id = Some(4);
-        // Simulate an unrelated catalog/status request begun after the sound
-        // mode command but before its receiver confirmation arrives.
-        gui.request_id = 5;
-
-        let _ = gui.update(Message::Bridge(Box::new(BridgeEvent {
-            request_id: 4,
-            generation: 0,
-            event: ReceiverEvent::Control(denon_avr_application::ControlResult::Cancelled),
-        })));
-
-        assert_eq!(gui.sound_mode_request_id, None);
-    }
-
-    #[tokio::test]
-    async fn sound_mode_timeout_only_clears_its_own_pending_control() {
-        let bridge = ControllerBridge::new(TestSessionFactory);
-        let mut gui = Gui::new(bridge);
-        gui.sound_mode_request_id = Some(4);
-
-        let _ = gui.update(Message::SoundModeControlTimedOut(3));
-        assert_eq!(gui.sound_mode_request_id, Some(4));
-
-        let _ = gui.update(Message::SoundModeControlTimedOut(4));
-        assert_eq!(gui.sound_mode_request_id, None);
-        assert_eq!(
-            gui.announcement,
-            "Sound Mode request timed out; controls re-enabled."
-        );
-    }
-
-    #[tokio::test]
-    async fn source_status_opens_and_selects_from_the_picker() {
-        let bridge = ControllerBridge::new(TestSessionFactory);
-        let mut gui = Gui::new(bridge);
-        gui.selection = Some(ReceiverSelection::ExplicitHost(
-            denon_avr_domain::ReceiverIdentity {
-                host: "receiver.local".into(),
-                model: Some("Denon AVC-X3800H".into()),
-                friendly_name: None,
-            },
-        ));
-
-        let _ = gui.update(Message::OpenSourcePicker);
-        assert!(gui.source_picker_open);
-        let _ = gui.update(Message::SelectInput("TV AUDIO".into()));
-        assert!(!gui.source_picker_open);
-    }
-
     #[test]
     fn receiver_source_label_overrides_the_canonical_fallback() {
         let catalog = SourceCatalog {
@@ -2055,143 +2565,6 @@ mod tests {
         assert!(source_is_visible(&catalog, "TV AUDIO"));
     }
 
-    #[tokio::test]
-    async fn confirmed_status_is_logged_once_per_connection_generation() {
-        let bridge = ControllerBridge::new(TestSessionFactory);
-        let mut gui = Gui::new(bridge);
-        gui.selection = Some(ReceiverSelection::ExplicitHost(
-            denon_avr_domain::ReceiverIdentity::ad_hoc("receiver.local"),
-        ));
-        gui.request_id = 1;
-        gui.generation = 1;
-        let mut snapshot = MainZoneSnapshot::default();
-        snapshot.set_value(
-            denon_avr_domain::MainZoneValue::Power(denon_avr_domain::PowerState::On),
-            denon_avr_domain::StateAuthority::Authoritative,
-        );
-
-        for _ in 0..2 {
-            let _ = gui.update(Message::Bridge(Box::new(BridgeEvent {
-                request_id: 1,
-                generation: 0,
-                event: ReceiverEvent::Snapshot(snapshot.clone()),
-            })));
-        }
-
-        assert_eq!(
-            gui.messages
-                .iter()
-                .filter(|message| message.contains("status confirmed"))
-                .count(),
-            1
-        );
-    }
-
-    #[test]
-    fn unavailable_power_offers_a_recovery_action() {
-        let (title, detail, action) = power_recovery(
-            &denon_avr_application::Lifecycle::Disconnected,
-            &MainZoneSnapshot::default(),
-        );
-
-        assert_eq!(title, "RECEIVER UNAVAILABLE");
-        assert!(detail.contains("not queried"));
-        assert!(matches!(action, Some(("Retry Status", Message::Refresh))));
-    }
-
-    #[tokio::test]
-    async fn gui_uses_explicit_quick_select_eq_validation_for_known_models() {
-        let bridge = ControllerBridge::new_with_config(
-            TestSessionFactory,
-            denon_avr_application::ControllerConfig {
-                validated_quick_select_eq: Some(denon_avr_domain::QuickSelectEqCapabilities {
-                    quick_select_recall: true,
-                    quick_select_names: true,
-                    eq_status: true,
-                }),
-                ..denon_avr_application::ControllerConfig::default()
-            },
-        );
-        let mut gui = Gui::new(bridge);
-        gui.selection = Some(ReceiverSelection::ExplicitHost(
-            denon_avr_domain::ReceiverIdentity {
-                host: "receiver.local".into(),
-                model: Some("AVR-X3800H".into()),
-                friendly_name: None,
-            },
-        ));
-        let capabilities = gui.selected_capabilities();
-        assert!(capabilities.quick_select_recall);
-        assert!(capabilities.eq_status);
-    }
-
-    #[test]
-    fn recall_feedback_is_actionable_and_main_zone_specific() {
-        let slot = QuickSelectSlot::new(3).unwrap();
-        assert_eq!(
-            feedback::quick_select_recall_message(
-                &denon_avr_domain::QuickSelectRecallOutcome::Confirmed { slot }
-            ),
-            "Main Zone Quick Select 3 recalled and confirmed."
-        );
-        assert!(feedback::quick_select_recall_message(
-            &denon_avr_domain::QuickSelectRecallOutcome::Conflict {
-                expected: 1,
-                current: 2,
-            }
-        )
-        .contains("retry"));
-    }
-
-    #[tokio::test]
-    async fn message_panel_is_bounded_and_preserves_chronological_order() {
-        let bridge = ControllerBridge::new(TestSessionFactory);
-        let mut gui = Gui::new(bridge);
-        gui.record_message("same message");
-        gui.record_message("same message");
-        assert_eq!(gui.messages.len(), 1);
-        for index in 0..=design::MAX_SESSION_MESSAGES {
-            gui.record_message(format!("message {index}"));
-        }
-        assert_eq!(gui.messages.len(), design::MAX_SESSION_MESSAGES);
-        assert_eq!(gui.messages.front().map(String::as_str), Some("message 1"));
-        assert_eq!(gui.messages.back().map(String::as_str), Some("message 100"));
-        let _ = gui.update(Message::ToggleMessages);
-        assert!(gui.messages_collapsed);
-        let _ = gui.update(Message::ClearMessages);
-        assert!(gui.messages.is_empty());
-    }
-
-    #[tokio::test]
-    async fn discovered_receiver_selection_opens_the_console_and_records_context() {
-        let bridge = ControllerBridge::new(TestSessionFactory);
-        let mut gui = Gui::new(bridge);
-        gui.route = Route::Receivers;
-        let receiver = denon_avr_domain::DiscoveredReceiver {
-            address: denon_avr_domain::ReceiverEndpoint {
-                host: "192.168.0.8".into(),
-                port: 23,
-            },
-            location: None,
-            server: None,
-            model: Some("Denon AVC-X3800H".into()),
-            search_target: None,
-            unique_service_name: None,
-        };
-
-        let _ = gui.update(Message::Select(ReceiverSelection::Discovered(receiver)));
-
-        assert_eq!(gui.route, Route::Dashboard);
-        assert_eq!(
-            gui.selection.as_ref().map(|s| s.identity().host),
-            Some("192.168.0.8".into())
-        );
-        assert!(gui
-            .messages
-            .back()
-            .is_some_and(|message| message.contains("AVC-X3800H")));
-    }
-
     #[test]
     fn speaker_state_keeps_unobserved_channels_unknown() {
         assert_eq!(channel_state(None, "FL"), "UNKNOWN");
@@ -2199,32 +2572,6 @@ mod tests {
         assert_eq!(
             channel_state(Some("FL C FR SL SR SBL SBR LFE"), "TML"),
             "OFF"
-        );
-    }
-
-    #[test]
-    fn discovered_receiver_becomes_the_persisted_current_receiver() {
-        let receiver = denon_avr_domain::DiscoveredReceiver {
-            address: denon_avr_domain::ReceiverEndpoint {
-                host: "192.168.0.8".into(),
-                port: 23,
-            },
-            location: None,
-            server: None,
-            model: Some("Denon AVC-X3800H".into()),
-            search_target: None,
-            unique_service_name: None,
-        };
-        let (config, selection) = configuration_for_discovered(&receiver);
-
-        assert_eq!(config.current.as_deref(), Some("Denon AVC-X3800H"));
-        assert_eq!(
-            config.current().map(|(_, identity)| identity.host.as_str()),
-            Some("192.168.0.8")
-        );
-        assert_eq!(
-            selection.identity().friendly_name.as_deref(),
-            Some("Denon AVC-X3800H")
         );
     }
 }

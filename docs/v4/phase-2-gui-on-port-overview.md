@@ -1,7 +1,7 @@
 # Version 4, Phase 2 — GUI on the port
 
 **In progress, started 2026-10-08** on branch `v4/phase-2-gui-on-port`. Steps
-1 and 2 are done. This is milestone 2 of the [roadmap](roadmap.md). It moves the
+1 to 3 are done. This is milestone 2 of the [roadmap](roadmap.md). It moves the
 GUI from the legacy `ReceiverController` onto the control-service port and then
 deletes the legacy path. It is a refactoring: the intended user-visible
 differences are the ones the parity table lists as **Changed**. The owner asked
@@ -23,7 +23,7 @@ Work goes one numbered step at a time: `make check`, `make clippy`, and
 | --- | --- | --- |
 | 1 | Behavior parity table | Done |
 | 2 | Port changes P1 `refresh` and P2 retiring a changed session, and the session checks they need | Done |
-| 3 | Retarget `gui-lib` to the port; rewrite its tests | Not started |
+| 3 | Retarget `gui-lib` to the port; rewrite its tests | Done |
 | 4 | Delete the legacy path; flip the guards; update the contract documents | Not started |
 | 5 | Scope the domain and protocol cleanup by inventory | Not started |
 | 6 | Live checks and exit | Not started |
@@ -80,15 +80,14 @@ From the roadmap, with the Diagnostics exception that decision D4 proposes:
   except for the differences the owner accepted in D5.
 - `make check` and `make clippy` pass.
 
-## Known limits until step 3
+## Known limits
 
-- The desktop app still replaces the whole configuration when it saves a
-  manually entered or discovered receiver, which removes other receivers and all
-  sound mode favorites without a backup (the parity table's G2). Step 3 closes
-  this with a read-modify-write.
 - The first command that saves the configuration, from the CLI or the GUI,
   rewrites a version 3 file in the new schema. An installed 3.0.0 cannot read it
   until the `.v3.bak` copy is restored. This is unchanged from phase 1.
+- The GUI no longer replaces the whole configuration when it saves a manually
+  entered or discovered receiver: it reads the file, changes one entry, and keeps
+  the rest (closed in step 3; the parity table's G2).
 
 ## Manual macOS checklist
 

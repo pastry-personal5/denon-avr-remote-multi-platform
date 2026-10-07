@@ -68,7 +68,6 @@ impl Gui {
             .into();
         }
 
-        let quick_select_supported = capabilities.quick_select_recall;
         let quick_select_names_supported = capabilities.quick_select_names;
         let mute_controls: Element<'_, Message> = if writable {
             let muted = self.snapshot.mute.value() == Some(&denon_avr_domain::MuteState::On);
@@ -243,7 +242,6 @@ impl Gui {
             volume_controls,
             quick_select_bar(
                 &self.quick_select,
-                quick_select_supported,
                 quick_select_names_supported,
                 self.source_catalog.clone(),
             ),

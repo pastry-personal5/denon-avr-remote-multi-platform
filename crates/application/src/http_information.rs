@@ -1,13 +1,16 @@
 //! Policy for optional HTTP information reads.
 
 use crate::ports::OperationError;
-use denon_avr_domain::{Freshness, HttpInformationSnapshot, MainZoneControl, ModelCapabilities};
+use denon_avr_domain::{
+    Freshness, HttpInformationSnapshot, MainZoneControl, ModelCapabilities, ReceiverIntent,
+    ZonePower,
+};
 
-pub(crate) fn should_read(capabilities: &ModelCapabilities, saved_receiver: bool) -> bool {
+pub fn should_read(capabilities: &ModelCapabilities, saved_receiver: bool) -> bool {
     capabilities.http_information_read || saved_receiver
 }
 
-pub(crate) fn merge_refresh(
+pub fn merge_refresh(
     previous: HttpInformationSnapshot,
     generation: u64,
     result: Result<HttpInformationSnapshot, OperationError>,
@@ -31,6 +34,17 @@ pub(crate) fn merge_refresh(
             (information, Err(error))
         }
     }
+}
+
+/// Whether a confirmed control can change what the receiver reports over HTTP.
+pub fn intent_may_have_changed(intent: &ReceiverIntent) -> bool {
+    matches!(
+        intent,
+        ReceiverIntent::Source(_)
+            | ReceiverIntent::SoundMode(_)
+            | ReceiverIntent::MainZonePower(ZonePower::On)
+            | ReceiverIntent::SystemPower(denon_avr_domain::SystemPower::On)
+    )
 }
 
 pub(crate) fn may_have_changed(control: &MainZoneControl) -> bool {

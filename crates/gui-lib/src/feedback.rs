@@ -1,90 +1,107 @@
-//! Stable user-facing copy for typed application outcomes and observations.
+//! Stable user-facing copy for typed control outcomes.
 
-use denon_avr_application::ControlResult;
-use denon_avr_domain::{EqFeature, EqStatus, QuickSelectRecallOutcome};
+use crate::ControlReport;
+use denon_avr_application::OperationStatus;
+use denon_avr_domain::DispatchCertainty;
 
-pub fn control_message(result: &ControlResult) -> String {
-    match result {
-        ControlResult::Dispatched { .. } => {
-            "Command sent; waiting for receiver confirmation.".into()
-        }
-        ControlResult::Confirmed { .. } => "Command confirmed by the receiver.".into(),
-        ControlResult::NoOp { .. } => "Receiver already has the requested value.".into(),
-        ControlResult::Conflict { .. } => {
-            "Receiver state changed before the command; retry.".into()
-        }
-        ControlResult::Unsupported(reason) => format!("Command is unsupported: {reason}"),
-        ControlResult::Rejected(error) => format!("Command rejected: {error}"),
-        ControlResult::TransportFailure(error) => format!("Command failed to send: {error}"),
-        ControlResult::Unconfirmed(error) => {
-            format!("Command sent, but confirmation is unavailable: {error}")
-        }
-        ControlResult::Cancelled => "Command cancelled.".into(),
-    }
-}
-
-pub fn quick_select_recall_message(outcome: &QuickSelectRecallOutcome) -> String {
-    match outcome {
-        QuickSelectRecallOutcome::Pending { slot } => {
-            format!("Recalling Main Zone Quick Select {}…", slot.number())
-        }
-        QuickSelectRecallOutcome::Confirmed { slot } => format!(
-            "Main Zone Quick Select {} recalled and confirmed.",
-            slot.number()
-        ),
-        QuickSelectRecallOutcome::Rejected(reason) => {
-            format!("Quick Select recall was rejected: {reason}")
-        }
-        QuickSelectRecallOutcome::Conflict { .. } => {
-            "Quick Select state changed; retry the recall.".into()
-        }
-        QuickSelectRecallOutcome::Unsupported(reason) => {
-            format!("Quick Select recall is unsupported: {reason}")
-        }
-        QuickSelectRecallOutcome::TransportFailure(reason) => {
-            format!("Quick Select recall failed: {reason}")
-        }
-        QuickSelectRecallOutcome::Unconfirmed(reason) => format!(
-            "Quick Select may have been recalled, but confirmation is unavailable: {reason}"
-        ),
-    }
-}
-
-pub fn eq_summary(status: &EqStatus) -> String {
-    EqFeature::ALL
-        .into_iter()
-        .map(|feature| {
-            format!(
-                "{}: {}",
-                feature.label(),
-                status.state(feature).explanation()
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(" · ")
-}
-
-pub fn eq_evidence_summary(status: &EqStatus) -> String {
-    if status.evidence.is_empty() {
-        return "No EQ query evidence recorded.".into();
-    }
-    status
-        .evidence
-        .iter()
-        .map(|e| {
-            format!(
-                "{}: {} ms; response={:?}; error={:?}{}",
-                e.feature.label(),
-                e.elapsed_millis,
-                e.response,
-                e.error,
-                if e.preserved_previous {
-                    "; retained previous value"
-                } else {
-                    ""
+/// The message for how a control ended. The wording follows the outcome: a
+/// write that went out but could not be confirmed is not "failed to send".
+pub fn control_message(report: &ControlReport) -> String {
+    match report {
+        ControlReport::Conflict => "Receiver state changed before the command; retry.".into(),
+        ControlReport::Failed(error) => format!("Operation failed: {error}"),
+        ControlReport::Finished(snapshot) => {
+            let reason = || snapshot.reason.clone().unwrap_or_default();
+            match &snapshot.status {
+                OperationStatus::Completed => "Command confirmed by the receiver.".into(),
+                OperationStatus::AlreadyInState => {
+                    "Receiver already has the requested value.".into()
                 }
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(" · ")
+                OperationStatus::Rejected | OperationStatus::Denied => {
+                    format!("Command rejected: {}", reason())
+                }
+                OperationStatus::Indeterminate
+                    if snapshot.dispatch == DispatchCertainty::NotDispatched =>
+                {
+                    format!("Command failed to send: {}", reason())
+                }
+                OperationStatus::Indeterminate => format!(
+                    "Command sent, but confirmation is unavailable: {}",
+                    reason()
+                ),
+                OperationStatus::Cancelled | OperationStatus::Superseded { .. } => {
+                    "Command cancelled.".into()
+                }
+                other => format!("Command did not finish ({}).", other.as_str()),
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use denon_avr_application::OperationSnapshot;
+    use denon_avr_domain::{MuteState, OperationId, ReceiverId, ReceiverIntent};
+
+    fn report(status: OperationStatus, dispatch: DispatchCertainty, reason: &str) -> ControlReport {
+        ControlReport::Finished(Box::new(OperationSnapshot {
+            id: OperationId(1),
+            receiver: ReceiverId::new("living-room").unwrap(),
+            intent: ReceiverIntent::Mute(MuteState::On),
+            status,
+            dispatch,
+            confirmed: false,
+            reason: (!reason.is_empty()).then(|| reason.to_owned()),
+            observation: None,
+        }))
+    }
+
+    #[test]
+    fn each_outcome_reads_as_what_happened() {
+        use DispatchCertainty::*;
+        use OperationStatus::*;
+        let cases = [
+            (
+                report(Completed, CompleteWrite, ""),
+                "Command confirmed by the receiver.",
+            ),
+            (
+                report(AlreadyInState, NotDispatched, ""),
+                "Receiver already has the requested value.",
+            ),
+            (
+                report(Rejected, NotDispatched, "unsupported"),
+                "Command rejected: unsupported",
+            ),
+            (
+                report(Indeterminate, CompleteWrite, "not seen in time"),
+                "Command sent, but confirmation is unavailable: not seen in time",
+            ),
+            (
+                report(Indeterminate, Unknown, "ambiguous"),
+                "Command sent, but confirmation is unavailable: ambiguous",
+            ),
+            (
+                report(Indeterminate, NotDispatched, "session stopped"),
+                "Command failed to send: session stopped",
+            ),
+            (report(Cancelled, NotDispatched, ""), "Command cancelled."),
+            (
+                report(Superseded { by: OperationId(2) }, NotDispatched, ""),
+                "Command cancelled.",
+            ),
+            (
+                ControlReport::Conflict,
+                "Receiver state changed before the command; retry.",
+            ),
+            (
+                ControlReport::Failed("no receiver selected".into()),
+                "Operation failed: no receiver selected",
+            ),
+        ];
+        for (report, expected) in cases {
+            assert_eq!(control_message(&report), expected, "{report:?}");
+        }
+    }
 }

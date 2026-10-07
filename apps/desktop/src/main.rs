@@ -18,10 +18,23 @@ fn main() -> iced::Result {
             None
         }
     };
+    // The desktop composes the control service, which owns the receiver
+    // connection. The GUI sees only the port and a hook to close it.
+    let service = Arc::new(denon_avr_application::ControlService::new(
+        Arc::new(denon_avr_infrastructure::X3800hConnector::default()),
+        Arc::new(denon_avr_infrastructure::YamlConfigRepository::default()),
+        Arc::new(denon_avr_infrastructure::SsdpDiscoveryAdapter),
+        denon_avr_application::ServiceConfig::default(),
+    ));
     let services = denon_avr_gui_lib::GuiServices {
-        factory: Arc::new(denon_avr_infrastructure::CanonicalSessionFactory::default()),
-        configuration: Arc::new(denon_avr_infrastructure::YamlConfigRepository::default()),
-        discovery: Arc::new(denon_avr_infrastructure::SsdpDiscoveryAdapter),
+        control: service.operator(),
+        shutdown: {
+            let service = Arc::clone(&service);
+            Arc::new(move || {
+                let service = Arc::clone(&service);
+                Box::pin(async move { service.shutdown().await })
+            })
+        },
     };
     let result = iced::application(
         move || denon_avr_gui_lib::boot_with_services(services.clone()),

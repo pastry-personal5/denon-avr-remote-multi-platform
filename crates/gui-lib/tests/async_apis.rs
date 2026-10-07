@@ -1,48 +1,208 @@
+//! The GUI against the real control service and a fake receiver.
+//!
+//! Nothing here touches a socket. A fake connector hands the service a fake
+//! canonical session, and a headless driver feeds the bridge's events back to the
+//! reducer as messages, as the Iced subscription does in the application.
+
 use denon_avr_application::ports::{
-    AsyncConfigRepository, AsyncReceiverDiscovery, BoxFuture, OperationError, ReceiverSession,
-    SessionEvent, SessionFactory,
+    AsyncConfigRepository, AsyncReceiverDiscovery, BoxFuture, OperationError, OperationErrorKind,
+    ReceiverConnector,
+};
+use denon_avr_application::{
+    CanonicalReceiverSession, ControlService, OperationRequest, Readiness, ServiceConfig,
+    SharedReceiverSession, StateSubscription,
 };
 use denon_avr_domain::{
-    AudioContextSnapshot, ConfiguredReceivers, DiscoveredReceiver, Input, MainZoneControl,
-    MainZoneField, MainZoneValue, MuteState, PowerState, ReceiverEndpoint, ReceiverIdentity,
-    SurroundMode, Volume,
+    ConfiguredReceivers, CoreFrame, DiscoveredReceiver, DispatchCertainty, Epoch, FrameSeq,
+    MasterVolume, MonotonicMillis, MuteState, ObservationOrigin, OperationOutcome, PowerState,
+    ReceiverEndpoint, ReceiverId, ReceiverIdentity, ReceiverIntent, ReceiverState, SoundModeStatus,
+    SourceId, SystemPower, ZonePower,
 };
-use denon_avr_gui_lib::{boot_with_services, update, ControllerBridge, Gui, GuiServices, Message};
+use denon_avr_gui_lib::{
+    boot_with_services, update, BridgeEvent, Gui, GuiServices, Lifecycle, Message, Selection,
+};
 use iced::futures::StreamExt;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::collections::{BTreeMap, VecDeque};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::sync::Notify;
+use tokio::sync::watch;
 
 #[derive(Default)]
 struct Calls {
-    configuration_loads: AtomicUsize,
-    configuration_saves: AtomicUsize,
+    loads: AtomicUsize,
+    saves: AtomicUsize,
     discoveries: AtomicUsize,
-    connections: AtomicUsize,
-    audio_context_queries: AtomicUsize,
-    core_refreshes: AtomicUsize,
+    connects: AtomicUsize,
     closes: AtomicUsize,
-    discovery_timeouts: Mutex<Vec<Duration>>,
-    saved_configurations: Mutex<Vec<ConfiguredReceivers>>,
-    connected_identities: Mutex<Vec<ReceiverIdentity>>,
-    queried_fields: Mutex<Vec<MainZoneField>>,
-    refresh_finished: Notify,
-    close_finished: Notify,
+    synchronizes: AtomicUsize,
+    hosts: Mutex<Vec<String>>,
+    operations: Mutex<Vec<ReceiverIntent>>,
+    sessions: Mutex<Vec<Arc<FakeSession>>>,
+    /// When set, the next connection attempts fail.
+    refuse: AtomicBool,
+}
+
+struct FakeSession {
+    receiver: ReceiverId,
+    states: watch::Sender<ReceiverState>,
+    calls: Arc<Calls>,
+    seq: AtomicUsize,
+}
+
+impl FakeSession {
+    fn frame(&self, epoch: u64, frame: CoreFrame) {
+        let seq = self.seq.fetch_add(1, Ordering::SeqCst) as u64 + 1;
+        self.states.send_modify(|state| {
+            state.reduce(
+                &self.receiver,
+                Epoch(epoch),
+                FrameSeq(seq),
+                MonotonicMillis(seq),
+                MonotonicMillis(u64::MAX / 2),
+                ObservationOrigin::ReceiverFrame,
+                frame,
+            );
+        });
+    }
+
+    fn read_everything(&self) {
+        let epoch = self.states.borrow().epoch.map_or(1, |epoch| epoch.0);
+        for frame in [
+            CoreFrame::SystemPower(SystemPower::On),
+            CoreFrame::MainZonePower(ZonePower::On),
+            CoreFrame::Zone2Power(ZonePower::Off),
+            CoreFrame::Source(SourceId::new("CD").unwrap()),
+            CoreFrame::Volume(MasterVolume::db_half_steps(-60).unwrap()),
+            CoreFrame::Mute(MuteState::Off),
+            CoreFrame::SoundMode(SoundModeStatus {
+                id: "STEREO".into(),
+                raw: "MSSTEREO".into(),
+            }),
+        ] {
+            self.frame(epoch, frame);
+        }
+    }
+
+    /// The receiver drops the connection and the transport reconnects.
+    fn reconnect(&self, epoch: u64) {
+        self.states.send_modify(|state| {
+            state.mark_disconnected();
+            state.establish_epoch(Epoch(epoch));
+        });
+        self.read_everything();
+    }
+
+    fn the_receiver_changes_volume_by_itself(&self, half_steps: i16) {
+        let epoch = self.states.borrow().epoch.map_or(1, |epoch| epoch.0);
+        self.frame(
+            epoch,
+            CoreFrame::Volume(MasterVolume::db_half_steps(half_steps).unwrap()),
+        );
+    }
+}
+
+impl CanonicalReceiverSession for FakeSession {
+    fn state(&self) -> StateSubscription {
+        StateSubscription::new(self.states.subscribe())
+    }
+
+    fn synchronize(&self) -> BoxFuture<'_, Result<Readiness, OperationError>> {
+        Box::pin(async move {
+            self.calls.synchronizes.fetch_add(1, Ordering::SeqCst);
+            self.read_everything();
+            Ok(Readiness {
+                ready: true,
+                degraded: false,
+                detail: "fake".into(),
+            })
+        })
+    }
+
+    fn operate(&self, request: OperationRequest) -> BoxFuture<'_, OperationOutcome> {
+        Box::pin(async move {
+            self.calls
+                .operations
+                .lock()
+                .unwrap()
+                .push(request.intent.clone());
+            let epoch = self.states.borrow().epoch.map_or(1, |epoch| epoch.0);
+            let frame = match &request.intent {
+                ReceiverIntent::Mute(mute) => Some(CoreFrame::Mute(*mute)),
+                ReceiverIntent::Volume(volume) => Some(CoreFrame::Volume(*volume)),
+                ReceiverIntent::MainZonePower(power) => Some(CoreFrame::MainZonePower(*power)),
+                ReceiverIntent::Zone2Power(power) => Some(CoreFrame::Zone2Power(*power)),
+                _ => None,
+            };
+            if let Some(frame) = frame {
+                self.frame(epoch, frame);
+            }
+            OperationOutcome::ObservedRequestedValue {
+                operation: request.id,
+                dispatch: DispatchCertainty::CompleteWrite,
+                observation: "fake".into(),
+            }
+        })
+    }
+
+    fn close(&self) -> BoxFuture<'_, Result<(), OperationError>> {
+        Box::pin(async move {
+            self.calls.closes.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        })
+    }
+}
+
+struct FakeConnector {
+    calls: Arc<Calls>,
+}
+
+impl ReceiverConnector for FakeConnector {
+    fn connect<'a>(
+        &'a self,
+        receiver: &'a ReceiverId,
+        identity: &'a ReceiverIdentity,
+    ) -> BoxFuture<'a, Result<SharedReceiverSession, OperationError>> {
+        Box::pin(async move {
+            tokio::task::yield_now().await;
+            self.calls.connects.fetch_add(1, Ordering::SeqCst);
+            self.calls.hosts.lock().unwrap().push(identity.host.clone());
+            if self.calls.refuse.load(Ordering::SeqCst) {
+                return Err(OperationError::new(
+                    OperationErrorKind::Connection,
+                    "connecting",
+                    "refused",
+                ));
+            }
+            let mut initial = ReceiverState::new(receiver.clone());
+            initial.establish_epoch(Epoch(1));
+            let session = Arc::new(FakeSession {
+                receiver: receiver.clone(),
+                states: watch::channel(initial).0,
+                calls: Arc::clone(&self.calls),
+                seq: AtomicUsize::new(0),
+            });
+            self.calls
+                .sessions
+                .lock()
+                .unwrap()
+                .push(Arc::clone(&session));
+            Ok(session as SharedReceiverSession)
+        })
+    }
 }
 
 struct FakeConfiguration {
     calls: Arc<Calls>,
+    stored: Mutex<ConfiguredReceivers>,
 }
 
 impl AsyncConfigRepository for FakeConfiguration {
     fn load(&self) -> BoxFuture<'_, Result<ConfiguredReceivers, OperationError>> {
         Box::pin(async move {
             tokio::task::yield_now().await;
-            self.calls
-                .configuration_loads
-                .fetch_add(1, Ordering::SeqCst);
-            Ok(ConfiguredReceivers::default())
+            self.calls.loads.fetch_add(1, Ordering::SeqCst);
+            Ok(self.stored.lock().unwrap().clone())
         })
     }
 
@@ -52,14 +212,8 @@ impl AsyncConfigRepository for FakeConfiguration {
     ) -> BoxFuture<'a, Result<(), OperationError>> {
         Box::pin(async move {
             tokio::task::yield_now().await;
-            self.calls
-                .configuration_saves
-                .fetch_add(1, Ordering::SeqCst);
-            self.calls
-                .saved_configurations
-                .lock()
-                .expect("saved configuration lock")
-                .push(configuration.clone());
+            self.calls.saves.fetch_add(1, Ordering::SeqCst);
+            *self.stored.lock().unwrap() = configuration.clone();
             Ok(())
         })
     }
@@ -73,152 +227,71 @@ struct FakeDiscovery {
 impl AsyncReceiverDiscovery for FakeDiscovery {
     fn discover(
         &self,
-        timeout: Duration,
+        _timeout: Duration,
     ) -> BoxFuture<'_, Result<Vec<DiscoveredReceiver>, OperationError>> {
         Box::pin(async move {
             tokio::task::yield_now().await;
             self.calls.discoveries.fetch_add(1, Ordering::SeqCst);
-            self.calls
-                .discovery_timeouts
-                .lock()
-                .expect("discovery timeout lock")
-                .push(timeout);
             Ok(vec![self.receiver.clone()])
         })
     }
 }
 
-struct FakeFactory {
+struct World {
     calls: Arc<Calls>,
+    config: Arc<FakeConfiguration>,
+    service: Arc<ControlService>,
 }
 
-impl SessionFactory for FakeFactory {
-    fn connect(
-        &self,
-        identity: ReceiverIdentity,
-    ) -> BoxFuture<'_, Result<Box<dyn ReceiverSession>, OperationError>> {
-        Box::pin(async move {
-            tokio::task::yield_now().await;
-            self.calls.connections.fetch_add(1, Ordering::SeqCst);
-            self.calls
-                .connected_identities
-                .lock()
-                .expect("connected identity lock")
-                .push(identity);
-            Ok(Box::new(FakeSession {
-                calls: Arc::clone(&self.calls),
-            }) as Box<dyn ReceiverSession>)
-        })
-    }
-}
-
-struct FakeSession {
-    calls: Arc<Calls>,
-}
-
-impl ReceiverSession for FakeSession {
-    fn query_field(
-        &mut self,
-        field: MainZoneField,
-    ) -> BoxFuture<'_, Result<MainZoneValue, OperationError>> {
-        self.calls
-            .queried_fields
-            .lock()
-            .expect("queried fields lock")
-            .push(field);
-        let calls = Arc::clone(&self.calls);
-        Box::pin(async move {
-            tokio::task::yield_now().await;
-            let value = match field {
-                MainZoneField::Power => MainZoneValue::Power(PowerState::On),
-                MainZoneField::Input => MainZoneValue::Input(Input::new("CD").unwrap()),
-                MainZoneField::Volume => MainZoneValue::Volume(Volume::from_parts("50", -300)),
-                MainZoneField::Mute => MainZoneValue::Mute(MuteState::Off),
-                MainZoneField::SurroundMode => {
-                    MainZoneValue::SurroundMode(SurroundMode::new("STEREO").unwrap())
-                }
-            };
-            if field == MainZoneField::SurroundMode {
-                calls.core_refreshes.fetch_add(1, Ordering::SeqCst);
-                calls.refresh_finished.notify_one();
-            }
-            Ok(value)
-        })
-    }
-
-    fn execute_once(
-        &mut self,
-        _control: MainZoneControl,
-    ) -> BoxFuture<'_, Result<(), OperationError>> {
-        Box::pin(async { Ok(()) })
-    }
-
-    fn query_audio_context(&mut self) -> BoxFuture<'_, AudioContextSnapshot> {
-        Box::pin(async move {
-            tokio::task::yield_now().await;
-            self.calls
-                .audio_context_queries
-                .fetch_add(1, Ordering::SeqCst);
-            self.calls.refresh_finished.notify_one();
-            AudioContextSnapshot::default()
-        })
-    }
-
-    fn next_event(&mut self) -> BoxFuture<'_, Result<SessionEvent, OperationError>> {
-        Box::pin(std::future::pending())
-    }
-
-    fn close(&mut self) -> BoxFuture<'_, Result<(), OperationError>> {
-        Box::pin(async move {
-            tokio::task::yield_now().await;
-            self.calls.closes.fetch_add(1, Ordering::SeqCst);
-            self.calls.close_finished.notify_one();
-            Ok(())
-        })
-    }
-}
-
-async fn task_message(task: iced::Task<Message>) -> Message {
-    let mut actions = iced_runtime::task::into_stream(task).expect("task should produce a message");
-    while let Some(action) = actions.next().await {
-        if let iced_runtime::Action::Output(message) = action {
-            return message;
+impl World {
+    fn new(stored: ConfiguredReceivers) -> Self {
+        let calls = Arc::new(Calls::default());
+        let config = Arc::new(FakeConfiguration {
+            calls: Arc::clone(&calls),
+            stored: Mutex::new(stored),
+        });
+        let service = Arc::new(ControlService::new(
+            Arc::new(FakeConnector {
+                calls: Arc::clone(&calls),
+            }),
+            config.clone(),
+            Arc::new(FakeDiscovery {
+                calls: Arc::clone(&calls),
+                receiver: discovered("192.0.2.10"),
+            }),
+            ServiceConfig::default(),
+        ));
+        Self {
+            calls,
+            config,
+            service,
         }
     }
-    panic!("task finished without producing a message");
-}
 
-async fn wait_for(counter: &AtomicUsize, notification: &Notify) {
-    tokio::time::timeout(Duration::from_secs(1), async {
-        while counter.load(Ordering::SeqCst) == 0 {
-            notification.notified().await;
+    fn services(&self) -> GuiServices {
+        let service = Arc::clone(&self.service);
+        GuiServices {
+            control: self.service.operator(),
+            shutdown: Arc::new(move || {
+                let service = Arc::clone(&service);
+                Box::pin(async move { service.shutdown().await })
+            }),
         }
-    })
-    .await
-    .expect("async GUI operation should finish");
-}
+    }
 
-fn services(calls: &Arc<Calls>, receiver: DiscoveredReceiver) -> GuiServices {
-    GuiServices {
-        factory: Arc::new(FakeFactory {
-            calls: Arc::clone(calls),
-        }),
-        configuration: Arc::new(FakeConfiguration {
-            calls: Arc::clone(calls),
-        }),
-        discovery: Arc::new(FakeDiscovery {
-            calls: Arc::clone(calls),
-            receiver,
-        }),
+    fn session(&self, index: usize) -> Arc<FakeSession> {
+        Arc::clone(&self.calls.sessions.lock().unwrap()[index])
+    }
+
+    fn stored(&self) -> ConfiguredReceivers {
+        self.config.stored.lock().unwrap().clone()
     }
 }
 
-#[tokio::test]
-async fn gui_drives_async_configuration_discovery_and_session_apis() {
-    let calls = Arc::new(Calls::default());
-    let discovered = DiscoveredReceiver {
+fn discovered(host: &str) -> DiscoveredReceiver {
+    DiscoveredReceiver {
         address: ReceiverEndpoint {
-            host: "192.0.2.10".into(),
+            host: host.into(),
             port: 23,
         },
         location: None,
@@ -226,172 +299,326 @@ async fn gui_drives_async_configuration_discovery_and_session_apis() {
         model: Some("AVR-X3800H".into()),
         search_target: None,
         unique_service_name: None,
+    }
+}
+
+fn identity(host: &str) -> ReceiverIdentity {
+    ReceiverIdentity {
+        host: host.into(),
+        model: Some("AVR-X3800H".into()),
+        friendly_name: None,
+    }
+}
+
+fn saved(entries: &[(&str, &str)], current: &str) -> ConfiguredReceivers {
+    ConfiguredReceivers {
+        current: Some(current.into()),
+        receivers: entries
+            .iter()
+            .map(|(name, host)| ((*name).to_owned(), identity(host)))
+            .collect::<BTreeMap<_, _>>(),
+        ..ConfiguredReceivers::default()
+    }
+}
+
+/// Every message a task produces, run to its end.
+async fn outputs(task: iced::Task<Message>) -> Vec<Message> {
+    let Some(mut actions) = iced_runtime::task::into_stream(task) else {
+        return Vec::new();
     };
-    let services = services(&calls, discovered.clone());
+    let mut messages = Vec::new();
+    while let Some(action) = actions.next().await {
+        if let iced_runtime::Action::Output(message) = action {
+            messages.push(message);
+        }
+    }
+    messages
+}
 
-    let (mut gui, load_task) = boot_with_services(services);
-    let no_follow_up = update(&mut gui, task_message(load_task).await);
-    assert_eq!(no_follow_up.units(), 0);
-    assert_eq!(calls.configuration_loads.load(Ordering::SeqCst), 1);
+/// Apply `message`, then each message the resulting tasks produce.
+async fn drive(gui: &mut Gui, message: Message) {
+    let mut queue = VecDeque::from([message]);
+    while let Some(message) = queue.pop_front() {
+        let task = update(gui, message);
+        queue.extend(outputs(task).await);
+    }
+}
 
-    let discovery_task = update(&mut gui, Message::Discover);
-    let save_task = update(&mut gui, task_message(discovery_task).await);
-    let connect_task = update(&mut gui, task_message(save_task).await);
-    assert!(matches!(
-        task_message(connect_task).await,
-        Message::CommandFinished(Ok(()))
-    ));
+/// Feed the bridge's events to the reducer until `done` holds.
+async fn until(gui: &mut Gui, what: &str, done: impl Fn(&Gui) -> bool) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !done(gui) {
+            let event: BridgeEvent = gui.bridge().recv().await.expect("the bridge ended");
+            drive(gui, Message::Bridge(Box::new(event))).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("timed out waiting for {what}"));
+}
 
-    wait_for(&calls.core_refreshes, &calls.refresh_finished).await;
+fn connected(gui: &Gui) -> bool {
+    matches!(gui.lifecycle, Lifecycle::Connected { .. }) && gui.snapshot.power.value().is_some()
+}
 
-    assert_eq!(calls.discoveries.load(Ordering::SeqCst), 1);
-    assert_eq!(calls.configuration_saves.load(Ordering::SeqCst), 1);
-    assert_eq!(calls.connections.load(Ordering::SeqCst), 1);
-    assert_eq!(
-        *calls
-            .discovery_timeouts
-            .lock()
-            .expect("discovery timeout lock"),
-        vec![Duration::from_secs(3)]
-    );
-    assert_eq!(
-        *calls.queried_fields.lock().expect("queried fields lock"),
-        MainZoneField::ALL
-    );
-    assert_eq!(calls.audio_context_queries.load(Ordering::SeqCst), 0);
-    assert_eq!(
-        calls
-            .connected_identities
-            .lock()
-            .expect("connected identity lock")[0]
-            .host,
-        discovered.address.host
-    );
+#[tokio::test]
+async fn gui_drives_configuration_discovery_and_the_session_through_the_port() {
+    let world = World::new(ConfiguredReceivers::default());
+    let (mut gui, load) = boot_with_services(world.services());
+    for message in outputs(load).await {
+        drive(&mut gui, message).await;
+    }
+    assert_eq!(world.calls.loads.load(Ordering::SeqCst), 1);
+    assert!(gui.launch_ready, "no saved receiver opens receiver setup");
 
-    let saved_configuration = {
-        let saved = calls
-            .saved_configurations
-            .lock()
-            .expect("saved configuration lock");
-        assert_eq!(saved.len(), 1);
-        saved[0].clone()
-    };
-    assert_eq!(saved_configuration, gui.configured);
+    drive(&mut gui, Message::Discover).await;
+    // One receiver found is saved and chosen without another click.
+    until(&mut gui, "the discovered receiver to connect", connected).await;
+
+    assert_eq!(world.calls.discoveries.load(Ordering::SeqCst), 1);
+    assert_eq!(world.calls.saves.load(Ordering::SeqCst), 1);
+    assert_eq!(world.calls.connects.load(Ordering::SeqCst), 1);
+    assert_eq!(*world.calls.hosts.lock().unwrap(), ["192.0.2.10"]);
+    assert_eq!(world.stored(), gui.configured);
     assert_eq!(
         gui.selection.as_ref().map(|selection| selection.identity()),
-        saved_configuration
+        world
+            .stored()
             .current()
             .map(|(_, identity)| identity.clone())
     );
+    assert_eq!(gui.snapshot.power.value(), Some(&PowerState::On));
+    assert_eq!(gui.snapshot.input.value().unwrap().as_str(), "CD");
+    assert_eq!(gui.zone2.power.value(), Some(&PowerState::Standby));
 
-    let shutdown_task = update(&mut gui, Message::Shutdown);
-    assert!(matches!(
-        task_message(shutdown_task).await,
-        Message::CommandFinished(Ok(()))
-    ));
-    wait_for(&calls.closes, &calls.close_finished).await;
+    drive(&mut gui, Message::Shutdown).await;
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while world.calls.closes.load(Ordering::SeqCst) == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("shutdown closes the receiver connection");
 }
 
 #[tokio::test]
-async fn manual_setup_persists_before_connecting() {
-    let calls = Arc::new(Calls::default());
-    let discovered = DiscoveredReceiver {
-        address: ReceiverEndpoint {
-            host: "192.0.2.11".into(),
-            port: 23,
-        },
-        location: None,
-        server: None,
-        model: None,
-        search_target: None,
-        unique_service_name: None,
-    };
-    let (mut gui, load_task) = boot_with_services(services(&calls, discovered));
-    let _ = update(&mut gui, task_message(load_task).await);
-    let _ = update(
+async fn a_saved_receiver_connects_at_launch_and_a_control_is_confirmed() {
+    let world = World::new(saved(&[("living-room", "192.0.2.20")], "living-room"));
+    let (mut gui, load) = boot_with_services(world.services());
+    for message in outputs(load).await {
+        drive(&mut gui, message).await;
+    }
+    until(&mut gui, "the launch connection", connected).await;
+    assert!(gui.launch_ready);
+    assert_eq!(*world.calls.hosts.lock().unwrap(), ["192.0.2.20"]);
+
+    drive(&mut gui, Message::Mute).await;
+    until(&mut gui, "the mute to be confirmed", |gui| {
+        gui.announcement == "Command confirmed by the receiver."
+    })
+    .await;
+    assert_eq!(
+        *world.calls.operations.lock().unwrap(),
+        [ReceiverIntent::Mute(MuteState::On)]
+    );
+    until(&mut gui, "the muted state", |gui| {
+        gui.snapshot.mute.value() == Some(&MuteState::On)
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn manual_setup_keeps_other_receivers_and_favorites_and_connects() {
+    let mut stored = saved(&[("den", "192.0.2.30")], "den");
+    stored
+        .toggle_current_sound_mode_favorite("STEREO")
+        .expect("a favorite for the current receiver");
+    let world = World::new(stored.clone());
+    let (mut gui, load) = boot_with_services(world.services());
+    for message in outputs(load).await {
+        drive(&mut gui, message).await;
+    }
+    until(&mut gui, "the saved receiver", connected).await;
+
+    drive(
         &mut gui,
         Message::AddressChanged("  receiver.example  ".into()),
-    );
-    let _ = update(&mut gui, Message::NameChanged("Living room".into()));
+    )
+    .await;
+    drive(&mut gui, Message::NameChanged("Living room".into())).await;
+    drive(&mut gui, Message::ManualSetup).await;
+    until(&mut gui, "the new receiver to connect", |gui| {
+        connected(gui)
+            && gui
+                .selection
+                .as_ref()
+                .is_some_and(|selection| selection.name == "Living room")
+    })
+    .await;
 
-    let saved_task = update(&mut gui, Message::ManualSetup);
-    let saved_message = task_message(saved_task).await;
-    let (saved_config, saved_selection) = match saved_message {
-        Message::ManualSaved(Ok(value)) => value,
-        other => panic!("unexpected manual save result: {other:?}"),
-    };
-    assert_eq!(calls.configuration_saves.load(Ordering::SeqCst), 1);
-    assert_eq!(saved_config.current.as_deref(), Some("Living room"));
-    assert_eq!(saved_selection.identity().host, "receiver.example");
-
-    let connect_task = update(
-        &mut gui,
-        Message::ManualSaved(Ok((saved_config.clone(), saved_selection))),
+    let after = world.stored();
+    assert_eq!(after.current.as_deref(), Some("Living room"));
+    assert!(
+        after.receivers.contains_key("den"),
+        "the other receiver is kept"
     );
-    assert!(matches!(
-        task_message(connect_task).await,
-        Message::CommandFinished(Ok(()))
-    ));
-    wait_for(&calls.core_refreshes, &calls.refresh_finished).await;
-    assert_eq!(calls.audio_context_queries.load(Ordering::SeqCst), 0);
+    assert_eq!(after.receivers["Living room"].host, "receiver.example");
     assert_eq!(
-        calls.connected_identities.lock().expect("identity lock")[0].host,
+        after.sound_mode_favorites, stored.sound_mode_favorites,
+        "the favorites are kept"
+    );
+    assert_eq!(
+        world.calls.hosts.lock().unwrap().last().unwrap(),
         "receiver.example"
     );
-    assert_eq!(gui.configured, saved_config);
-
-    let shutdown_task = update(&mut gui, Message::Shutdown);
-    assert!(matches!(
-        task_message(shutdown_task).await,
-        Message::CommandFinished(Ok(()))
-    ));
-    wait_for(&calls.closes, &calls.close_finished).await;
+    assert_eq!(gui.configured, after);
 }
 
 #[tokio::test]
-async fn saved_receiver_startup_connects_and_refreshes_only_core_status() {
-    let calls = Arc::new(Calls::default());
-    let bridge = ControllerBridge::new(FakeFactory {
-        calls: Arc::clone(&calls),
+async fn saving_a_receiver_again_with_a_new_address_reconnects_at_the_new_address() {
+    let world = World::new(saved(&[("living-room", "192.0.2.20")], "living-room"));
+    let (mut gui, load) = boot_with_services(world.services());
+    for message in outputs(load).await {
+        drive(&mut gui, message).await;
+    }
+    until(&mut gui, "the first connection", connected).await;
+
+    // DHCP moved the receiver; the user enters its new address under the old name.
+    drive(&mut gui, Message::AddressChanged("192.0.2.99".into())).await;
+    drive(&mut gui, Message::NameChanged("living-room".into())).await;
+    drive(&mut gui, Message::ManualSetup).await;
+    until(&mut gui, "the reconnection", |gui| {
+        connected(gui)
+            && gui
+                .selection
+                .as_ref()
+                .is_some_and(|selection| selection.identity.host == "192.0.2.99")
+    })
+    .await;
+
+    assert_eq!(
+        *world.calls.hosts.lock().unwrap(),
+        ["192.0.2.20", "192.0.2.99"]
+    );
+    assert_eq!(
+        world.calls.closes.load(Ordering::SeqCst),
+        1,
+        "the old connection was closed, so only one is ever open"
+    );
+}
+
+#[tokio::test]
+async fn a_control_from_a_stale_display_is_refused_and_nothing_is_sent() {
+    let world = World::new(saved(&[("living-room", "192.0.2.20")], "living-room"));
+    let (mut gui, load) = boot_with_services(world.services());
+    for message in outputs(load).await {
+        drive(&mut gui, message).await;
+    }
+    until(&mut gui, "the connection", connected).await;
+
+    // The receiver's volume changes by itself and the new state is on its way
+    // to the window, but the user acts on what the window still shows.
+    world.session(0).the_receiver_changes_volume_by_itself(-20);
+    drive(&mut gui, Message::AdjustVolume(10.0)).await;
+    until(&mut gui, "the refusal", |gui| {
+        gui.announcement == "Receiver state changed before the command; retry."
+    })
+    .await;
+    assert!(world.calls.operations.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_reconnect_recovers_and_asks_for_a_fresh_read() {
+    let world = World::new(saved(&[("living-room", "192.0.2.20")], "living-room"));
+    let (mut gui, load) = boot_with_services(world.services());
+    for message in outputs(load).await {
+        drive(&mut gui, message).await;
+    }
+    until(&mut gui, "the connection", connected).await;
+    let before = world.calls.synchronizes.load(Ordering::SeqCst);
+
+    // The transport reconnects, and the new epoch's evidence is still thin.
+    world.session(0).states.send_modify(|state| {
+        state.mark_disconnected();
     });
-    let mut gui = Gui::new(bridge);
-    let identity = ReceiverIdentity {
-        host: "192.168.0.8".into(),
-        model: Some("Denon AVC-X3800H".into()),
-        friendly_name: Some("Denon AVC-X3800H".into()),
-    };
-    let config = ConfiguredReceivers {
-        current: Some("Denon AVC-X3800H".into()),
-        receivers: [("Denon AVC-X3800H".into(), identity.clone())].into(),
-        ..ConfiguredReceivers::default()
-    };
+    until(&mut gui, "the reconnecting screen", |gui| {
+        matches!(gui.lifecycle, Lifecycle::Reconnecting { .. })
+    })
+    .await;
+    assert!(gui.snapshot.power.value().is_none());
 
-    let startup_task = update(&mut gui, Message::ConfigLoaded(Ok(config)));
-    assert!(matches!(
-        task_message(startup_task).await,
-        Message::CommandFinished(Ok(()))
-    ));
-    wait_for(&calls.core_refreshes, &calls.refresh_finished).await;
-
-    assert_eq!(calls.connections.load(Ordering::SeqCst), 1);
-    assert_eq!(
-        calls
-            .connected_identities
-            .lock()
-            .expect("identity lock")
-            .as_slice(),
-        &[identity]
+    world.session(0).states.send_modify(|state| {
+        state.establish_epoch(Epoch(2));
+    });
+    until(&mut gui, "the reconnected state", |gui| {
+        matches!(gui.lifecycle, Lifecycle::Connected { generation: 2 })
+    })
+    .await;
+    // The GUI asked the service to read everything again, and the answer shows.
+    until(&mut gui, "the refreshed values", connected).await;
+    assert!(
+        world.calls.synchronizes.load(Ordering::SeqCst) > before,
+        "a reconnect is followed by a refresh"
     );
-    assert_eq!(
-        *calls.queried_fields.lock().expect("queried fields lock"),
-        MainZoneField::ALL
-    );
-    assert_eq!(calls.audio_context_queries.load(Ordering::SeqCst), 0);
+    world.session(0).reconnect(3);
+    until(&mut gui, "a second reconnect", |gui| {
+        matches!(gui.lifecycle, Lifecycle::Connected { generation: 3 })
+    })
+    .await;
+}
 
-    let shutdown_task = update(&mut gui, Message::Shutdown);
-    assert!(matches!(
-        task_message(shutdown_task).await,
-        Message::CommandFinished(Ok(()))
+#[tokio::test]
+async fn an_unreachable_receiver_shows_the_unavailable_screen_and_retry_connects() {
+    let world = World::new(saved(&[("living-room", "192.0.2.20")], "living-room"));
+    world.calls.refuse.store(true, Ordering::SeqCst);
+    let (mut gui, load) = boot_with_services(world.services());
+    for message in outputs(load).await {
+        drive(&mut gui, message).await;
+    }
+    until(&mut gui, "the failure", |gui| {
+        gui.lifecycle == Lifecycle::Disconnected
+    })
+    .await;
+    assert!(gui.launch_ready, "the unavailable screen, not the spinner");
+
+    world.calls.refuse.store(false, Ordering::SeqCst);
+    drive(&mut gui, Message::Refresh).await;
+    until(&mut gui, "the retry to connect", connected).await;
+    assert_eq!(world.calls.connects.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn selecting_another_receiver_moves_the_window_to_it() {
+    let world = World::new(saved(
+        &[("den", "192.0.2.30"), ("living-room", "192.0.2.20")],
+        "living-room",
     ));
-    wait_for(&calls.closes, &calls.close_finished).await;
+    let (mut gui, load) = boot_with_services(world.services());
+    for message in outputs(load).await {
+        drive(&mut gui, message).await;
+    }
+    until(&mut gui, "the first connection", connected).await;
+
+    let den = Selection {
+        name: "den".into(),
+        identity: identity("192.0.2.30"),
+    };
+    drive(&mut gui, Message::Select(den)).await;
+    until(&mut gui, "the second connection", |gui| {
+        connected(gui)
+            && gui
+                .selection
+                .as_ref()
+                .is_some_and(|selection| selection.name == "den")
+    })
+    .await;
+    // The first receiver speaking now must not change what the window shows.
+    world.session(0).the_receiver_changes_volume_by_itself(10);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    while let Ok(Some(event)) =
+        tokio::time::timeout(Duration::from_millis(50), gui.bridge().recv()).await
+    {
+        drive(&mut gui, Message::Bridge(Box::new(event))).await;
+    }
+    assert_eq!(gui.snapshot.volume.value().unwrap().db_tenths(), -300);
+    assert_eq!(world.calls.connects.load(Ordering::SeqCst), 2);
 }

@@ -90,10 +90,6 @@ impl Gui {
                 "Observed state",
                 column![
                     components::state_row(
-                        "Snapshot authority",
-                        format!("{:?}", self.snapshot.authority)
-                    ),
-                    components::state_row(
                         "Quick Select freshness",
                         format!("{:?}", self.quick_select.freshness)
                     ),
@@ -105,8 +101,6 @@ impl Gui {
                         "Source catalog entries",
                         self.source_catalog.entries.len().to_string()
                     ),
-                    text(feedback::eq_summary(&self.eq_status)),
-                    text(feedback::eq_evidence_summary(&self.eq_status)).color(design::MUTED),
                     text(
                         "Unknown, unavailable, and not-applicable states remain distinct from Off."
                     )

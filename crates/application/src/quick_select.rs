@@ -71,7 +71,7 @@ pub(crate) fn merge_eq_status(
     refreshed
 }
 
-pub(crate) fn apply_names(
+pub fn apply_names(
     quick_select: &mut QuickSelectSnapshot,
     mut observation: QuickSelectNameObservation,
     generation: u64,

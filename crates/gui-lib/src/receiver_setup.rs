@@ -12,7 +12,7 @@ impl Gui {
                     text(format!("{name} · {}", identity.host)),
                     components::quiet_action(
                         "Select",
-                        Message::Select(ReceiverSelection::Saved {
+                        Message::Select(Selection {
                             name: name.clone(),
                             identity: identity.clone()
                         })

@@ -144,6 +144,39 @@ existing messages is kept where the meaning is kept.
 | `cancelled`, `superseded` | `not_dispatched` | "Command cancelled." |
 | submit or wait returned `ControlError` | none | "Operation failed: {error}" |
 
+## Step 3 outcomes
+
+Implementing the retarget settled these, and found the differences below that the
+table did not predict. Each is a deliberate result, tested in `gui-lib`.
+
+**Display model.** The views keep reading `MainZoneSnapshot` and `Zone2Snapshot`.
+`projection::project` fills them from `ReceiverState`, applying S2. Replacing the
+display model would change every view and its pixels for no behavior gain, so it
+is left for a separate refactor. `desktop_projection.rs`, which only the tests
+used, is deleted; its epoch and revision ordering is replaced by tagging every
+bridge event with the `Select` request it belongs to, and dropping the events of
+an earlier one.
+
+**Decisions applied.** D2(b): a control carries the value its target field showed
+(`FieldBaseline::capture`), and the bridge refuses it with "Receiver state changed
+before the command; retry." if the subscription now shows another. Power controls
+carry none, as in 3.0.0. D3: category recall is `RecallMovie`/`RecallMusic`/
+`RecallGame`/`PureDirect`. D4: the EQ lines and the "Snapshot authority" row are
+removed from Diagnostics, and the Quick Select recall button is removed from the
+dashboard (it was never rendered).
+
+**Found while implementing:**
+
+| ID | What | Disposition |
+| --- | --- | --- |
+| I1 | The category a sound mode control pairs with the reported mode (C8) is read by no view: the panel uses its own local filter. | Dropped with no replacement |
+| I2 | 3.0.0 converted a volume request with `native / 10`, which rounded a half-dB step down to the whole dB: +0.5 dB asked for 0 dB and then read as unconfirmed. | Fixed. The conversion is `native / 5`, tested at 5, 800, 805, and 985 |
+| I3 | 3.0.0 showed volume at `Minimum` as 0.0 dB on the slider, because the adapter gave it a `0` dB value. | Fixed. It shows at the bottom of the slider, -80.0 dB |
+| I4 | A saved receiver that could not be reached at launch left the launch screen on for ever, because only a successful connection opened it. | Fixed. A failed connection opens the unavailable screen with its retry |
+| I5 | The source catalog was asked for at every state while its freshness was unknown, so a receiver that could not answer would be asked at the rate of the state updates. | Changed. The GUI asks once per connection on its own; the picker and the refresh button still ask on demand |
+| I6 | The HTTP information timer, the HTTP information triggers, and the Quick Select name read are driven by the GUI (R1 to R3) and are tested for ordering, one read at a time, and dropping a read that finishes after a reconnect. | As designed |
+| I7 | The favorites save re-reads the stored configuration and replaces only the favorites, so a hand edit to the receivers is not overwritten by a favorite click (G3 only promised the in-memory copy). | Changed (improvement) |
+
 ## Port changes
 
 The table found two gaps in the port and confirmed that the rest is sufficient.
