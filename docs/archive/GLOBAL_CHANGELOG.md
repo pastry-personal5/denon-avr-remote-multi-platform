@@ -8,6 +8,16 @@ and this project adheres to Semantic Versioning.
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-10-07
+
+### Added
+
+- Released Version 3.0.0. See the [Version 3 release notes](v3/RELEASE_NOTES.md).
+
+### Changed
+
+- Advanced the workspace package version from 2.0.0 to 3.0.0.
+
 ### Fixed
 
 - Added the then-active [Version 3 Phase 1 plan](v3/phase-1-x3800h-http-info-probe-overview.md)
@@ -61,4 +71,4 @@ and this project adheres to Semantic Versioning.
 
 Retired or superseded documentation may be moved into `docs/archive/`.
 This historical hierarchy description is superseded by the current
-[archive policy](../v3/phase-6-documentation-consolidation-architecture.md).
+[archive policy](v3/phase-6-documentation-consolidation-architecture.md).

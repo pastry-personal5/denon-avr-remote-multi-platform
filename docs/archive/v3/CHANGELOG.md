@@ -1,6 +1,6 @@
 # Version 3 changelog
 
-## [Unreleased]
+## [3.0.0] - 2026-10-07
 
 ### Fixed
 

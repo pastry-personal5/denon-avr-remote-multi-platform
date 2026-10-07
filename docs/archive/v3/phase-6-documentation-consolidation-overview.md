@@ -1,10 +1,15 @@
 # V3 Phase 6: Documentation consolidation overview
 
+## Status
+
+Complete. The documentation map, ownership boundaries, archive migration, and
+required verification gates are complete.
+
 ## Outcome
 
-Phase 6 makes current guidance discoverable without treating completed phase
-plans as active design authority. The [documentation map](../README.md) is the
-entry point, [ARCHITECTURE.md](../../ARCHITECTURE.md) is the current
+Phase 6 made current guidance discoverable without treating completed phase
+plans as active design authority. The [documentation map](../../README.md) is
+the entry point, [ARCHITECTURE.md](../../../ARCHITECTURE.md) is the current
 architecture source of truth, and the contribution and development guides own
 policy and commands.
 
@@ -18,14 +23,14 @@ policy and commands.
 - Updated the CLI guide from current source behavior, including canonical async
   service use, evidence-based write outcomes, selectors, exact dB range, and
   removal of `--resource-version`.
-- Moved completed V1, V2, and V3 Phases 1–5 records, release notes,
+- Moved completed V1, V2, and V3 Phase records, release notes,
   changelogs, and validation material to `docs/archive/`.
 - Kept `docs/research/` as supporting evidence rather than current policy.
 
 ## Acceptance criteria
 
 1. An engineer or agent can reach architecture, policy, commands, user guides,
-   research, current work, and archival status from `docs/README.md`.
+   research, active work when present, and archival status from `docs/README.md`.
 2. Active entry points do not direct readers to V1/V2 or completed V3 plans as
    current architecture guidance.
 3. Archive material is retained, marked non-authoritative, grouped by version,

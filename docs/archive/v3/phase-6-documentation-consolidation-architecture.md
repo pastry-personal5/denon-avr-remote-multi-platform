@@ -4,11 +4,11 @@
 
 | Concern | Owner |
 | --- | --- |
-| Current implementation architecture and invariants | [ARCHITECTURE.md](../../ARCHITECTURE.md) |
-| Documentation navigation | [docs/README.md](../README.md) |
-| Engineering policy and documentation maintenance | [contributing.md](../contributing.md) |
-| Prerequisites, commands, and verification gates | [development.md](../development.md) |
-| End-user operation | [CLI guide](../cli-user-guide.md) and [desktop guide](../desktop-user-guide.md) |
+| Current implementation architecture and invariants | [ARCHITECTURE.md](../../../ARCHITECTURE.md) |
+| Documentation navigation | [docs/README.md](../../README.md) |
+| Engineering policy and documentation maintenance | [contributing.md](../../contributing.md) |
+| Prerequisites, commands, and verification gates | [development.md](../../development.md) |
+| End-user operation | [CLI guide](../../cli-user-guide.md) and [desktop guide](../../desktop-user-guide.md) |
 | Protocol and receiver evidence | `docs/research/` |
 | Completed decisions and validation history | `docs/archive/` |
 
@@ -18,7 +18,7 @@ a competing current architecture.
 
 ## Archive policy
 
-Completed V1 and V2 material and completed V3 Phases 1–5 reside beneath
+Completed V1 and V2 material and completed V3 Phases 1–7 reside beneath
 `docs/archive/v1/`, `docs/archive/v2/`, and `docs/archive/v3/`. Global
 historical changelog material and retired research also live beneath
 `docs/archive/`. Archive records remain useful for audit, evidence, and

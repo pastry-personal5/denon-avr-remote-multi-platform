@@ -2,7 +2,7 @@
 
 ## Purpose and status
 
-Phase 7 is complete. This record preserves the pre-change behavior for
+Phase 7 is complete. This archived record preserves the pre-change behavior for
 historical context and documents the delivered sound-mode design below. It is
 not a replacement for the workspace architecture.
 

@@ -1,6 +1,6 @@
 # Historical documentation archive
 
-This archive preserves completed V1 and V2 work, completed V3 Phases 1–5,
+This archive preserves completed V1 and V2 work, completed V3 Phases 1–7,
 release notes, changelogs, validation records, and retired research for audit
 and context. It is non-authoritative: use the [documentation map](../README.md)
 to find current architecture, policy, commands, and user guidance.
