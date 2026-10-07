@@ -55,6 +55,17 @@ controls (`ALLOW_RECEIVER_WRITES=1`, `DENON_X3800H_HOST`, a safe volume). It is
 recorded in the archive when it is run, and the phase is complete when it
 passes. Merge to main waits for it.
 
+## Known limits until milestone 2
+
+- The desktop app still reaches the receiver through the legacy controller. Its
+  receiver selection replaces the whole configuration with the selected
+  receiver, so it overwrites a hand-edited multi-receiver file without a backup
+  (the backup applies only to a file not yet in the new schema). Milestone 2
+  moves the GUI onto the port.
+- The first command that saves the configuration, from the CLI or the GUI,
+  rewrites a version 3 file in the new schema. An installed 3.0.0 cannot read it
+  until the `.v3.bak` copy is restored.
+
 ## Manual macOS checklist
 
 `make check` does not cover these. Run them on the Mac before merging.

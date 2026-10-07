@@ -126,7 +126,11 @@ first time it rewrites the file in the new schema. Version 3.0.0 cannot read the
 new file, so keep the backup if you may go back.
 
 Nothing in this release adds a second receiver. A file with several receivers
-comes from editing the file by hand, and the CLI never rewrites it.
+comes from editing the file by hand, and the CLI never rewrites it. The desktop
+app is not as careful yet: choosing or saving a receiver there replaces the
+whole file with that one receiver, and no backup is made because the file is
+already in the new schema. Keep a copy of a hand-edited file before using the
+desktop app with it.
 
 - Check LAN reachability, multicast, and Network Control if discovery finds no
   device.

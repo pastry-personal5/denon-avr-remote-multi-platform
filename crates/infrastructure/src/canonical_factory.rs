@@ -31,9 +31,11 @@ impl SessionFactory for CanonicalSessionFactory {
     ) -> BoxFuture<'_, Result<Box<dyn ReceiverSession>, OperationError>> {
         let config = self.config.clone();
         Box::pin(async move {
-            // The legacy selection carries no configuration entry name. The
-            // repository persists the friendly name as the entry name, so it
-            // stands in here until the connector takes the id explicitly.
+            // The legacy selection carries no configuration entry name, so the
+            // friendly name stands in for it. The GUI saves its entry under
+            // that name, but a hand-edited version 2 file can name an entry
+            // differently from its friendly name. Milestone 2 deletes this
+            // adapter, and the GUI then uses the entry name as the id.
             let receiver = receiver_id(identity.friendly_name.as_deref(), &identity)?;
             let host = identity.host.clone();
             let session = X3800hSession::connect(receiver, &host, config.clone()).await?;
