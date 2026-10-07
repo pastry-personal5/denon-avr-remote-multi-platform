@@ -2,8 +2,10 @@
 
 **Planned — 2026-10-07. Scope settled with the project owner the same day.
 Milestone 1 is complete (2026-10-08), tracked in its
-[phase overview](phase-1-control-port-overview.md); milestone 2 is next. No
-version change is made until the release milestone.**
+[phase overview](phase-1-control-port-overview.md). Milestone 2 is in progress
+(started 2026-10-08), tracked in its
+[phase overview](phase-2-gui-on-port-overview.md). No version change is made
+until the release milestone.**
 
 This roadmap sequences the work needed to implement the target design in
 [Planned architecture](../planned-architecture.md). It does not restate that
@@ -391,7 +393,9 @@ Additive: new packages that no shipped delivery package uses yet.
 
 1. **`api-contract`**: the versioned `/v1` schema. Amend the design's API table
    first to add the inspection resources (source catalog, Quick Select names,
-   HTTP information), and an Agent-visible sources resource for `list_sources`.
+   HTTP information), an Operator `refresh` resource (added to the port by
+   [milestone 2](phase-2-gui-on-port-overview.md)), and an Agent-visible sources
+   resource for `list_sources`.
 2. **`api-client`**: implements the control-service port over local transports
    only, with no TLS dependency.
 3. **`apps/api-server`**: hosts the in-process service from milestone 1. It is
