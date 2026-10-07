@@ -622,3 +622,57 @@ async fn selecting_another_receiver_moves_the_window_to_it() {
     assert_eq!(gui.snapshot.volume.value().unwrap().db_tenths(), -300);
     assert_eq!(world.calls.connects.load(Ordering::SeqCst), 2);
 }
+
+/// What a window needs to be true for its next click to be fair: when the
+/// service reports that a control finished, the state that control produced has
+/// already been delivered. Otherwise the next click is built on a stale display
+/// and refused as a conflict.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_control_report_never_overtakes_the_state_it_produced() {
+    let world = World::new(saved(&[("living-room", "192.0.2.20")], "living-room"));
+    let (mut gui, load) = boot_with_services(world.services());
+    for message in outputs(load).await {
+        drive(&mut gui, message).await;
+    }
+    until(&mut gui, "the connection", connected).await;
+
+    let mut seen_mute: Option<MuteState> = None;
+    for round in 0..30 {
+        let (message, wanted) = if round % 2 == 0 {
+            (Message::Mute, MuteState::On)
+        } else {
+            (Message::Unmute, MuteState::Off)
+        };
+        drive(&mut gui, message).await;
+        loop {
+            let event = tokio::time::timeout(Duration::from_secs(5), gui.bridge().recv())
+                .await
+                .expect("the control finished")
+                .expect("the bridge ended");
+            let report = match &event.event {
+                denon_avr_gui_lib::PortEvent::State(state) => {
+                    seen_mute = state.main_zone.mute.last_good.as_ref().map(|o| o.value);
+                    None
+                }
+                denon_avr_gui_lib::PortEvent::Control(report) => Some(report.clone()),
+                _ => None,
+            };
+            if let Some(report) = &report {
+                assert_eq!(
+                    seen_mute,
+                    Some(wanted),
+                    "round {round}: the control finished before its state arrived: {report:?}"
+                );
+            }
+            drive(&mut gui, Message::Bridge(Box::new(event))).await;
+            if report.is_some() {
+                break;
+            }
+        }
+        assert!(
+            !gui.announcement.contains("state changed"),
+            "round {round}: a click on a current display was refused: {}",
+            gui.announcement
+        );
+    }
+}

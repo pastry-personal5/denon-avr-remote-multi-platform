@@ -6,6 +6,12 @@
 //! holds back state updates; their results come back as events tagged with the
 //! subscription they were started under, and the GUI drops the ones that belong
 //! to a receiver it has since left.
+//!
+//! Order matters in one place. A control's state is written before the control
+//! is reported finished, and a window that is told the control finished may
+//! accept the next click. So the bridge forwards any newer state before it
+//! forwards a report, and a spawned task never sends to the GUI itself: it hands
+//! its result to the loop, which decides the order.
 
 use denon_avr_application::ports::{BoxFuture, OperationError, OperationErrorKind};
 use denon_avr_application::{
@@ -169,7 +175,28 @@ impl Hash for SubscriptionData {
 enum Step {
     Command(Option<BridgeCommand>),
     State(Result<Box<ReceiverState>, OperationError>),
+    /// A spawned task finished and has an event for the GUI.
+    Done(BridgeEvent),
 }
+
+/// Which state the GUI has last been sent, so a newer one is sent first and the
+/// same one is never sent twice.
+type Forwarded = Option<(
+    Option<denon_avr_domain::Epoch>,
+    denon_avr_domain::StateRevision,
+)>;
+
+fn stamp(
+    state: &ReceiverState,
+) -> (
+    Option<denon_avr_domain::Epoch>,
+    denon_avr_domain::StateRevision,
+) {
+    (state.epoch, state.revision)
+}
+
+/// Where a spawned task leaves its result for the loop.
+type Done = mpsc::UnboundedSender<BridgeEvent>;
 
 /// The receiver the GUI has chosen, and the `Select` request that chose it.
 #[derive(Clone)]
@@ -194,17 +221,28 @@ async fn run_bridge(
 ) {
     let mut selected: Option<Selected> = None;
     let mut active: Option<StateSubscription> = None;
+    let mut forwarded: Forwarded = None;
+    let (done, mut finished) = mpsc::unbounded_channel::<BridgeEvent>();
     loop {
         let step = tokio::select! {
             command = commands.recv() => Step::Command(command),
             next = next_state(&mut active) => Step::State(next),
+            Some(event) = finished.recv() => Step::Done(event),
         };
         match step {
             Step::Command(None) => break,
             Step::Command(Some(command)) => {
                 tracing::debug!(command = command_name(&command), "processing GUI command");
                 let stop = matches!(command, BridgeCommand::Shutdown);
-                handle(&services, command, &mut selected, &mut active, &events).await;
+                let mut context = Context {
+                    services: &services,
+                    selected: &mut selected,
+                    active: &mut active,
+                    forwarded: &mut forwarded,
+                    events: &events,
+                    done: &done,
+                };
+                handle(command, &mut context).await;
                 if stop {
                     tracing::info!("receiver bridge stopped");
                     break;
@@ -212,13 +250,7 @@ async fn run_bridge(
             }
             Step::State(Ok(state)) => {
                 if let Some(chosen) = &selected {
-                    send(
-                        &events,
-                        chosen.subscription,
-                        chosen.subscription,
-                        PortEvent::State(state),
-                    )
-                    .await;
+                    forward_state(&events, chosen, &mut forwarded, *state).await;
                 }
             }
             Step::State(Err(error)) => {
@@ -227,6 +259,7 @@ async fn run_bridge(
                 // in the file.
                 tracing::info!(%error, "receiver session ended; subscribing again");
                 active = None;
+                forwarded = None;
                 if let Some(chosen) = selected.clone() {
                     send(
                         &events,
@@ -235,36 +268,74 @@ async fn run_bridge(
                         PortEvent::SessionEnded,
                     )
                     .await;
-                    active = subscribe(&services, &chosen, &events).await;
+                    active = subscribe(&services, &chosen, &events, &mut forwarded).await;
                 }
+            }
+            Step::Done(event) => {
+                // Whatever the task did to the receiver is in the state by now.
+                // Send it first, so the report never reaches a window that has
+                // not yet seen its effect.
+                if let (Some(chosen), Some(subscription)) = (&selected, &active) {
+                    let latest = subscription.latest();
+                    if forwarded != Some(stamp(&latest)) {
+                        forward_state(&events, chosen, &mut forwarded, latest).await;
+                    }
+                }
+                let _ = events.send(event).await;
             }
         }
     }
 }
 
-async fn handle(
-    services: &GuiServices,
-    command: BridgeCommand,
-    selected: &mut Option<Selected>,
-    active: &mut Option<StateSubscription>,
+/// Everything a command may need to read or change.
+struct Context<'a> {
+    services: &'a GuiServices,
+    selected: &'a mut Option<Selected>,
+    active: &'a mut Option<StateSubscription>,
+    forwarded: &'a mut Forwarded,
+    events: &'a mpsc::Sender<BridgeEvent>,
+    done: &'a Done,
+}
+
+async fn forward_state(
     events: &mpsc::Sender<BridgeEvent>,
+    chosen: &Selected,
+    forwarded: &mut Forwarded,
+    state: ReceiverState,
 ) {
+    let stamp = stamp(&state);
+    if *forwarded == Some(stamp) {
+        return;
+    }
+    *forwarded = Some(stamp);
+    send(
+        events,
+        chosen.subscription,
+        chosen.subscription,
+        PortEvent::State(Box::new(state)),
+    )
+    .await;
+}
+
+async fn handle(command: BridgeCommand, context: &mut Context<'_>) {
+    let services = context.services;
     match command {
         BridgeCommand::Select(id, receiver) => {
             // Dropping the old subscription lets the service release the old
             // receiver after its idle time.
-            *active = None;
+            *context.active = None;
+            *context.forwarded = None;
             let chosen = Selected {
                 receiver,
                 subscription: id,
             };
-            *selected = Some(chosen.clone());
-            *active = subscribe(services, &chosen, events).await;
+            *context.selected = Some(chosen.clone());
+            *context.active = subscribe(services, &chosen, context.events, context.forwarded).await;
         }
         BridgeCommand::Refresh(id) => {
-            let Some(chosen) = selected.clone() else {
+            let Some(chosen) = context.selected.clone() else {
                 send(
-                    events,
+                    context.events,
                     id,
                     0,
                     PortEvent::Failed("no receiver selected".into()),
@@ -272,25 +343,26 @@ async fn handle(
                 .await;
                 return;
             };
-            if active.is_none() {
+            if context.active.is_none() {
                 // The connection failed or ended: retrying is connecting again.
-                *active = subscribe(services, &chosen, events).await;
+                *context.active =
+                    subscribe(services, &chosen, context.events, context.forwarded).await;
                 return;
             }
             let control = Arc::clone(&services.control);
-            let events = events.clone();
+            let done = context.done.clone();
             tokio::spawn(async move {
                 let event = match control.refresh(&chosen.receiver).await {
                     Ok(_) => PortEvent::Refreshed,
                     Err(error) => PortEvent::Failed(error.to_string()),
                 };
-                send(&events, id, chosen.subscription, event).await;
+                finish(&done, id, chosen.subscription, event);
             });
         }
         BridgeCommand::Control { id, intent, guard } => {
-            let Some(chosen) = selected.clone() else {
+            let Some(chosen) = context.selected.clone() else {
                 send(
-                    events,
+                    context.events,
                     id,
                     0,
                     PortEvent::Failed("no receiver selected".into()),
@@ -298,22 +370,22 @@ async fn handle(
                 .await;
                 return;
             };
-            if let (Some(baseline), Some(subscription)) = (&guard, active.as_ref()) {
+            if let (Some(baseline), Some(subscription)) = (&guard, context.active.as_ref()) {
                 if !baseline.holds_in(&subscription.latest()) {
                     let report = PortEvent::Control(ControlReport::Conflict);
-                    send(events, id, chosen.subscription, report).await;
+                    send(context.events, id, chosen.subscription, report).await;
                     return;
                 }
             }
             let control = Arc::clone(&services.control);
-            let events = events.clone();
+            let done = context.done.clone();
             tokio::spawn(async move {
                 let report = run_control(&control, &chosen.receiver, intent).await;
-                send(&events, id, chosen.subscription, PortEvent::Control(report)).await;
+                finish(&done, id, chosen.subscription, PortEvent::Control(report));
             });
         }
         BridgeCommand::ReadSourceCatalog(id, generation) => {
-            spawn_read(services, events, selected, id, move |control, receiver| {
+            spawn_read(context, id, move |control, receiver| {
                 Box::pin(async move {
                     let result = control
                         .source_catalog(&receiver)
@@ -325,7 +397,7 @@ async fn handle(
             })
         }
         BridgeCommand::ReadQuickSelectNames(id, generation) => {
-            spawn_read(services, events, selected, id, move |control, receiver| {
+            spawn_read(context, id, move |control, receiver| {
                 Box::pin(async move {
                     let result = control
                         .quick_select_names(&receiver)
@@ -337,7 +409,7 @@ async fn handle(
             })
         }
         BridgeCommand::ReadHttpInformation(id, generation) => {
-            spawn_read(services, events, selected, id, move |control, receiver| {
+            spawn_read(context, id, move |control, receiver| {
                 Box::pin(async move {
                     let result = control
                         .http_information(&receiver)
@@ -349,29 +421,36 @@ async fn handle(
             })
         }
         BridgeCommand::Shutdown => {
-            *active = None;
+            *context.active = None;
             (services.shutdown)().await;
         }
     }
 }
 
+/// Leave a spawned task's result for the loop to forward in order.
+fn finish(done: &Done, request_id: u64, subscription: u64, event: PortEvent) {
+    let _ = done.send(BridgeEvent {
+        request_id,
+        subscription,
+        event,
+    });
+}
+
 fn spawn_read(
-    services: &GuiServices,
-    events: &mpsc::Sender<BridgeEvent>,
-    selected: &Option<Selected>,
+    context: &Context<'_>,
     id: u64,
     read: impl FnOnce(SharedOperatorControl, ReceiverId) -> BoxFuture<'static, PortEvent>
         + Send
         + 'static,
 ) {
-    let Some(chosen) = selected.clone() else {
+    let Some(chosen) = context.selected.clone() else {
         return;
     };
-    let control = Arc::clone(&services.control);
-    let events = events.clone();
+    let control = Arc::clone(&context.services.control);
+    let done = context.done.clone();
     tokio::spawn(async move {
         let event = read(control, chosen.receiver).await;
-        send(&events, id, chosen.subscription, event).await;
+        finish(&done, id, chosen.subscription, event);
     });
 }
 
@@ -380,17 +459,12 @@ async fn subscribe(
     services: &GuiServices,
     chosen: &Selected,
     events: &mpsc::Sender<BridgeEvent>,
+    forwarded: &mut Forwarded,
 ) -> Option<StateSubscription> {
     match services.control.state(&chosen.receiver).await {
         Ok(subscription) => {
-            let initial = subscription.latest();
-            send(
-                events,
-                chosen.subscription,
-                chosen.subscription,
-                PortEvent::State(Box::new(initial)),
-            )
-            .await;
+            *forwarded = None;
+            forward_state(events, chosen, forwarded, subscription.latest()).await;
             Some(subscription)
         }
         Err(error) => {
@@ -470,5 +544,212 @@ fn command_name(command: &BridgeCommand) -> &'static str {
         BridgeCommand::ReadQuickSelectNames(..) => "read_quick_select_names",
         BridgeCommand::ReadHttpInformation(..) => "read_http_information",
         BridgeCommand::Shutdown => "shutdown",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use denon_avr_application::{
+        OperationControl, OperationEvents, OperationStatus, OperatorAdmin, ReceiverReads,
+        ReceiverSummary,
+    };
+    use denon_avr_domain::{
+        ConfiguredReceivers, CoreFrame, DiscoveredReceiver, DispatchCertainty, Epoch, FrameSeq,
+        HttpInformationSnapshot, MonotonicMillis, MuteState, ObservationOrigin, OperationId,
+        QuickSelectNameObservation, ReceiverIdentity, SourceCatalogObservation,
+    };
+    use tokio::sync::watch;
+
+    fn unavailable<T: Send + 'static>() -> BoxFuture<'static, Result<T, ControlError>> {
+        Box::pin(async { Err(ControlError::Unavailable("not part of this test".into())) })
+    }
+
+    /// A port whose `submit` writes the new mute value into the state and
+    /// resolves the operation in the same breath, as a fast receiver does. The
+    /// bridge's state loop has had no chance to run in between.
+    struct FastPort {
+        states: watch::Sender<ReceiverState>,
+    }
+
+    impl FastPort {
+        fn set_mute(&self, mute: MuteState, seq: u64) {
+            let receiver = self.states.borrow().receiver.clone();
+            self.states.send_modify(|state| {
+                state.reduce(
+                    &receiver,
+                    Epoch(1),
+                    FrameSeq(seq),
+                    MonotonicMillis(seq),
+                    MonotonicMillis(1_000_000),
+                    ObservationOrigin::ReceiverFrame,
+                    CoreFrame::Mute(mute),
+                );
+            });
+        }
+    }
+
+    impl ReceiverReads for FastPort {
+        fn receivers(&self) -> BoxFuture<'_, Result<Vec<ReceiverSummary>, ControlError>> {
+            unavailable()
+        }
+        fn state<'a>(
+            &'a self,
+            _: &'a ReceiverId,
+        ) -> BoxFuture<'a, Result<StateSubscription, ControlError>> {
+            Box::pin(async move { Ok(StateSubscription::new(self.states.subscribe())) })
+        }
+        fn source_catalog<'a>(
+            &'a self,
+            _: &'a ReceiverId,
+        ) -> BoxFuture<'a, Result<SourceCatalogObservation, ControlError>> {
+            unavailable()
+        }
+    }
+
+    impl OperationControl for FastPort {
+        fn submit<'a>(
+            &'a self,
+            receiver: &'a ReceiverId,
+            submission: OperationSubmission,
+        ) -> BoxFuture<'a, Result<OperationSnapshot, ControlError>> {
+            Box::pin(async move {
+                let ReceiverIntent::Mute(mute) = submission.intent.clone() else {
+                    return Err(ControlError::Unavailable("mute only".into()));
+                };
+                let seq = self.states.borrow().revision.0 + 1;
+                self.set_mute(mute, seq);
+                Ok(OperationSnapshot {
+                    id: OperationId(seq),
+                    receiver: receiver.clone(),
+                    intent: submission.intent,
+                    status: OperationStatus::Completed,
+                    dispatch: DispatchCertainty::CompleteWrite,
+                    confirmed: true,
+                    reason: None,
+                    observation: None,
+                })
+            })
+        }
+        fn operation(
+            &self,
+            _: OperationId,
+            _: Option<Duration>,
+        ) -> BoxFuture<'_, Result<OperationSnapshot, ControlError>> {
+            unavailable()
+        }
+        fn cancel(&self, _: OperationId) -> BoxFuture<'_, Result<OperationSnapshot, ControlError>> {
+            unavailable()
+        }
+        fn operation_events(&self) -> BoxFuture<'_, Result<OperationEvents, ControlError>> {
+            unavailable()
+        }
+    }
+
+    impl OperatorAdmin for FastPort {
+        fn discover(
+            &self,
+            _: Duration,
+        ) -> BoxFuture<'_, Result<Vec<DiscoveredReceiver>, ControlError>> {
+            unavailable()
+        }
+        fn register_ad_hoc(
+            &self,
+            _: ReceiverIdentity,
+        ) -> BoxFuture<'_, Result<ReceiverId, ControlError>> {
+            unavailable()
+        }
+        fn configuration(&self) -> BoxFuture<'_, Result<ConfiguredReceivers, ControlError>> {
+            unavailable()
+        }
+        fn save_configuration<'a>(
+            &'a self,
+            _: &'a ConfiguredReceivers,
+        ) -> BoxFuture<'a, Result<(), ControlError>> {
+            unavailable()
+        }
+        fn quick_select_names<'a>(
+            &'a self,
+            _: &'a ReceiverId,
+        ) -> BoxFuture<'a, Result<QuickSelectNameObservation, ControlError>> {
+            unavailable()
+        }
+        fn http_information<'a>(
+            &'a self,
+            _: &'a ReceiverId,
+        ) -> BoxFuture<'a, Result<HttpInformationSnapshot, ControlError>> {
+            unavailable()
+        }
+        fn refresh<'a>(
+            &'a self,
+            _: &'a ReceiverId,
+        ) -> BoxFuture<'a, Result<denon_avr_application::Readiness, ControlError>> {
+            unavailable()
+        }
+    }
+
+    fn bridge_over_a_fast_port() -> PortBridge {
+        let receiver = ReceiverId::new("living-room").unwrap();
+        let mut initial = ReceiverState::new(receiver);
+        initial.establish_epoch(Epoch(1));
+        PortBridge::new(GuiServices {
+            control: Arc::new(FastPort {
+                states: watch::channel(initial).0,
+            }),
+            shutdown: Arc::new(|| Box::pin(async {})),
+        })
+    }
+
+    fn mute_of(state: &ReceiverState) -> Option<MuteState> {
+        state.main_zone.mute.last_good.as_ref().map(|o| o.value)
+    }
+
+    /// The report of a finished control arrives after the state it produced, in
+    /// every interleaving the scheduler picks.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_control_report_never_overtakes_the_state_it_produced() {
+        let bridge = bridge_over_a_fast_port();
+        let room = ReceiverId::new("living-room").unwrap();
+        bridge
+            .send(BridgeCommand::Select(1, room.clone()))
+            .await
+            .unwrap();
+        // The initial state.
+        assert!(matches!(
+            bridge.recv().await.unwrap().event,
+            PortEvent::State(_)
+        ));
+
+        let mut seen: Option<MuteState> = None;
+        for round in 0..200_u64 {
+            let wanted = if round % 2 == 0 {
+                MuteState::On
+            } else {
+                MuteState::Off
+            };
+            bridge
+                .send(BridgeCommand::Control {
+                    id: 10 + round,
+                    intent: ReceiverIntent::Mute(wanted),
+                    guard: None,
+                })
+                .await
+                .unwrap();
+            loop {
+                let event = bridge.recv().await.unwrap();
+                match event.event {
+                    PortEvent::State(state) => seen = mute_of(&state),
+                    PortEvent::Control(report) => {
+                        assert_eq!(
+                            seen,
+                            Some(wanted),
+                            "round {round}: {report:?} arrived before its state"
+                        );
+                        break;
+                    }
+                    other => panic!("unexpected event {other:?}"),
+                }
+            }
+        }
     }
 }
