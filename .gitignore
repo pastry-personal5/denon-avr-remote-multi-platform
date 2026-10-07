@@ -6,6 +6,7 @@
 .env.*
 !.env.example
 /config/denon-avr-remote.yaml
+/config/*.bak*
 
 # Editor and IDE files
 .idea/

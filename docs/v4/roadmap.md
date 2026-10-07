@@ -611,6 +611,12 @@ Gaps found by the review and the milestone that closes each:
 
 Nothing here blocks milestone 1.
 
+- The GUI still reads `MainZoneSnapshot` and `Zone2Snapshot` as its display
+  model, filled by a projection from `ReceiverState` (milestone 2). Reading the
+  canonical state directly would simplify the views, but it touches every view
+  and its pixels for no behavior gain, so it is left as debt for a later
+  cleanup. See [Desktop GUI](../../ARCHITECTURE.md#desktop-gui).
+
 - The default idle time before a receiver is released, and whether an Agent read
   alone keeps it connected. Settled in step 4: 60 seconds, and any read or
   operation restarts the clock. Only a held subscription or an operation in
