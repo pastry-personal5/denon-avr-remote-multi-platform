@@ -1,8 +1,9 @@
 # Version 4 roadmap
 
-**Planned — 2026-10-07. Scope settled with the project owner the same day. No
-milestone has started; no version change is made until the release
-milestone.**
+**Planned — 2026-10-07. Scope settled with the project owner the same day.
+Milestone 1 is in progress, tracked in its
+[phase overview](phase-1-control-port-overview.md); no version change is made
+until the release milestone.**
 
 This roadmap sequences the work needed to implement the target design in
 [Planned architecture](../planned-architecture.md). It does not restate that
