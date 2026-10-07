@@ -527,7 +527,7 @@ async fn a_control_from_a_stale_display_is_refused_and_nothing_is_sent() {
 }
 
 #[tokio::test]
-async fn a_reconnect_recovers_and_asks_for_a_fresh_read() {
+async fn a_reconnect_recovers_from_the_sessions_own_read_and_the_gui_asks_for_none() {
     let world = World::new(saved(&[("living-room", "192.0.2.20")], "living-room"));
     let (mut gui, load) = boot_with_services(world.services());
     for message in outputs(load).await {
@@ -536,7 +536,7 @@ async fn a_reconnect_recovers_and_asks_for_a_fresh_read() {
     until(&mut gui, "the connection", connected).await;
     let before = world.calls.synchronizes.load(Ordering::SeqCst);
 
-    // The transport reconnects, and the new epoch's evidence is still thin.
+    // The transport loses the receiver.
     world.session(0).states.send_modify(|state| {
         state.mark_disconnected();
     });
@@ -546,19 +546,20 @@ async fn a_reconnect_recovers_and_asks_for_a_fresh_read() {
     .await;
     assert!(gui.snapshot.power.value().is_none());
 
-    world.session(0).states.send_modify(|state| {
-        state.establish_epoch(Epoch(2));
-    });
+    // It reconnects, and the session reads every field again, as the real one
+    // does; the window follows the state.
+    world.session(0).reconnect(2);
     until(&mut gui, "the reconnected state", |gui| {
-        matches!(gui.lifecycle, Lifecycle::Connected { generation: 2 })
+        matches!(gui.lifecycle, Lifecycle::Connected { generation: 2 }) && connected(gui)
     })
     .await;
-    // The GUI asked the service to read everything again, and the answer shows.
-    until(&mut gui, "the refreshed values", connected).await;
-    assert!(
-        world.calls.synchronizes.load(Ordering::SeqCst) > before,
-        "a reconnect is followed by a refresh"
+    assert_eq!(
+        world.calls.synchronizes.load(Ordering::SeqCst),
+        before,
+        "the GUI leaves the re-read to the session"
     );
+
+    // A reconnect seen only as a higher epoch is one too.
     world.session(0).reconnect(3);
     until(&mut gui, "a second reconnect", |gui| {
         matches!(gui.lifecycle, Lifecycle::Connected { generation: 3 })

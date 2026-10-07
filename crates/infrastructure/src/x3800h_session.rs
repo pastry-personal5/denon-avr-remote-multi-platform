@@ -396,8 +396,18 @@ async fn run_actor(
             }
             event = avr.next_event() => match event {
                 Some(event) => {
+                    let reconnected = matches!(event, AvrSessionEvent::Reconnected);
                     if let Some(field) = apply_event(event, &states, &mut epoch, &mut frame_seq, started) {
                         merge_debt(&mut debt, &states, field, SyncCause::ReceiverEvent, cycle, started);
+                    }
+                    if reconnected {
+                        // A new connection starts with no evidence: every
+                        // field was marked stale when the old one went. Read
+                        // them all now, which only queries, instead of
+                        // leaving every client to wait for the next sweep.
+                        cycle.0 = cycle.0.saturating_add(1);
+                        let readiness = synchronize(&avr, &states, &mut epoch, &mut frame_seq, cycle, started).await;
+                        clear_settled_debt(&mut debt, &readiness, started);
                     }
                 },
                 None => break,
@@ -1151,7 +1161,9 @@ fn stopped() -> OperationError {
 mod tests {
     use super::*;
     use denon_avr_application::CanonicalReceiverSession;
-    use denon_avr_domain::{FieldBaseline, MasterVolume, OperationId};
+    use denon_avr_domain::{
+        FieldBaseline, MasterVolume, OperationId, ReceiverFieldValidity as FieldValidity,
+    };
     use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
     use tokio::net::TcpListener;
 
@@ -1898,6 +1910,66 @@ mod tests {
             "{outcome:?}"
         );
         assert_eq!(writes(&shared), vec!["MV41"]);
+        session.close().await.unwrap();
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn a_reconnect_reads_every_core_field_again_without_being_asked() {
+        let shared = fake_receiver();
+        let drop_connection = Arc::new(tokio::sync::Notify::new());
+        let (address, server) = serve(Arc::clone(&shared), Arc::clone(&drop_connection)).await;
+        let session = connect_to(address, "reconnect-reads").await;
+
+        drop_connection.notify_one();
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        while session.current_state().epoch != Some(Epoch(2)) {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the session did not reconnect"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+
+        // Nobody calls `synchronize`. The next periodic sweep is five seconds
+        // away, so every field being current again within two is the session
+        // reading on its own.
+        let current = |state: &ReceiverState| {
+            [
+                matches!(state.system_power.validity, FieldValidity::Current { .. }),
+                matches!(
+                    state.main_zone.power.validity,
+                    FieldValidity::Current { .. }
+                ),
+                matches!(state.zone2_power.validity, FieldValidity::Current { .. }),
+                matches!(
+                    state.main_zone.source.validity,
+                    FieldValidity::Current { .. }
+                ),
+                matches!(
+                    state.main_zone.volume.validity,
+                    FieldValidity::Current { .. }
+                ),
+                matches!(state.main_zone.mute.validity, FieldValidity::Current { .. }),
+                matches!(
+                    state.main_zone.sound_mode.validity,
+                    FieldValidity::Current { .. }
+                ),
+            ]
+            .into_iter()
+            .all(|current| current)
+        };
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !current(&session.current_state()) {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the fields were still stale two seconds after the reconnect: {:?}",
+                session.current_state()
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        assert_eq!(session.current_state().epoch, Some(Epoch(2)));
+        assert!(writes(&shared).is_empty(), "a re-read dispatches nothing");
         session.close().await.unwrap();
         server.abort();
     }

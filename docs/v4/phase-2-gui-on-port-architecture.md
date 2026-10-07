@@ -58,7 +58,7 @@ of:
 | L1 | `Select` closes the previous session first and carries on if the close fails; emits `Selected` (controller) | The GUI drops its `StateSubscription` for the old receiver. The service releases the session after the idle time and logs a failed close without blocking any other receiver (`release_if_idle`) | Replaced. The old receiver stays connected for up to 60 s, not at once. With one receiver this is invisible |
 | L2 | `Connect` then `Refresh`; `Connecting` is emitted before the attempt; a failed connect emits `Disconnected`, invalidates every field and returns the error (controller) | `ReceiverReads::state` connects and synchronizes before it resolves, and fails with `ControlError::Unavailable`. The GUI shows `Connecting` while the call is pending and `Disconnected` with the message when it fails | Moves. `Connecting` and `Disconnected` become presentation state |
 | L3 | The launch screen leaves when `Lifecycle::Connected` arrives, which is right after the socket opens and before any status query (`complete_launch_if_ready`) | `state` resolves only after two full synchronization passes: the session's actor runs one at startup, and the service's `connect` then calls `synchronize`, which queues behind it. Each pass queries the seven core fields in sequence | Changed. That is 14 paced queries, at least 0.7 s at the 50 ms transmission interval plus round trips, before the dashboard opens. Dropping one pass is a possible step 2 fix. Confirm live (L3 below) |
-| L4 | Reconnect: the transport reconnects forever. The adapter maps an epoch change to `Reconnecting` then `Connected`; the controller bumps its generation, invalidates every field and supplemental read, and on `Connected` refreshes the core fields, then HTTP information, then Quick Select names (adapter, controller) | The session marks every field `Stale { Disconnected }`, clears `epoch`, and installs the next epoch on reconnect, keeping `last_good`. It requests no resynchronization at that point; the 5 s sweep restores the fields | Changed if left alone: fields stay stale for up to 5 s where 3.0.0 refreshed at once. Closed by [P1](#port-changes): the bridge calls `refresh` when it sees a new epoch. The forced-reconnect check is exit criterion 3 |
+| L4 | Reconnect: the transport reconnects forever. The adapter maps an epoch change to `Reconnecting` then `Connected`; the controller bumps its generation, invalidates every field and supplemental read, and on `Connected` refreshes the core fields, then HTTP information, then Quick Select names (adapter, controller) | The session marks every field `Stale { Disconnected }`, clears `epoch`, and installs the next epoch on reconnect, keeping `last_good`. It requests no resynchronization at that point; the 5 s sweep restores the fields | Closed: the session reads every core field again as soon as it reconnects (owner's decision, 2026-10-08), so every client recovers at once and the GUI asks for nothing. A reconnect that happens during an operation's confirmation is covered by the next sweep. The forced-reconnect check is exit criterion 3 |
 | L5 | The `Reconnecting` lifecycle is visible to the GUI | Visible through the port as state: `epoch` is `None` while disconnected and a higher epoch afterwards. `watch` coalesces, so a disconnect and reconnect can arrive as one epoch-to-epoch step; the projection treats any epoch increase as a reconnect, as the adapter did (`previous_epoch != current_epoch`) | Moves. No port change; the projection rule and a test are required |
 | L6 | The generation (connection counter) tags events and supplemental reads, and the GUI drops events older than the one it holds (bridge, `lib.rs` `Message::Bridge`) | `Epoch` on state and `epoch - 1` on inspection reads (`X3800hSession::generation`). `DesktopProjection::accept_state` already refuses an older epoch or a revision that is not newer | Replaced. The bridge's request-id and generation tagging goes; GUI request ids stay for UI timers only |
 | L7 | Terminal `Disconnected` after a failed connect or session error, and a `Retry Status` button that re-runs `Refresh`, which reconnects (controller `refresh` connects when there is no session) | A failed `state` call is the disconnected condition. Retry calls `state` again when there is no subscription, and `refresh` ([P1](#port-changes)) when there is one | Moves, with P1 |
@@ -234,10 +234,10 @@ Considered and not needed:
   subscription and the 60 s idle release applies, which still frees the
   receiver's single control connection for other tools. Only the changed-address
   case (P2) needs more than idle release.
-- **Reconnect visibility.** Already visible as state (L5). Resynchronizing in
-  the session after a reconnect would also help the CLI and agents, but it
-  changes the session actor. Left out of this milestone, which stays a
-  refactoring; the bridge calls P1 instead.
+- **Reconnect visibility.** Already visible as state (L5). The session also
+  reads every core field again when it reconnects, which helps every client and
+  is what the policy engine of milestone 3 needs; this was first left to the
+  GUI through P1 and moved into the session on the owner's instruction.
 - **Operation completion.** `submit` followed by `operation(id, wait)` is
   enough. The Operator event stream carries every client's operations, so the
   GUI would have to filter it; the operation feed is milestone 5.
@@ -393,6 +393,21 @@ D1 (remove Quick Select recall and EQ status) is in the roadmap. These are new.
 Each has a recommendation. The owner asked on 2026-10-08 for the milestone to be
 completed without answering them, so the recommendations were taken as the
 decisions and step 3 implements them. Any can be reversed in a follow-up commit.
+
+**Answered in the interview that followed (2026-10-08).** D2 to D5 all stand.
+Further:
+
+- **Graceful close.** Closing the window closes the receiver connection first,
+  within a short grace period, instead of dropping the socket.
+- **Reconnect re-read.** In the session, for every client (see L4).
+- **`ZMON` pause.** The transport pauses after a main-zone power-on as it does
+  after `PWON`, now, without waiting for the live check (C4).
+- **Slider range.** The volume slider and its label run to +18.0 dB, the
+  receiver's maximum. Every baseline that shows the volume row changes.
+- **Launch delay (L3).** Measure live first; both synchronization passes stay.
+- **Display model.** `MainZoneSnapshot` stays; the roadmap records it as debt.
+- **`config/` backups** are ignored by Git.
+- **Merge.** A person merges the branch once the owner's checks pass.
 
 **D2. Optimistic concurrency (C6).** 3.0.0 rejected a control whose snapshot was
 stale. Operator operations carry no precondition. The exposure is the volume

@@ -39,8 +39,9 @@ That is forced by `make check` passing at every commit:
   and `reconnect_indefinitely` to settle whether a session's actor can end other
   than by `close`; evict a stopped session with a test if it can. Decide whether
   the service's explicit `synchronize` on connect can go, because the session's
-  actor already runs a startup pass (L3). Extend the transport's power-on quiet
-  period to `ZMON` only if the live check C4 shows the receiver needs it.
+  actor already runs a startup pass (L3); the owner chose to measure it live
+  first. The transport's power-on quiet period covers `ZMON` as well as `PWON`
+  (owner's decision, after step 2).
   Amend the design as phase 1's step 0 did, so the roadmap does not fork it:
   record P1 and P2 in the Control service section of `ARCHITECTURE.md`, where the
   implemented port lives, and add the Operator `refresh` resource to the Control

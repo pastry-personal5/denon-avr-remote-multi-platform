@@ -77,8 +77,8 @@ they change; follow the repository's write-safety controls.
 | ID | Check | Expected | Result |
 | --- | --- | --- | --- |
 | L3 | Time from launch to the dashboard, against 3.0.0 | A fraction of a second to a second or two later than 3.0.0 (two synchronization passes). Note both times | To fill |
-| L4 | Forced reconnect: turn the Mac's Wi-Fi off for several seconds and on again, or power-cycle the receiver | The window shows "RECONNECTING", then the dashboard returns without a restart; note how long the recovery took against 3.0.0 | To fill |
-| C4 | Power the main zone on from standby through the GUI | Confirmed without a timeout or a refused command. If the receiver needs a quiet period after `ZMON`, extend the transport's rule, not the GUI | To fill |
+| L4 | Forced reconnect: turn the Mac's Wi-Fi off for several seconds and on again, or power-cycle the receiver | The window shows "RECONNECTING", then the dashboard returns without a restart, within a second or two of the connection coming back (the session re-reads at once); note how long it took against 3.0.0 | To fill |
+| C4 | Power the main zone on from standby through the GUI | Confirmed without a timeout or a refused command. The transport now pauses a second after `ZMON` as after `PWON`; note how long the confirmation takes, and whether the pause is needed | To fill |
 | C8 | Press each sound mode category from inside and from outside that category | From outside, the mode changes and is confirmed. From inside, the window says the receiver already has the requested value and nothing is sent | To fill |
 | R1 | Change the input, the sound mode, and power; watch the audio, video, and Audyssey panels | Each refreshes within a second or two; they also refresh by themselves about every fifteen seconds | To fill |
 | G2 | With a hand-edited two-receiver file, use "Save and connect" for a new receiver | Both original receivers and the sound mode favorites are still in the file afterwards | To fill |

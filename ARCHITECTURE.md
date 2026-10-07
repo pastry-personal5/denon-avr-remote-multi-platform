@@ -47,7 +47,10 @@ holds the session while anything uses it, and releases it after an idle time;
 nothing else, including the GUI and CLI, constructs or names a session.
 
 A reconnect or receiver change starts a new epoch, and authority from the old
-connection ends with the old epoch. Uncorrelated receiver lines remain events
+connection ends with the old epoch. When the transport reconnects, the session
+reads every core field again at once, which only queries, rather than leaving the
+fields stale until its next five-second sweep; a reconnect that happens in the
+middle of an operation's confirmation is picked up by the sweep. Uncorrelated receiver lines remain events
 rather than being assigned to a command opportunistically. The 3.0.0 controller,
 its compatibility adapter, and the `ReceiverSession` and `SessionFactory`
 contracts they served were retired in version 4; `make boundary` fails if their
@@ -174,9 +177,10 @@ drops those of a receiver it has left.
 read (`MainZoneSnapshot`, `Zone2Snapshot`). A field is usable only when its
 validity is `Current`; a stale value is shown as unavailable and never acted on.
 A disconnect and a higher epoch are both a reconnect, and a reconnect clears what
-was read over HTTP, asks the service to refresh, and reads again. The audio,
-video, and Audyssey information has no push, so the GUI reads it on a timer and
-after a confirmed control that can change it, one read at a time.
+was read over HTTP and reads it again; the core fields are re-read by the session
+itself. The audio, video, and Audyssey information has no push, so the GUI reads
+it on a timer and after a confirmed control that can change it, one read at a
+time.
 
 A control carries the value its target field showed, and the bridge refuses it
 if the subscription now shows another, except a power control, which states an

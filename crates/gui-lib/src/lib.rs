@@ -1067,14 +1067,10 @@ impl Gui {
                 // it can arrive as one step to a higher epoch.
                 let reconnected = was_reconnecting
                     || (was_connected && self.generation != 0 && epoch > self.generation);
-                if reconnected {
-                    if was_connected {
-                        self.connection_lost();
-                    }
-                    // A reconnect gives the receiver's evidence back only at the
-                    // next sweep. Ask for it now.
-                    let id = self.next_request();
-                    tasks.push(self.command(BridgeCommand::Refresh(id)));
+                // The session reads every field again by itself when it
+                // reconnects, so the new values arrive as ordinary state.
+                if reconnected && was_connected {
+                    self.connection_lost();
                 }
                 if !was_connected || reconnected {
                     self.generation = epoch;
