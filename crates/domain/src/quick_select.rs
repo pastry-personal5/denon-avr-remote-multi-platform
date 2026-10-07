@@ -122,23 +122,6 @@ impl QuickSelectSnapshot {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum QuickSelectRecallOutcome {
-    Pending { slot: QuickSelectSlot },
-    Confirmed { slot: QuickSelectSlot },
-    Rejected(String),
-    Conflict { expected: u64, current: u64 },
-    Unsupported(String),
-    TransportFailure(String),
-    Unconfirmed(String),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum QuickSelectRecallConfirmation {
-    Authoritative,
-    Dispatched,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

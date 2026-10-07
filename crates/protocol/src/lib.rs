@@ -15,12 +15,7 @@ pub use app_command::{
     AppCommandRequest, AppCommandResponse, AppCommandResult, APP_COMMAND_0300_PATH,
 };
 
-pub use avr::{
-    encode_volume, get_command_family, is_read_only_audio_context_query,
-    parse_audio_context_response, parse_channel_volume_response, parse_main_zone_event,
-    parse_main_zone_response, query_command, response_matches, AvrCommand, AvrProtocolError,
-};
-pub use avr::{eq_status_query, parse_eq_status, quick_select_command};
+pub use avr::{get_command_family, response_matches, AvrCommand, AvrProtocolError};
 pub use heos::{parse_heos_line, HeosCommand, HeosLine, HeosProtocolError};
 pub use quick_select_name::{
     parse_quick_select_names, ParsedQuickSelectNames, QuickSelectNameProtocolError,

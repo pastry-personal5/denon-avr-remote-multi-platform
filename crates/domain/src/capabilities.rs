@@ -33,32 +33,10 @@ pub struct ModelCapabilities {
     pub native_volume_max: u16,
     pub inputs: &'static [&'static str],
     pub surround_modes: &'static [&'static str],
-    pub quick_select_recall: bool,
     pub quick_select_names: bool,
-    pub eq_status: bool,
     pub source_catalog_read: bool,
     pub http_information_read: bool,
     pub zone2_power: bool,
-}
-
-/// Capabilities may be enabled only after model/firmware-specific Quick
-/// Recall/EQ validation has been recorded. Quick Select names are a separate,
-/// read-only AppCommand capability validated for the X3800H profile.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct QuickSelectEqCapabilities {
-    pub quick_select_recall: bool,
-    pub quick_select_names: bool,
-    pub eq_status: bool,
-}
-
-impl Default for QuickSelectEqCapabilities {
-    fn default() -> Self {
-        Self {
-            quick_select_recall: false,
-            quick_select_names: true,
-            eq_status: false,
-        }
-    }
 }
 
 const X3800H_INPUTS: &[&str] = &[
@@ -179,12 +157,9 @@ impl ModelCapabilities {
             native_volume_max: 985,
             inputs: if writable { X3800H_INPUTS } else { &[] },
             surround_modes: if writable { X3800H_SURROUND_MODES } else { &[] },
-            // Quick Select recall and EQ remain execute/query candidates until
-            // separately validated. Quick Select names are a validated,
-            // read-only AppCommand observation for the X3800H profile.
-            quick_select_recall: false,
+            // Quick Select names are a validated, read-only AppCommand
+            // observation for the X3800H profile.
             quick_select_names: matches!(model, Model::AvrX3800h),
-            eq_status: false,
             // Source labels and visibility are receiver-owned presentation
             // facts. The X3800H profile reads them without enabling any
             // source rename or hide/write operation.
@@ -193,28 +168,6 @@ impl ModelCapabilities {
             http_information_read: matches!(model, Model::AvrX3800h),
             zone2_power: matches!(model, Model::AvrX3800h),
         }
-    }
-
-    pub const fn with_validated_quick_select_eq(
-        mut self,
-        capabilities: QuickSelectEqCapabilities,
-    ) -> Self {
-        if matches!(self.model, Model::AvrX3800h) {
-            self.quick_select_recall = capabilities.quick_select_recall;
-            self.quick_select_names = capabilities.quick_select_names;
-            self.eq_status = capabilities.eq_status;
-        }
-        self
-    }
-
-    pub const fn with_validated_source_catalog(
-        mut self,
-        capabilities: SourceCatalogCapabilities,
-    ) -> Self {
-        if matches!(self.model, Model::AvrX3800h) {
-            self.source_catalog_read |= capabilities.source_catalog_read;
-        }
-        self
     }
 
     pub fn supports_control(&self, control: &MainZoneControl) -> bool {
@@ -308,42 +261,10 @@ mod tests {
     }
 
     #[test]
-    fn quick_select_eq_candidates_do_not_inherit_main_zone_validation() {
-        let capabilities = ModelCapabilities::for_model(Model::AvrX3800h);
-        assert!(capabilities.writable);
-        assert!(!capabilities.quick_select_recall);
-        assert!(!capabilities.eq_status);
-    }
-
-    #[test]
     fn unknown_models_can_use_bounded_main_zone_volume() {
         let capabilities = ModelCapabilities::for_model(Model::Unknown);
         let volume = VolumeLevel::from_native_code(500).unwrap();
         assert!(capabilities.supports_control(&MainZoneControl::Volume(volume)));
-    }
-
-    #[test]
-    fn validated_quick_select_eq_profile_is_explicit_opt_in() {
-        let capabilities = ModelCapabilities::for_model(Model::AvrX3800h)
-            .with_validated_quick_select_eq(QuickSelectEqCapabilities {
-                quick_select_recall: true,
-                quick_select_names: true,
-                eq_status: true,
-            });
-        assert!(capabilities.quick_select_recall);
-        assert!(capabilities.eq_status);
-    }
-
-    #[test]
-    fn unknown_models_never_inherit_quick_select_eq_validation() {
-        let capabilities = ModelCapabilities::for_model(Model::Unknown)
-            .with_validated_quick_select_eq(QuickSelectEqCapabilities {
-                quick_select_recall: true,
-                quick_select_names: true,
-                eq_status: true,
-            });
-        assert!(!capabilities.quick_select_recall);
-        assert!(!capabilities.eq_status);
     }
 
     #[test]
@@ -357,11 +278,4 @@ mod tests {
         assert!(ModelCapabilities::for_model(Model::AvrX3800h).source_catalog_read);
         assert!(!ModelCapabilities::for_model(Model::Unknown).source_catalog_read);
     }
-}
-
-/// Model/firmware-specific evidence required before candidate source catalog
-/// reads may leave the diagnostic tool.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct SourceCatalogCapabilities {
-    pub source_catalog_read: bool,
 }

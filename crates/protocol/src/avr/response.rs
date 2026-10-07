@@ -1,37 +1,6 @@
-//! AVR response correlation, parsing, and event reduction.
+//! AVR response correlation.
 
-use super::command::AvrProtocolError;
-use denon_avr_domain::{
-    AudioContextField, AudioContextValue, Input, MainZoneEvent, MainZoneField, MainZoneValue,
-    MuteState, PowerState, SurroundMode, Volume,
-};
-
-/// CV is a channel trim/configuration response, never an active channel map.
-pub fn parse_channel_volume_response(response: &str) -> Result<String, AvrProtocolError> {
-    response
-        .strip_prefix("CV")
-        .filter(|v| !v.is_empty())
-        .map(str::to_owned)
-        .ok_or(AvrProtocolError::MalformedResponse("invalid CV response"))
-}
-
-pub fn parse_audio_context_response(
-    field: AudioContextField,
-    response: &str,
-) -> Result<AudioContextValue, AvrProtocolError> {
-    let prefix = match field {
-        AudioContextField::InputMode => "SD",
-        AudioContextField::DigitalMode => "DC",
-    };
-    response
-        .strip_prefix(prefix)
-        .filter(|value| !value.is_empty())
-        .and_then(|value| AudioContextValue::new(value).ok())
-        .ok_or(AvrProtocolError::MalformedResponse(
-            "invalid audio context response",
-        ))
-}
-
+/// The family a query's response belongs to: the command up to its query marker.
 pub fn get_command_family(command: &str) -> &str {
     command
         .split_once('?')
@@ -39,6 +8,8 @@ pub fn get_command_family(command: &str) -> &str {
         .trim_end()
 }
 
+/// Whether `response` answers a query of `family`, as opposed to being an
+/// unsolicited line that happens to share a prefix.
 pub fn response_matches(family: &str, response: &str) -> bool {
     let Some(suffix) = response.strip_prefix(family) else {
         return false;
@@ -46,101 +17,6 @@ pub fn response_matches(family: &str, response: &str) -> bool {
     family != "MV"
         || suffix == "---"
         || (!suffix.is_empty() && suffix.chars().all(|c| c.is_ascii_digit()))
-}
-
-pub fn parse_main_zone_response(
-    field: MainZoneField,
-    response: &str,
-) -> Result<MainZoneValue, AvrProtocolError> {
-    match field {
-        MainZoneField::Power => match response {
-            "ZMON" => Ok(MainZoneValue::Power(PowerState::On)),
-            "ZMOFF" => Ok(MainZoneValue::Power(PowerState::Standby)),
-            _ => Err(unexpected(field, response)),
-        },
-        MainZoneField::Input => prefixed(response, "SI", field)
-            .and_then(|value| Input::new(value).map_err(AvrProtocolError::MalformedResponse))
-            .map(MainZoneValue::Input),
-        MainZoneField::Volume => parse_volume(response).map(MainZoneValue::Volume),
-        MainZoneField::Mute => match response {
-            "MUON" => Ok(MainZoneValue::Mute(MuteState::On)),
-            "MUOFF" => Ok(MainZoneValue::Mute(MuteState::Off)),
-            _ => Err(unexpected(field, response)),
-        },
-        MainZoneField::SurroundMode => prefixed(response, "MS", field)
-            .and_then(|value| SurroundMode::new(value).map_err(AvrProtocolError::MalformedResponse))
-            .map(MainZoneValue::SurroundMode),
-    }
-}
-
-pub fn parse_main_zone_event(line: &str) -> MainZoneEvent {
-    for field in MainZoneField::ALL {
-        if let Ok(value) = parse_main_zone_response(field, line) {
-            return MainZoneEvent::Changed(value);
-        }
-    }
-    MainZoneEvent::Unknown(line.to_owned())
-}
-
-/// Parses the AVR-X3800H's independent Zone 2 power family.
-pub fn parse_zone2_power(response: &str) -> Result<PowerState, AvrProtocolError> {
-    match response {
-        "Z2ON" => Ok(PowerState::On),
-        "Z2OFF" => Ok(PowerState::Standby),
-        _ => Err(AvrProtocolError::MalformedResponse(
-            "invalid Z2 power response",
-        )),
-    }
-}
-
-fn prefixed<'a>(
-    response: &'a str,
-    prefix: &str,
-    field: MainZoneField,
-) -> Result<&'a str, AvrProtocolError> {
-    response
-        .strip_prefix(prefix)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| unexpected(field, response))
-}
-
-fn parse_volume(response: &str) -> Result<Volume, AvrProtocolError> {
-    let code = response
-        .strip_prefix("MV")
-        .ok_or_else(|| unexpected(MainZoneField::Volume, response))?;
-    if code == "---" {
-        return Err(AvrProtocolError::Unavailable("volume is unavailable"));
-    }
-    // Denon receivers normally return a three-digit native code (`MV800`,
-    // `MV805`, ...), but some firmware uses the compact two-digit form for
-    // whole dB values (`MV80` == `MV800`). Normalize both forms before
-    // converting to the domain's tenths-of-a-dB representation.
-    if !matches!(code.len(), 2 | 3) {
-        return Err(AvrProtocolError::InvalidVolume(
-            "volume code is outside the supported format",
-        ));
-    }
-    let parsed = code
-        .parse::<u16>()
-        .map_err(|_| AvrProtocolError::InvalidVolume("volume code is not numeric"))?;
-    let native_code = if code.len() == 2 {
-        parsed.saturating_mul(10)
-    } else {
-        parsed
-    };
-    if native_code > 985 || !native_code.is_multiple_of(5) {
-        return Err(AvrProtocolError::InvalidVolume(
-            "volume code is outside the supported format",
-        ));
-    }
-    Ok(Volume::from_parts(code, native_code as i16 - 800))
-}
-
-fn unexpected(field: MainZoneField, response: &str) -> AvrProtocolError {
-    AvrProtocolError::UnexpectedResponse {
-        field,
-        response: response.to_owned(),
-    }
 }
 
 #[cfg(test)]
@@ -157,12 +33,6 @@ mod tests {
     }
 
     #[test]
-    fn parses_zone_2_power() {
-        assert_eq!(parse_zone2_power("Z2ON").unwrap(), PowerState::On);
-        assert_eq!(parse_zone2_power("Z2OFF").unwrap(), PowerState::Standby);
-    }
-
-    #[test]
     fn response_matching_rejects_wrong_or_malformed_families() {
         assert!(response_matches("SI", "SICD"));
         assert!(!response_matches("SI", "MSSTEREO"));
@@ -172,39 +42,5 @@ mod tests {
         assert!(!response_matches("MV", "MVMAX 615"));
         assert!(response_matches("MSQUICK1", "MSQUICK1"));
         assert!(!response_matches("MSQUICK1", "MSQUICKX"));
-    }
-
-    #[test]
-    fn parses_audio_context_query_responses() {
-        assert_eq!(
-            parse_audio_context_response(denon_avr_domain::AudioContextField::InputMode, "SDHDMI")
-                .unwrap()
-                .as_str(),
-            "HDMI"
-        );
-        assert_eq!(
-            parse_audio_context_response(
-                denon_avr_domain::AudioContextField::DigitalMode,
-                "DCAUTO"
-            )
-            .unwrap()
-            .as_str(),
-            "AUTO"
-        );
-        assert!(parse_audio_context_response(
-            denon_avr_domain::AudioContextField::DigitalMode,
-            "MSSTEREO"
-        )
-        .is_err());
-    }
-
-    #[test]
-    fn parses_the_x3800h_multi_channel_stereo_status_spelling() {
-        assert_eq!(
-            parse_main_zone_response(MainZoneField::SurroundMode, "MSMCH STEREO")
-                .unwrap()
-                .to_string(),
-            "MCH STEREO"
-        );
     }
 }

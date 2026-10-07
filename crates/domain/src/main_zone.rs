@@ -1,6 +1,6 @@
 //! Main zone domain types and state management.
 
-use super::{AudioContextSnapshot, HttpInformationSnapshot};
+use super::HttpInformationSnapshot;
 use std::fmt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -110,35 +110,6 @@ impl SoundModeCategory {
             "pure" => Some(Self::Pure),
             _ => None,
         }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AudioContextField {
-    InputMode,
-    DigitalMode,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AudioContextValue(String);
-
-impl AudioContextValue {
-    pub fn new(value: impl Into<String>) -> Result<Self, &'static str> {
-        let value = value.into();
-        if value.trim().is_empty() {
-            Err("audio context value must not be empty")
-        } else {
-            Ok(Self(value))
-        }
-    }
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl fmt::Display for AudioContextValue {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
     }
 }
 
@@ -315,11 +286,6 @@ pub enum MainZoneControl {
     RecallSoundModeCategory(SoundModeCategory),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Zone2Control {
-    Power(PowerState),
-}
-
 /// The independent Zone 2 state. It is intentionally separate from the Main
 /// Zone snapshot because Denon `Z2` commands do not target `PW`/Zone 1.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -422,7 +388,6 @@ fn not_queried() -> FieldError {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MainZoneSnapshot {
-    pub audio_context: AudioContextSnapshot,
     /// Read-only, model-gated AppCommand information. This is deliberately
     /// separate from core Telnet status so an HTTP failure cannot invalidate it.
     pub http_information: HttpInformationSnapshot,
@@ -431,101 +396,47 @@ pub struct MainZoneSnapshot {
     pub volume: FieldStatus<Volume>,
     pub mute: FieldStatus<MuteState>,
     pub surround_mode: FieldStatus<SurroundMode>,
-    /// Category paired with `surround_mode` only after a category-aware
-    /// control is confirmed. AVR `MS?` status supplies the detailed mode but
-    /// does not independently identify a category.
-    pub sound_mode_category: Option<SoundModeCategory>,
     pub freshness: Freshness,
     pub authority: StateAuthority,
-    resource_version: u64,
 }
 
 impl Default for MainZoneSnapshot {
     fn default() -> Self {
         Self {
-            audio_context: AudioContextSnapshot::default(),
             http_information: HttpInformationSnapshot::default(),
             power: FieldStatus::Unavailable(not_queried()),
             input: FieldStatus::Unavailable(not_queried()),
             volume: FieldStatus::Unavailable(not_queried()),
             mute: FieldStatus::Unavailable(not_queried()),
             surround_mode: FieldStatus::Unavailable(not_queried()),
-            sound_mode_category: None,
             freshness: Freshness::Unknown,
             authority: StateAuthority::Unconfirmed,
-            resource_version: 0,
         }
     }
 }
 
 impl MainZoneSnapshot {
     pub fn invalidate(&mut self) {
-        let version = self.resource_version.saturating_add(1);
         *self = Self::default();
         self.freshness = Freshness::Invalidated;
         self.http_information.invalidate(0);
-        self.resource_version = version;
-    }
-
-    pub fn invalidate_audio_context(&mut self) {
-        self.audio_context.invalidate();
-        self.resource_version = self.resource_version.saturating_add(1);
     }
 
     pub fn invalidate_http_information(&mut self, generation: u64) {
         self.http_information.invalidate(generation);
-        self.resource_version = self.resource_version.saturating_add(1);
     }
 
     pub fn set_http_information(&mut self, information: HttpInformationSnapshot) {
-        if self.http_information != information {
-            self.resource_version = self.resource_version.saturating_add(1);
-        }
         self.http_information = information;
     }
 
-    pub fn set_audio_context(&mut self, context: AudioContextSnapshot) {
-        if self.audio_context != context {
-            self.resource_version = self.resource_version.saturating_add(1);
-        }
-        self.audio_context = context;
-    }
-
     pub fn set_value(&mut self, value: MainZoneValue, authority: StateAuthority) {
-        let previous_value = match &value {
-            MainZoneValue::Power(_) => self.value(MainZoneField::Power),
-            MainZoneValue::Input(_) => self.value(MainZoneField::Input),
-            MainZoneValue::Volume(_) => self.value(MainZoneField::Volume),
-            MainZoneValue::Mute(_) => self.value(MainZoneField::Mute),
-            MainZoneValue::SurroundMode(_) => self.value(MainZoneField::SurroundMode),
-        };
-        let invalidates_audio_context = matches!(
-            &value,
-            MainZoneValue::Input(_) | MainZoneValue::SurroundMode(_)
-        );
-        let category_invalidated = matches!(
-            (&value, previous_value.as_ref()),
-            (MainZoneValue::Input(_), _) | (MainZoneValue::SurroundMode(_), None)
-        ) || matches!(
-            (&value, previous_value.as_ref()),
-            (MainZoneValue::SurroundMode(new), Some(MainZoneValue::SurroundMode(old)))
-                if new != old
-        );
-        if category_invalidated {
-            self.sound_mode_category = None;
-        }
-        if previous_value.as_ref() != Some(&value) || category_invalidated {
-            self.resource_version = self.resource_version.saturating_add(1);
-        }
         match value {
             MainZoneValue::Power(value) => self.power = FieldStatus::Value(value),
             MainZoneValue::Input(value) => self.input = FieldStatus::Value(value),
             MainZoneValue::Volume(value) => self.volume = FieldStatus::Value(value),
             MainZoneValue::Mute(value) => self.mute = FieldStatus::Value(value),
             MainZoneValue::SurroundMode(value) => self.surround_mode = FieldStatus::Value(value),
-        }
-        if invalidates_audio_context && !self.audio_context.invalidated {
-            self.invalidate_audio_context();
         }
         if matches!(self.power, FieldStatus::Value(PowerState::Standby)) {
             self.http_information.invalidate(0);
@@ -535,26 +446,6 @@ impl MainZoneSnapshot {
     }
 
     pub fn set_error(&mut self, field: MainZoneField, error: FieldError) {
-        let changed = match field {
-            MainZoneField::Power => {
-                !matches!(&self.power, FieldStatus::Unavailable(old) if old == &error)
-            }
-            MainZoneField::Input => {
-                !matches!(&self.input, FieldStatus::Unavailable(old) if old == &error)
-            }
-            MainZoneField::Volume => {
-                !matches!(&self.volume, FieldStatus::Unavailable(old) if old == &error)
-            }
-            MainZoneField::Mute => {
-                !matches!(&self.mute, FieldStatus::Unavailable(old) if old == &error)
-            }
-            MainZoneField::SurroundMode => {
-                !matches!(&self.surround_mode, FieldStatus::Unavailable(old) if old == &error)
-            }
-        };
-        if changed {
-            self.resource_version = self.resource_version.saturating_add(1);
-        }
         match field {
             MainZoneField::Power => self.power = FieldStatus::Unavailable(error),
             MainZoneField::Input => self.input = FieldStatus::Unavailable(error),
@@ -562,45 +453,6 @@ impl MainZoneSnapshot {
             MainZoneField::Mute => self.mute = FieldStatus::Unavailable(error),
             MainZoneField::SurroundMode => self.surround_mode = FieldStatus::Unavailable(error),
         }
-    }
-
-    pub fn apply_event(&mut self, event: MainZoneEvent) {
-        if let MainZoneEvent::Changed(value) = event {
-            self.set_value(value, StateAuthority::Event);
-        }
-    }
-
-    pub fn apply_authoritative_event(&mut self, event: MainZoneEvent) {
-        if let MainZoneEvent::Changed(value) = event {
-            self.set_value(value, StateAuthority::Authoritative);
-        }
-    }
-
-    /// Records the category supplied by a successfully confirmed UI control.
-    /// This does not manufacture an AVR status value: callers must first have
-    /// an authoritative detailed surround-mode observation.
-    pub fn confirm_sound_mode_category(&mut self, category: SoundModeCategory) {
-        if self.surround_mode.value().is_some() && self.sound_mode_category != Some(category) {
-            self.sound_mode_category = Some(category);
-            self.resource_version = self.resource_version.saturating_add(1);
-        }
-    }
-
-    pub fn probe_succeeded(&self) -> bool {
-        fn field_ok<T>(field: &FieldStatus<T>) -> bool {
-            match field {
-                FieldStatus::Value(_) => true,
-                FieldStatus::Unavailable(error) => {
-                    error.kind == FieldErrorKind::Unavailable
-                        && error.message.contains("volume is unavailable")
-                }
-            }
-        }
-        field_ok(&self.power)
-            && field_ok(&self.input)
-            && field_ok(&self.volume)
-            && field_ok(&self.mute)
-            && field_ok(&self.surround_mode)
     }
 
     pub fn value(&self, field: MainZoneField) -> Option<MainZoneValue> {
@@ -616,23 +468,6 @@ impl MainZoneSnapshot {
                 .map(MainZoneValue::SurroundMode),
         }
     }
-
-    pub fn resource_version(&self) -> u64 {
-        self.resource_version
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum MainZoneEvent {
-    Changed(MainZoneValue),
-    Unknown(String),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ConnectionState {
-    Connected,
-    Reconnecting,
-    Disconnected,
 }
 
 #[cfg(test)]
@@ -654,52 +489,45 @@ mod tests {
     }
 
     #[test]
-    fn confirmed_category_is_cleared_by_later_receiver_status() {
+    fn a_standby_reading_invalidates_the_http_information() {
         let mut snapshot = MainZoneSnapshot::default();
+        snapshot.set_http_information(HttpInformationSnapshot {
+            generation: 3,
+            freshness: Freshness::Live,
+            ..HttpInformationSnapshot::default()
+        });
         snapshot.set_value(
-            MainZoneValue::SurroundMode(SurroundMode::new("DOLBY SURROUND").unwrap()),
+            MainZoneValue::Power(PowerState::On),
             StateAuthority::Authoritative,
         );
-        snapshot.confirm_sound_mode_category(SoundModeCategory::Movie);
-        assert_eq!(snapshot.sound_mode_category, Some(SoundModeCategory::Movie));
+        assert_eq!(snapshot.http_information.freshness, Freshness::Live);
+        snapshot.set_value(
+            MainZoneValue::Power(PowerState::Standby),
+            StateAuthority::Authoritative,
+        );
+        assert_eq!(snapshot.http_information.freshness, Freshness::Invalidated);
+    }
 
-        snapshot.apply_event(MainZoneEvent::Changed(MainZoneValue::SurroundMode(
-            SurroundMode::new("DTS NEURAL:X").unwrap(),
-        )));
-        assert_eq!(snapshot.sound_mode_category, None);
+    #[test]
+    fn a_field_error_is_unavailable_and_keeps_the_others() {
+        let mut snapshot = MainZoneSnapshot::default();
+        snapshot.set_value(
+            MainZoneValue::Mute(MuteState::Off),
+            StateAuthority::Authoritative,
+        );
+        snapshot.set_error(
+            MainZoneField::Volume,
+            FieldError {
+                kind: FieldErrorKind::Timeout,
+                message: "late".into(),
+            },
+        );
+        assert_eq!(snapshot.mute.value(), Some(&MuteState::Off));
+        assert!(snapshot.volume.value().is_none());
         assert_eq!(
-            snapshot.surround_mode.value().map(SurroundMode::as_str),
-            Some("DTS NEURAL:X")
+            snapshot.value(MainZoneField::Mute),
+            Some(MainZoneValue::Mute(MuteState::Off))
         );
-    }
-
-    #[test]
-    fn confirmed_category_survives_an_unchanged_authoritative_status_read() {
-        let mut snapshot = MainZoneSnapshot::default();
-        let mode = SurroundMode::new("DOLBY SURROUND").unwrap();
-        snapshot.set_value(
-            MainZoneValue::SurroundMode(mode.clone()),
-            StateAuthority::Authoritative,
-        );
-        snapshot.confirm_sound_mode_category(SoundModeCategory::Movie);
-
-        snapshot.set_value(
-            MainZoneValue::SurroundMode(mode),
-            StateAuthority::Authoritative,
-        );
-        assert_eq!(snapshot.sound_mode_category, Some(SoundModeCategory::Movie));
-    }
-
-    #[test]
-    fn event_reducer_handles_unsolicited_and_authoritative_updates() {
-        let mut state = MainZoneSnapshot::default();
-        state.apply_event(MainZoneEvent::Changed(MainZoneValue::Power(PowerState::On)));
-        assert_eq!(state.power.value(), Some(&PowerState::On));
-        assert_eq!(state.authority, StateAuthority::Event);
-        state
-            .apply_authoritative_event(MainZoneEvent::Changed(MainZoneValue::Mute(MuteState::Off)));
-        assert_eq!(state.mute.value(), Some(&MuteState::Off));
-        assert_eq!(state.authority, StateAuthority::Authoritative);
     }
 
     #[test]

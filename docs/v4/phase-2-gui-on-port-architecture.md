@@ -330,6 +330,38 @@ The legacy path is deleted, and `make boundary` now fails if it returns.
 - **Live tests:** `make test-live-x3800h` and `-controls` are ordinary `--test`
   targets, compiled by `make check`, and they use no legacy symbol.
 
+## Step 5 outcomes
+
+Scoped by inventory: a scan of every exported name for a user outside its own
+definition, run after step 4. Only what the legacy path used, or what D1
+removed, went; the canonical X3800H codec and the canonical state types are
+untouched.
+
+- **Protocol:** `quick_select_eq.rs` (Quick Select recall and EQ commands and
+  parser) is deleted. In `avr`, the MainZone query, control, Zone 2, volume, and
+  audio-context encoders and parsers are deleted, as are the error variants only
+  they used. `AvrCommand`, `AvrProtocolError`, `get_command_family`,
+  `response_matches`, and the `x3800h` codec remain: the transport and the
+  canonical session use them.
+- **Domain:** `eq_status.rs` and `audio_context.rs` are deleted; so are
+  `QuickSelectRecallOutcome`, `QuickSelectRecallConfirmation`,
+  `QuickSelectEqCapabilities`, `SourceCatalogCapabilities` and the
+  `with_validated_*` builders, the `quick_select_recall` and `eq_status`
+  capability fields, `ConnectionState`, `MainZoneEvent`, `Zone2Control`, and the
+  audio-context types.
+- **`MainZoneSnapshot` keeps** the five fields, the HTTP information, and
+  `set_value`, `set_error`, `value`, `invalidate`, and the HTTP setters, because
+  it is the GUI's display model. It loses the unread audio context, the unread
+  sound mode category and its confirm method, the event reducers, the version
+  counter, and `probe_succeeded`.
+- **`MainZoneControl`, `MainZoneField`, and `MainZoneValue` stay.** The GUI uses
+  them to ask a model what it supports and to name a field; they no longer have a
+  protocol consumer.
+- **Left alone on purpose:** exported names with no user that belong to the
+  canonical design and not to the legacy path (`TransmissionSchedule`,
+  `FieldIssue`, `FieldValue`), and the HEOS and AppCommand items outside this
+  milestone's scope.
+
 ## Guard changes
 
 These land with the step that makes them necessary, so `make check` passes at

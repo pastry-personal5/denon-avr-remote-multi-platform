@@ -1,7 +1,7 @@
 # Version 4, Phase 2 — GUI on the port
 
 **In progress, started 2026-10-08** on branch `v4/phase-2-gui-on-port`. Steps
-1 to 4 are done. This is milestone 2 of the [roadmap](roadmap.md). It moves the
+1 to 5 are done. This is milestone 2 of the [roadmap](roadmap.md). It moves the
 GUI from the legacy `ReceiverController` onto the control-service port and then
 deletes the legacy path. It is a refactoring: the intended user-visible
 differences are the ones the parity table lists as **Changed**. The owner asked
@@ -25,7 +25,7 @@ Work goes one numbered step at a time: `make check`, `make clippy`, and
 | 2 | Port changes P1 `refresh` and P2 retiring a changed session, and the session checks they need | Done |
 | 3 | Retarget `gui-lib` to the port; rewrite its tests | Done |
 | 4 | Delete the legacy path; flip the guards; update the contract documents | Done |
-| 5 | Scope the domain and protocol cleanup by inventory | Not started |
+| 5 | Scope the domain and protocol cleanup by inventory | Done |
 | 6 | Live checks and exit | Not started |
 
 The roadmap lists five steps; this phase adds step 2 because the table found

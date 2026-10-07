@@ -31,47 +31,49 @@ pub const NOT_QUERIED: &str = "not queried";
 /// Project `state` into the display model.
 pub fn project(state: &ReceiverState) -> Projected {
     let main = &state.main_zone;
-    let mut snapshot = MainZoneSnapshot::default();
-    snapshot.power = status(&main.power, |power| Some(power_state(*power)));
-    snapshot.input = status(&main.source, |source| Input::new(source.as_str()).ok());
-    snapshot.volume = status(&main.volume, |volume| Some(display_volume(*volume)));
-    snapshot.mute = status(&main.mute, |mute| Some(*mute));
-    snapshot.surround_mode = status(&main.sound_mode, |mode| {
+    let power = status(&main.power, |power| Some(power_state(*power)));
+    let input = status(&main.source, |source| Input::new(source.as_str()).ok());
+    let volume = status(&main.volume, |volume| Some(display_volume(*volume)));
+    let mute = status(&main.mute, |mute| Some(*mute));
+    let surround_mode = status(&main.sound_mode, |mode| {
         SurroundMode::new(mode.id.clone()).ok()
     });
-    let any_current = matches!(snapshot.power, FieldStatus::Value(_))
-        || matches!(snapshot.input, FieldStatus::Value(_))
-        || matches!(snapshot.volume, FieldStatus::Value(_))
-        || matches!(snapshot.mute, FieldStatus::Value(_))
-        || matches!(snapshot.surround_mode, FieldStatus::Value(_));
-    snapshot.freshness = if any_current {
-        Freshness::Live
-    } else if state.epoch.is_none() {
-        Freshness::Invalidated
-    } else {
-        Freshness::Unknown
-    };
-    snapshot.authority = if any_current {
-        StateAuthority::Authoritative
-    } else {
-        StateAuthority::Unconfirmed
+    let any_current = matches!(power, FieldStatus::Value(_))
+        || matches!(input, FieldStatus::Value(_))
+        || matches!(volume, FieldStatus::Value(_))
+        || matches!(mute, FieldStatus::Value(_))
+        || matches!(surround_mode, FieldStatus::Value(_));
+    let (freshness, authority) = freshness_of(any_current, state);
+    let snapshot = MainZoneSnapshot {
+        power,
+        input,
+        volume,
+        mute,
+        surround_mode,
+        freshness,
+        authority,
+        ..MainZoneSnapshot::default()
     };
 
-    let mut zone2 = Zone2Snapshot::default();
-    zone2.power = status(&state.zone2_power, |power| Some(power_state(*power)));
-    zone2.freshness = if matches!(zone2.power, FieldStatus::Value(_)) {
-        Freshness::Live
-    } else if state.epoch.is_none() {
-        Freshness::Invalidated
-    } else {
-        Freshness::Unknown
-    };
-    zone2.authority = if matches!(zone2.power, FieldStatus::Value(_)) {
-        StateAuthority::Authoritative
-    } else {
-        StateAuthority::Unconfirmed
+    let zone2_power = status(&state.zone2_power, |power| Some(power_state(*power)));
+    let (freshness, authority) = freshness_of(matches!(zone2_power, FieldStatus::Value(_)), state);
+    let zone2 = Zone2Snapshot {
+        power: zone2_power,
+        freshness,
+        authority,
     };
     Projected { snapshot, zone2 }
+}
+
+/// What the display model says about how current a projection is.
+fn freshness_of(any_current: bool, state: &ReceiverState) -> (Freshness, StateAuthority) {
+    if any_current {
+        (Freshness::Live, StateAuthority::Authoritative)
+    } else if state.epoch.is_none() {
+        (Freshness::Invalidated, StateAuthority::Unconfirmed)
+    } else {
+        (Freshness::Unknown, StateAuthority::Unconfirmed)
+    }
 }
 
 fn power_state(power: ZonePower) -> PowerState {
