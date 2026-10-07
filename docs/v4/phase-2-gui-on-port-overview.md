@@ -72,10 +72,13 @@ From the roadmap, with the Diagnostics exception that decision D4 proposes:
 
 - No `ReceiverController`, legacy `ReceiverSession`, or `SessionFactory` symbol
   remains.
-- `make visual-baselines` shows no pixel change on macOS. Proposed by D4: the
-  twelve baselines other than `diagnostics-100pct.png` and
+- `make visual-baselines` shows no pixel change on macOS, with the exception
+  decision D4 makes: the twelve baselines other than `diagnostics-100pct.png` and
   `diagnostics-200pct.png` are byte-identical, and those two differ only in the
-  Diagnostics rows D4 names. Until D4 is answered, the roadmap's wording stands.
+  Diagnostics rows D4 names. The exception is in effect, taken as recommended on
+  the owner's instruction to complete the milestone; it is the owner's to confirm
+  when the two captures are reviewed. Without it the roadmap's wording, no pixel
+  change at all, could not be met, because D1 removes the EQ lines.
 - A live GUI session, including a forced receiver reconnect, behaves as in 3.0.0,
   except for the differences the owner accepted in D5.
 - `make check` and `make clippy` pass.
@@ -120,10 +123,12 @@ Merge the branch to main only when both are met.
    GUI change (this branch is such a commit until step 3):
 
    ```text
-   mkdir -p target/visual-captures/before
    tools/capture-visual-baselines.sh target/visual-captures/before
-   make visual-baselines PLATFORM=macos CAPTURES=target/visual-captures/before
+   make visual-baselines PLATFORM=macos CAPTURES=target/visual-captures/before/macos
    ```
+
+   The capture writes under a folder named for the platform, and the comparison
+   reads that folder.
 
    If the comparison fails on unchanged code, the committed baselines are stale.
    Refresh them in a commit of their own first, so a later pixel difference can

@@ -22,27 +22,30 @@ window per scenario, fourteen in all.
 
    ```text
    git switch main
-   mkdir -p target/visual-captures/before
    tools/capture-visual-baselines.sh target/visual-captures/before
-   make visual-baselines PLATFORM=macos CAPTURES=target/visual-captures/before
+   make visual-baselines PLATFORM=macos CAPTURES=target/visual-captures/before/macos
    git switch v4/phase-2-gui-on-port
    ```
+
+   The capture writes under a folder named for the platform (`…/before/macos`),
+   and the comparison reads that folder, so the two directories differ by
+   `macos`.
 
    If this fails, refresh the baselines in a commit of their own on main first.
 
 2. **After the phase.**
 
    ```text
-   mkdir -p target/visual-captures/after
    tools/capture-visual-baselines.sh target/visual-captures/after
-   make visual-baselines PLATFORM=macos CAPTURES=target/visual-captures/after
+   make visual-baselines PLATFORM=macos CAPTURES=target/visual-captures/after/macos
    ```
 
    Expected: the comparison reports `diagnostics-100pct.png` and
    `diagnostics-200pct.png` as different and the other twelve as matching. The two
    differ only in the Diagnostics rows decision D4 removes: the EQ lines and
    "Snapshot authority". Open both captures and confirm that before replacing the
-   baselines with them.
+   baselines with them (copy them from `target/visual-captures/after/macos` to
+   `tests/visual-baselines/macos`).
 
 | Check | Expected | Result |
 | --- | --- | --- |
@@ -50,6 +53,20 @@ window per scenario, fourteen in all.
 | After: twelve match byte for byte | pass | To fill |
 | After: the two Diagnostics captures differ only in the removed rows | pass | To fill |
 | Diagnostics baselines recaptured and committed | done | To fill |
+
+## Transport and CLI
+
+Step 4 changed `AvrSession`, which the CLI and the GUI both use: its unused
+shadow snapshot and a retrying read helper are gone, and `close` is now a method
+of its own. The version 4 milestone 1 gates were last run before that, so run
+them again. Follow the repository's write-safety controls, as in the
+[milestone 1 record](phase-1-live-validation-record.md).
+
+| Check | How | Expected | Result |
+| --- | --- | --- | --- |
+| Read-only live suite | `DENON_X3800H_HOST=HOST make test-live-x3800h` | passes | To fill |
+| Armed, state-restoring controls | `ALLOW_RECEIVER_WRITES=1 DENON_X3800H_HOST=HOST` and a safe-volume value, then `make test-live-x3800h-controls` | passes, and the receiver is left as it was | To fill |
+| CLI read | `make run ARGS="get status"` | prints the state and a readiness line, then exits and frees the receiver's control connection | To fill |
 
 ## Live GUI session
 
