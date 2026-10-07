@@ -3,12 +3,13 @@
 use super::*;
 use iced::widget::{button, column, container, mouse_area, row, slider, text};
 
-/// Denon `MV00` is -80.0 dB and `MV985` is +18.5 dB. Keep the desktop
-/// control in that receiver-visible unit instead of treating the wire code as
-/// a 0–60 UI value.
+/// The X3800H's master volume runs from its minimum, shown at -80.0 dB, to
+/// +18.0 dB. Keep the desktop control in that receiver-visible unit instead of
+/// treating the wire code as a 0–60 UI value.
 pub(crate) const MIN_VOLUME_DB: f32 = -80.0;
-pub(crate) const MAX_VOLUME_DB: f32 = 18.5;
-pub(crate) const VOLUME_HALF_DB_STEPS: u16 = 197;
+pub(crate) const MAX_VOLUME_DB: f32 = 18.0;
+/// Half-dB steps across the slider's range.
+pub(crate) const VOLUME_HALF_DB_STEPS: u16 = 196;
 pub(crate) const VOLUME_INDICATOR_HEIGHT: f32 = 28.0;
 pub(crate) const VOLUME_ROW_HEIGHT: f32 = 90.0;
 pub(crate) const DASHBOARD_INFORMATION_TOP_ROW_HEIGHT: f32 = 235.0;
@@ -49,7 +50,7 @@ pub(crate) fn slider_volume(snapshot: &MainZoneSnapshot) -> Option<f32> {
 
 pub(crate) fn volume_level_for_slider(value: f32) -> Result<denon_avr_domain::VolumeLevel, String> {
     if !value.is_finite() || !(MIN_VOLUME_DB..=MAX_VOLUME_DB).contains(&value) {
-        return Err("Volume must be between -80.0 and +18.5 dB.".into());
+        return Err("Volume must be between -80.0 and +18.0 dB.".into());
     }
     let half_db_steps = (value * 2.0).round() as i16;
     let native_code = ((half_db_steps + 160) * 5) as u16;

@@ -93,7 +93,7 @@ of:
 | C7 | Outcome wording: `Confirmed`, `NoOp`, `Conflict`, `Unsupported`, `Rejected`, `TransportFailure`, `Unconfirmed`, `Cancelled` (`feedback::control_message`) | `OperationSnapshot.status` and `dispatch`. See the [outcome mapping](#outcome-mapping) | Changed (accept, D5). A write that went out but was not confirmed no longer reads "failed to send" |
 | C8 | Sound mode, three controls. `SelectSoundMode { category, mode }` reached the receiver as the mode only. `RecallSoundModeCategory` always dispatched and counted as confirmed only if the reported mode changed. After confirmation the controller paired the category with the reported mode (`confirm_sound_mode_category`), because `MS?` reports a mode and no category | `SoundModeIntent::Select(mode)` and `RecallMovie/Music/Game/PureDirect`. A category recall is `AlreadyObserved` when the current mode is already in that category, and confirmed as soon as the reported mode is in it. The category pairing becomes presentation state: set from the submitted control when the operation is `Completed` or `AlreadyInState`, cleared when the reported mode changes or the epoch changes | Moves for the pairing. Changed for recall: pressing a category the receiver is already in no longer writes. Owner decision D3 |
 | C9 | Input select validates against `ModelCapabilities`; the controller refreshed HTTP information when an input control confirmed | `ReceiverIntent::Source(SourceId)`; the session rejects an unsupported source with `UnsupportedIntent`, and re-reads sound mode after a source change | Kept. The HTTP trigger is R1 |
-| C10 | Volume slider −80.0 to +18.5 dB, in legacy `VolumeLevel` native units. The adapter converted to and from the canonical level (`volume`, `master_volume`) | `MasterVolume::{Minimum, DbHalfSteps}`, −79.5 to +18.0 dB. The slider's −80.0 maps to `Minimum`. In 3.0.0 a +18.5 request was dispatched as +18.0 and then reported unconfirmed, because the controller compared native code 985 with the reported 980 | Moves. The conversions move into the projection and are unit-tested at −80.0, −79.5, 0, +18.0, and +18.5 (clamped to +18.0, so it now confirms) |
+| C10 | Volume slider −80.0 to +18.5 dB, in legacy `VolumeLevel` native units. The adapter converted to and from the canonical level (`volume`, `master_volume`) | `MasterVolume::{Minimum, DbHalfSteps}`, −79.5 to +18.0 dB. The slider's −80.0 maps to `Minimum`. In 3.0.0 a +18.5 request was dispatched as +18.0 and then reported unconfirmed, because the controller compared native code 985 with the reported 980 | Changed (owner's decision): the slider and its label now stop at +18.0 dB, the receiver's maximum, so the top step is real and confirms. The conversions move into the projection and are unit-tested at −80.0, −79.5, 0, and +18.0, and a level above +18.0 clamps. The volume row moves, so the screens that show it need new baselines (D4) |
 | C11 | The first volume press with no known level starts from the safe minimum (`volume_baseline_initialized`) | Unchanged presentation logic; the baseline comes from the current volume field | Kept |
 | C12 | The sound-mode request has a 3 s UI timeout (`SOUND_MODE_CONTROL_TIMEOUT`) and a wait overlay | A GUI timer, independent of the session's 5 s window | Kept, in presentation |
 | C13 | Zone 2 power control: unsupported off the X3800H, a no-op when equal, confirmation by re-querying Zone 2 within 2 s | `ReceiverIntent::Zone2Power` through the gate; one confirmation by the session | Replaced |
@@ -403,7 +403,8 @@ Further:
 - **`ZMON` pause.** The transport pauses after a main-zone power-on as it does
   after `PWON`, now, without waiting for the live check (C4).
 - **Slider range.** The volume slider and its label run to +18.0 dB, the
-  receiver's maximum. Every baseline that shows the volume row changes.
+  receiver's maximum. Every baseline that shows the volume row changes: connected,
+  source-picker, and messages, at both scales.
 - **Launch delay (L3).** Measure live first; both synchronization passes stay.
 - **Display model.** `MainZoneSnapshot` stays; the roadmap records it as debt.
 - **`config/` backups** are ignored by Git.
@@ -433,8 +434,9 @@ nothing. Recommended: accept. Keeping the re-send needs a new sound-mode intent.
 the EQ lines, and "Snapshot authority" has no canonical source. Recommended:
 remove the EQ lines and the authority row, keep the Quick Select names freshness
 row, recapture those two baselines, and amend the exit criterion to read: the
-other twelve baselines are byte-identical, and the two Diagnostics baselines
-differ only in the rows named here.
+other baselines are byte-identical, and the two Diagnostics baselines differ only
+in the rows named here. (The owner's later slider change adds the six baselines
+that show the volume row to the ones that differ; the overview lists them.)
 
 **D5. Accepted differences.** Confirm or veto each:
 
@@ -460,6 +462,10 @@ differ only in the rows named here.
     state (I5).
 11. A favorite click re-reads the stored configuration, so a hand edit to the
     receivers is not overwritten (I7).
+12. The volume slider and its label end at +18.0 dB, the receiver's maximum,
+    where 3.0.0 offered +18.5 dB and sent +18.0 (C10).
+13. A main-zone power-on is followed by the same one-second pause as `PWON`
+    (C4), where 3.0.0 paused in the controller after the confirmation.
 
 ## Live checks
 

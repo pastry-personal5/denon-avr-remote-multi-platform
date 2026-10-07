@@ -73,13 +73,16 @@ From the roadmap, with the Diagnostics exception that decision D4 proposes:
 
 - No `ReceiverController`, legacy `ReceiverSession`, or `SessionFactory` symbol
   remains.
-- `make visual-baselines` shows no pixel change on macOS, with the exception
-  decision D4 makes: the twelve baselines other than `diagnostics-100pct.png` and
-  `diagnostics-200pct.png` are byte-identical, and those two differ only in the
-  Diagnostics rows D4 names. The exception is in effect, taken as recommended on
-  the owner's instruction to complete the milestone; it is the owner's to confirm
-  when the two captures are reviewed. Without it the roadmap's wording, no pixel
-  change at all, could not be met, because D1 removes the EQ lines.
+- `make visual-baselines` shows no pixel change on macOS, with two exceptions
+  that are in effect. D4 removes rows from the Diagnostics screen, so
+  `diagnostics-100pct.png` and `diagnostics-200pct.png` differ only in those
+  rows. The owner also moved the volume slider and its label to end at +18.0 dB,
+  the receiver's maximum, so the screens that show the volume row differ in that
+  row: `connected`, `source-picker`, and `messages`, at both scales. That is eight
+  baselines in all; the other six (`unavailable`, `settings`, `receivers`) are
+  byte-identical. Both exceptions are the owner's to confirm when the captures are
+  reviewed. Without them the roadmap's wording, no pixel change at all, could not
+  be met.
 - A live GUI session, including a forced receiver reconnect, behaves as in 3.0.0,
   except for the differences the owner accepted in D5.
 - `make check` and `make clippy` pass.
@@ -98,8 +101,10 @@ Two criteria are open and need the owner, recorded in the
 [validation record](../archive/v4/phase-2-live-validation-record.md), where every
 result is still **To fill**:
 
-- `make visual-baselines` on macOS: twelve baselines byte-identical, and the two
-  Diagnostics baselines recaptured on purpose (decision D4).
+- `make visual-baselines` on macOS: six baselines byte-identical (`unavailable`,
+  `settings`, `receivers`), and the eight that differ recaptured on purpose: the
+  two Diagnostics baselines (decision D4) and the six that show the volume row,
+  which now ends at +18.0 dB.
 - A live GUI session on the X3800H, including a forced reconnect, with the
   differences the owner accepted in D5.
 

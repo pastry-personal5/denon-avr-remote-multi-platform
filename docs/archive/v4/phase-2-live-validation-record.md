@@ -40,19 +40,26 @@ window per scenario, fourteen in all.
    make visual-baselines PLATFORM=macos CAPTURES=target/visual-captures/after/macos
    ```
 
-   Expected: the comparison reports `diagnostics-100pct.png` and
-   `diagnostics-200pct.png` as different and the other twelve as matching. The two
-   differ only in the Diagnostics rows decision D4 removes: the EQ lines and
-   "Snapshot authority". Open both captures and confirm that before replacing the
+   Expected: the comparison reports eight captures as different and six as
+   matching.
+
+   - `diagnostics-100pct.png` and `diagnostics-200pct.png` differ only in the
+     Diagnostics rows decision D4 removes: the EQ lines and "Snapshot authority".
+   - `connected`, `source-picker`, and `messages`, at both scales, differ only in
+     the volume row, which now ends at +18.0 dB (label and thumb position).
+   - `unavailable`, `settings`, and `receivers` match byte for byte.
+
+   Open the eight differing captures and confirm that before replacing the
    baselines with them (copy them from `target/visual-captures/after/macos` to
    `tests/visual-baselines/macos`).
 
 | Check | Expected | Result |
 | --- | --- | --- |
 | Before: all fourteen match the committed baselines | pass | To fill |
-| After: twelve match byte for byte | pass | To fill |
+| After: `unavailable`, `settings`, and `receivers` match byte for byte | pass | To fill |
 | After: the two Diagnostics captures differ only in the removed rows | pass | To fill |
-| Diagnostics baselines recaptured and committed | done | To fill |
+| After: `connected`, `source-picker`, and `messages` differ only in the volume row | pass | To fill |
+| The eight baselines recaptured and committed | done | To fill |
 
 ## Transport and CLI
 
@@ -83,7 +90,7 @@ they change; follow the repository's write-safety controls.
 | R1 | Change the input, the sound mode, and power; watch the audio, video, and Audyssey panels | Each refreshes within a second or two; they also refresh by themselves about every fifteen seconds | To fill |
 | G2 | With a hand-edited two-receiver file, use "Save and connect" for a new receiver | Both original receivers and the sound mode favorites are still in the file afterwards | To fill |
 | G7 | With the GUI connected, edit the saved host to a second address that reaches the same receiver, and save it through Receivers | The window moves to the new address without a restart, and the receiver never shows two control connections | To fill |
-| Volume | Press "+" and "-" (half-dB steps) and drag the slider to the bottom | Each half step moves the volume by half a dB and is confirmed. At the bottom the receiver shows its minimum and the slider stays at -80.0 dB | To fill |
+| Volume | Press "+" and "-" (half-dB steps), drag the slider to the bottom, then to the top | Each half step moves the volume by half a dB and is confirmed. At the bottom the receiver shows its minimum and the slider stays at -80.0 dB. At the top the receiver reads +18.0 dB and the label says the same | To fill |
 | Launch failure | Start the GUI with the receiver switched off at the network | "RECEIVER UNAVAILABLE" with "Retry Status", not an endless launch screen; retrying after switching it on connects | To fill |
 | Stale click | Change the volume with the remote and click "+" at once | If the window had not yet shown the change, the window says "Receiver state changed before the command; retry" and sends nothing | To fill |
 

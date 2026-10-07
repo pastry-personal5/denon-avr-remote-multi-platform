@@ -110,7 +110,7 @@ impl Gui {
                         row![
                             text("-80.0 dB").size(11).color(design::MUTED),
                             space().width(Length::Fill),
-                            text("+18.5 dB").size(11).color(design::MUTED),
+                            text("+18.0 dB").size(11).color(design::MUTED),
                         ]
                         .width(Length::Fill),
                     ]

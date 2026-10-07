@@ -2491,16 +2491,19 @@ mod tests {
             0
         );
         assert_eq!(volume_level_for_slider(0.0).unwrap().to_native_code(), 800);
+        // The top of the slider is the receiver's maximum, +18.0 dB.
         assert_eq!(
             volume_level_for_slider(MAX_VOLUME_DB)
                 .unwrap()
                 .to_native_code(),
-            985
+            980
         );
-        assert_eq!(
-            volume_level_for_slider(19.0).unwrap_err(),
-            "Volume must be between -80.0 and +18.5 dB."
-        );
+        for above in [18.5, 19.0] {
+            assert_eq!(
+                volume_level_for_slider(above).unwrap_err(),
+                "Volume must be between -80.0 and +18.0 dB."
+            );
+        }
     }
 
     #[test]

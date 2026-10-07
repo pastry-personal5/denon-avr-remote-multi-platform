@@ -363,7 +363,8 @@ mod tests {
             master_volume(level(805)),
             MasterVolume::db_half_steps(1).unwrap()
         );
-        // The slider's +18.5 dB is above the receiver's +18.0 dB and clamps.
+        // A level above the receiver's +18.0 dB, which the slider cannot offer
+        // but a stored level could, clamps to it.
         assert_eq!(
             master_volume(level(985)),
             MasterVolume::db_half_steps(36).unwrap()
