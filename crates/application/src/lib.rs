@@ -1,10 +1,7 @@
 //! Application use cases and ports.
 
 pub mod control;
-pub mod controller;
 pub mod http_information;
-pub mod main_zone_control;
-pub mod main_zone_status;
 pub mod ports;
 pub mod quick_select;
 pub mod receiver_selection;
@@ -17,10 +14,6 @@ pub use control::{
     OperationEvent, OperationEventSource, OperationEvents, OperationSnapshot, OperationStatus,
     OperationSubmission, OperatorAdmin, OperatorControl, Principal, ReceiverCapabilities,
     ReceiverReads, ReceiverSummary, SharedAgentControl, SharedOperatorControl,
-};
-pub use controller::{
-    ControlResult, ControllerConfig, ControllerHandle, Diagnostic, Lifecycle, Observability,
-    ReceiverController, ReceiverEvent, ReceiverSelection,
 };
 pub use service::{ControlService, ServiceConfig, ServiceHandle};
 pub use session_v3::{

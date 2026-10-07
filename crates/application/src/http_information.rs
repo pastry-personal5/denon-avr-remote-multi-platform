@@ -2,8 +2,7 @@
 
 use crate::ports::OperationError;
 use denon_avr_domain::{
-    Freshness, HttpInformationSnapshot, MainZoneControl, ModelCapabilities, ReceiverIntent,
-    ZonePower,
+    Freshness, HttpInformationSnapshot, ModelCapabilities, ReceiverIntent, SystemPower, ZonePower,
 };
 
 pub fn should_read(capabilities: &ModelCapabilities, saved_receiver: bool) -> bool {
@@ -43,18 +42,7 @@ pub fn intent_may_have_changed(intent: &ReceiverIntent) -> bool {
         ReceiverIntent::Source(_)
             | ReceiverIntent::SoundMode(_)
             | ReceiverIntent::MainZonePower(ZonePower::On)
-            | ReceiverIntent::SystemPower(denon_avr_domain::SystemPower::On)
-    )
-}
-
-pub(crate) fn may_have_changed(control: &MainZoneControl) -> bool {
-    matches!(
-        control,
-        MainZoneControl::Input(_)
-            | MainZoneControl::SurroundMode(_)
-            | MainZoneControl::SelectSoundMode { .. }
-            | MainZoneControl::RecallSoundModeCategory(_)
-            | MainZoneControl::Power(denon_avr_domain::PowerState::On)
+            | ReceiverIntent::SystemPower(SystemPower::On)
     )
 }
 
@@ -76,5 +64,26 @@ mod tests {
         assert_eq!(information.freshness, Freshness::Partial);
         assert_eq!(information.generation, 7);
         assert_eq!(result, Err(error));
+    }
+
+    #[test]
+    fn only_controls_that_change_what_the_receiver_reports_trigger_a_read() {
+        use denon_avr_domain::{MasterVolume, MuteState, SoundModeIntent, SourceId};
+        for changes in [
+            ReceiverIntent::Source(SourceId::new("GAME").unwrap()),
+            ReceiverIntent::SoundMode(SoundModeIntent::Auto),
+            ReceiverIntent::MainZonePower(ZonePower::On),
+            ReceiverIntent::SystemPower(SystemPower::On),
+        ] {
+            assert!(intent_may_have_changed(&changes), "{changes:?}");
+        }
+        for keeps in [
+            ReceiverIntent::Volume(MasterVolume::Minimum),
+            ReceiverIntent::Mute(MuteState::On),
+            ReceiverIntent::MainZonePower(ZonePower::Off),
+            ReceiverIntent::Zone2Power(ZonePower::On),
+        ] {
+            assert!(!intent_may_have_changed(&keeps), "{keeps:?}");
+        }
     }
 }

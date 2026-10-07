@@ -15,9 +15,9 @@ workspace edges are enforced by `make boundary`.
 | `crates/protocol` | AVR, HEOS, and AppCommand framing, wire values, and parsing. |
 | `crates/application` | Use-case policy, ports, status/control policy, the control-service port, and the in-process control service with its Operation Gate. |
 | `crates/infrastructure` | SSDP discovery, YAML persistence, TCP/HTTP adapters, and concrete receiver sessions. |
-| `crates/gui-lib` | Iced presentation state, reducers, views, and the GUI controller bridge. |
+| `crates/gui-lib` | Iced presentation state, reducers, views, the projection of receiver state into them, and the bridge to the control-service port. |
 | `apps/cli` | Short-lived CLI composition over the in-process control service. |
-| `apps/desktop` | Native GUI composition, logging, and concrete adapter wiring. |
+| `apps/desktop` | Native GUI composition of the control service, and logging. |
 | `apps/diagnostics` | Explicit, read-only evidence probes. |
 
 ```text
@@ -37,18 +37,21 @@ delivery role requires, but do not create competing architectural contracts.
 
 ## Session boundary
 
-`crates/application/src/ports.rs` is the one definition site for
-`SessionEvent`, `ReceiverSession`, and `SessionFactory`. A `ReceiverSession`
-combines reads, one-shot writes, lifecycle events, and shutdown because one
-owner is necessary to preserve ordering. `SessionFactory` creates a session;
-the application coordinator owns it for its complete lifetime. GUI bridges and
-adapters forward through that boundary rather than owning or duplicating a
-session.
+`CanonicalReceiverSession` (`crates/application/src/session_v3.rs`) is the one
+definition of a receiver session, and the control service owns every session
+through it. A session serializes one receiver connection: it publishes complete
+state with per-field validity, answers reads, and runs one operation at a time
+with the outcome and dispatch certainty the operation lifecycle needs.
+`ReceiverConnector` (in `ports.rs`) opens one. The service connects on demand,
+holds the session while anything uses it, and releases it after an idle time;
+nothing else, including the GUI and CLI, constructs or names a session.
 
-The canonical async receiver service serializes connection lifecycle and
-operations. A reconnect or receiver change invalidates authority from the old
-connection. Uncorrelated receiver lines remain events rather than being
-assigned to a command opportunistically.
+A reconnect or receiver change starts a new epoch, and authority from the old
+connection ends with the old epoch. Uncorrelated receiver lines remain events
+rather than being assigned to a command opportunistically. The 3.0.0 controller,
+its compatibility adapter, and the `ReceiverSession` and `SessionFactory`
+contracts they served were retired in version 4; `make boundary` fails if their
+names return.
 
 ## Control service
 
@@ -156,6 +159,32 @@ empty, and reserved names and unknown versions are refused.
 3.0.0 cannot read the new file. Nothing adds a second receiver through the GUI
 or CLI.
 
+## Desktop GUI
+
+The GUI is a client of the operator port. `PortBridge` is the one task that owns
+the port handle and the state subscription for the selected receiver; commands
+reach it in order, and a control, a refresh, or a supplemental read runs on a task
+of its own so a slow receiver never holds back state. A spawned task hands its
+result to the bridge's loop, which sends any newer state to the window before it
+sends the result, because a window told that a control finished may accept the
+next click. Every event carries the `Select` request it belongs to, and the window
+drops those of a receiver it has left.
+
+`projection::project` turns a `ReceiverState` into the display model the views
+read (`MainZoneSnapshot`, `Zone2Snapshot`). A field is usable only when its
+validity is `Current`; a stale value is shown as unavailable and never acted on.
+A disconnect and a higher epoch are both a reconnect, and a reconnect clears what
+was read over HTTP, asks the service to refresh, and reads again. The audio,
+video, and Audyssey information has no push, so the GUI reads it on a timer and
+after a confirmed control that can change it, one read at a time.
+
+A control carries the value its target field showed, and the bridge refuses it
+if the subscription now shows another, except a power control, which states an
+absolute target. Saving a receiver reads the stored configuration, changes one
+entry, and writes it back, so other receivers and sound mode favorites survive.
+The GUI keeps `MainZoneSnapshot` as its display model; replacing it is a separate
+refactor with its own visual risk.
+
 ## Receiver-correctness invariants
 
 - AVR commands end in one CR; HEOS commands end in CRLF.
@@ -177,16 +206,17 @@ The CLI and desktop executable are composition roots. The CLI composes the
 control service, selects a receiver through the port, submits operations and
 waits for them to finish, and shuts the service down after its short-lived
 command, which closes the receiver connection. It constructs no session and
-names no session type. The desktop executable still reaches the receiver through
-the legacy controller until the GUI moves onto the port. Diagnostics are
+names no session type. The desktop composes the same service and hands the GUI
+only the operator port and a hook that closes it, so the GUI never names the
+service and a later release can replace the supplier without touching the GUI.
+Diagnostics are
 deliberately independent of normal delivery behavior and never issue writes.
 
 `make boundary` checks source imports, prohibits the retired root `src/` tree,
-validates the resolved Cargo workspace edges, ensures the session contracts
-have exactly one definition, requires that only the Operation Gate and the
-session implementations call a session's `operate` (the legacy compatibility
-adapter is the one remaining exception), and keeps the CLI from naming a
-session type. Run it whenever a package dependency or boundary
+validates the resolved Cargo workspace edges, ensures the receiver-session
+contract has exactly one definition and that the retired controller names do not
+return, requires that only the Operation Gate and the session implementation
+call a session's `operate`, and keeps the CLI from naming a session type. Run it whenever a package dependency or boundary
 changes. Current engineering policy and verification gates are in
 [docs/contributing.md](docs/contributing.md) and
 [docs/development.md](docs/development.md).

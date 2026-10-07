@@ -175,8 +175,8 @@ dashboard (it was never rendered).
 | I4 | A saved receiver that could not be reached at launch left the launch screen on for ever, because only a successful connection opened it. | Fixed. A failed connection opens the unavailable screen with its retry |
 | I5 | The source catalog was asked for at every state while its freshness was unknown, so a receiver that could not answer would be asked at the rate of the state updates. | Changed. The GUI asks once per connection on its own; the picker and the refresh button still ask on demand |
 | I6 | The HTTP information timer, the HTTP information triggers, and the Quick Select name read are driven by the GUI (R1 to R3) and are tested for ordering, one read at a time, and dropping a read that finishes after a reconnect. | As designed |
-| I8 | A control was reported finished from the task that ran it, while state reached the window from the loop that watches the subscription, in no fixed order. A report could reach the window before the state it produced, and the next click would be built on a stale display and refused as a conflict. 3.0.0 sent the snapshot first on one channel. | Fixed. A task hands its result to the loop, which forwards any newer state before the report. A single-threaded test with a port that writes and resolves in one poll failed on its first round before the fix |
 | I7 | The favorites save re-reads the stored configuration and replaces only the favorites, so a hand edit to the receivers is not overwritten by a favorite click (G3 only promised the in-memory copy). | Changed (improvement) |
+| I8 | A control was reported finished from the task that ran it, while state reached the window from the loop that watches the subscription, in no fixed order. A report could reach the window before the state it produced, and the next click would be built on a stale display and refused as a conflict. 3.0.0 sent the snapshot first on one channel. | Fixed. A task hands its result to the loop, which forwards any newer state before the report. A single-threaded test with a port that writes and resolves in one poll failed on its first round before the fix |
 
 ## Port changes
 
@@ -298,8 +298,37 @@ Step 4 deletes a symbol only when this list is empty for it.
 | `StatusGateway`, `ControlGateway`, `AsyncStatusGateway`, `AsyncControlGateway` | `main_zone_control.rs`, `main_zone_status.rs`, `avr_session.rs` | Deleted with those modules |
 | `execute_main_zone_control_async`, `query_main_zone_status*` | only each other | Deleted |
 | `MainZoneControl`, `MainZoneEvent` | `protocol/src/avr/command.rs` and `response.rs`, `domain/capabilities.rs` | Step 5 inventory. Kept while the protocol crate uses them |
-| `MainZoneSnapshot`, `FieldStatus` | `infrastructure/avr_session.rs` (the transport keeps a snapshot), `domain/http_information.rs`, `protocol/http_information.rs` | Step 5 inventory. `MainZoneSnapshot` leaves the GUI; the transport and HTTP types may keep what they use |
+| `MainZoneSnapshot`, `FieldStatus` | `gui-lib` (the display model), `domain/http_information.rs`, `protocol/http_information.rs` | Kept. The GUI display model stays (step 3). The transport's own copy was write-only once the legacy impls went, and is removed (step 4) |
 | `QuickSelectRecallOutcome`, `EqStatus`, `QuickSelectEqCapabilities`, and the recall and EQ code in `AvrSession` | `gui-lib`, `application/quick_select.rs`, `infrastructure/avr_session.rs` | Deleted (D1) |
+
+## Step 4 outcomes
+
+The legacy path is deleted, and `make boundary` now fails if it returns.
+
+- **Deleted:** `ReceiverController` and its configuration, handle, events, and
+  results (`controller.rs`); `main_zone_control.rs` and `main_zone_status.rs`;
+  `CanonicalSessionFactory` and `CanonicalSessionAdapter` (`canonical_factory.rs`);
+  the `SessionEvent`, `ReceiverSession`, `SessionFactory`, `StatusGateway`,
+  `ControlGateway`, `AsyncStatusGateway`, `AsyncControlGateway`, and
+  `SourceCatalogReader` traits; and the `ReceiverSession` implementation of
+  `AvrSession`, with the Quick Select recall and EQ status code in it (D1).
+- **`AvrSession` stays as the transport.** It keeps `request`, `dispatch`,
+  `next_event`, `connection_generation`, and now an inherent `close`. Its
+  shadow `MainZoneSnapshot` was updated by every line and read by nothing once the
+  legacy impls were gone, so it and the code that fed it are removed; no event,
+  timing, or write path changed. `request_query`, a retrying read that only the
+  legacy path used, is removed with its test.
+- **Application helpers kept:** the HTTP information, source catalog, and Quick
+  Select name policy the GUI calls (`should_read`, `intent_may_have_changed`,
+  `merge_refresh`, `apply_names`), each now public and tested.
+- **Guards:** the single-definition rule names `CanonicalReceiverSession` in
+  `session_v3.rs`; the retired names are forbidden in `crates` and `apps`; and
+  `canonical_factory.rs` is gone from the `operate` allowlist. Each rule was
+  checked by adding a violation and seeing it fail. `AGENTS.md` now says the
+  contract is in `session_v3.rs`, which avoids moving a trait that every import
+  in infrastructure and the CLI names.
+- **Live tests:** `make test-live-x3800h` and `-controls` are ordinary `--test`
+  targets, compiled by `make check`, and they use no legacy symbol.
 
 ## Guard changes
 
@@ -375,6 +404,15 @@ differ only in the rows named here.
 6. A receiver saved again under its old name with a new address reconnects at
    the new address without a restart (G7, P2). This restores 3.0.0 behavior
    that the port would otherwise lose, so it is listed for completeness.
+7. A half-dB volume step now asks for the half step; 3.0.0 rounded it down to the
+   whole dB (I2).
+8. Volume at `Minimum` shows at the bottom of the slider, not at 0.0 dB (I3).
+9. An unreachable receiver at launch opens the unavailable screen and its retry,
+   not a launch screen that never ends (I4).
+10. The source catalog is asked for once per connection on its own, not at every
+    state (I5).
+11. A favorite click re-reads the stored configuration, so a hand edit to the
+    receivers is not overwritten (I7).
 
 ## Live checks
 

@@ -5,7 +5,6 @@
 
 pub mod app_command_http;
 mod avr_session;
-mod canonical_factory;
 pub mod config_yaml;
 pub mod discovery_ssdp;
 pub mod http_information;
@@ -17,7 +16,6 @@ pub mod x3800h_session;
 
 pub use app_command_http::{AppCommandExchange, AppCommandHttpClient, RawHttpResponse};
 pub use avr_session::AvrSessionConfig;
-pub use canonical_factory::CanonicalSessionFactory;
 pub use config_yaml::YamlConfigRepository;
 pub use discovery_ssdp::SsdpDiscoveryAdapter;
 pub use http_information::{HttpInformationHttpClient, X3800H_HTTP_PORT};

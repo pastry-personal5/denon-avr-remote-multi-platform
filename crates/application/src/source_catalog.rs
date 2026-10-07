@@ -2,20 +2,8 @@
 
 use crate::ports::{OperationError, OperationErrorKind};
 use denon_avr_domain::{
-    CatalogResponseEvidence, Freshness, ModelCapabilities, SourceCatalog, SourceCatalogObservation,
+    CatalogResponseEvidence, Freshness, SourceCatalog, SourceCatalogObservation,
 };
-
-pub fn ensure_supported(capabilities: &ModelCapabilities) -> Result<(), OperationError> {
-    if capabilities.source_catalog_read {
-        Ok(())
-    } else {
-        Err(OperationError::new(
-            OperationErrorKind::Unsupported,
-            "source catalog",
-            "selected receiver has no validated source catalog capability",
-        ))
-    }
-}
 
 pub fn merge_refresh(
     previous: SourceCatalog,

@@ -1,26 +1,12 @@
 //! Persistent asynchronous AVR TCP sessions.
 
-use denon_avr_application::ports::{
-    AsyncControlGateway, AsyncStatusGateway, BoxFuture, OperationError, OperationErrorKind,
-    ReceiverSession, SessionEvent, SourceCatalogReader,
-};
-use denon_avr_domain::{
-    AudioContextSnapshot, Confidence, ConnectionState, EqEvidence, EqFeature, EqState, EqStatus,
-    FieldError, FieldErrorKind, Freshness, HttpInformationSnapshot, MainZoneEvent, MainZoneField,
-    MainZoneSnapshot, MainZoneValue, Observed, PowerState, QuickSelectNameObservation,
-    QuickSelectRecallConfirmation, QuickSelectSlot, RawObservation, StateAuthority, SurroundMode,
-    Zone2Control,
-};
+use denon_avr_application::ports::{OperationError, OperationErrorKind};
 use denon_avr_protocol::avr::AvrCommand;
-use denon_avr_protocol::avr::{eq_status_query, parse_eq_status, quick_select_command};
-use denon_avr_protocol::{
-    get_command_family, parse_main_zone_event, parse_main_zone_response, query_command,
-    response_matches,
-};
+use denon_avr_protocol::{get_command_family, response_matches};
 use std::fmt;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
@@ -133,9 +119,6 @@ pub struct AvrSession {
     events: mpsc::Receiver<AvrSessionEvent>,
     generation: Arc<AtomicU64>,
     task_handle: JoinHandle<()>,
-    source_catalog_host: String,
-    source_catalog_port: u16,
-    source_catalog_timeout: Duration,
 }
 
 impl Drop for AvrSession {
@@ -152,13 +135,10 @@ impl AvrSession {
         address: SocketAddr,
         config: AvrSessionConfig,
     ) -> Result<Self, AvrSessionError> {
-        let source_catalog_port = config.app_command_port;
-        let source_catalog_timeout = config.response_timeout;
         let reader = connect_socket(address, &config).await?;
         let (requests, request_rx) = mpsc::channel(16);
         let (event_tx, events) = mpsc::channel(32);
         let generation = Arc::new(AtomicU64::new(0));
-        let snapshot = Arc::new(Mutex::new(MainZoneSnapshot::default()));
         let task_handle = tokio::spawn(run_session(
             address,
             config,
@@ -166,16 +146,12 @@ impl AvrSession {
             request_rx,
             event_tx,
             Arc::clone(&generation),
-            Arc::clone(&snapshot),
         ));
         Ok(Self {
             requests,
             events,
             generation,
             task_handle,
-            source_catalog_host: address.ip().to_string(),
-            source_catalog_port,
-            source_catalog_timeout,
         })
     }
 
@@ -212,20 +188,6 @@ impl AvrSession {
         result.await.map_err(|_| AvrSessionError::SessionStopped)?
     }
 
-    /// Send a read-only query again when the connection was lost while it was
-    /// being serviced. Repeating actions after reconnect could be unsafe, so
-    /// this helper is intentionally separate from [`Self::request`].
-    pub async fn request_query(
-        &self,
-        command: impl Into<String>,
-    ) -> Result<String, AvrSessionError> {
-        let command = command.into();
-        match self.request(command.clone()).await {
-            Err(error) if retryable_query_error(&error) => self.request(command).await,
-            result => result,
-        }
-    }
-
     pub async fn next_event(&mut self) -> Option<AvrSessionEvent> {
         self.events.recv().await
     }
@@ -238,416 +200,26 @@ impl AvrSession {
     }
 }
 
-impl AsyncStatusGateway for AvrSession {
-    fn query_field(
-        &mut self,
-        field: MainZoneField,
-    ) -> BoxFuture<'_, Result<MainZoneValue, OperationError>> {
-        Box::pin(async move {
-            let command = query_command(field);
-            let response = self
-                .request_query(command.as_str())
-                .await
-                .map_err(OperationError::from)?;
-            parse_main_zone_response(field, &response).map_err(|error| {
-                let kind = if matches!(
-                    error,
-                    denon_avr_protocol::avr::AvrProtocolError::Unavailable(_)
-                ) {
-                    OperationErrorKind::Unavailable
-                } else {
-                    OperationErrorKind::Malformed
-                };
-                OperationError::new(kind, "parsing AVR response", error.to_string())
-            })
-        })
-    }
-
-    fn connection_generation(&self) -> u64 {
-        AvrSession::connection_generation(self)
-    }
-
-    fn next_event(&mut self) -> BoxFuture<'_, Result<SessionEvent, OperationError>> {
-        Box::pin(async move {
-            match AvrSession::next_event(self).await {
-                Some(AvrSessionEvent::Connected | AvrSessionEvent::Reconnected) => {
-                    Ok(SessionEvent::Connection(ConnectionState::Connected))
-                }
-                Some(AvrSessionEvent::Disconnected { .. }) => {
-                    Ok(SessionEvent::Connection(ConnectionState::Reconnecting))
-                }
-                Some(AvrSessionEvent::Line(line)) => {
-                    if let Ok(power) = denon_avr_protocol::avr::parse_zone2_power(&line) {
-                        return Ok(SessionEvent::Zone2Power(power));
-                    }
-                    Ok(match parse_main_zone_event(&line) {
-                        MainZoneEvent::Unknown(_) => {
-                            SessionEvent::MainZone(MainZoneEvent::Unknown(line))
-                        }
-                        event => SessionEvent::MainZone(event),
-                    })
-                }
-                None => Err(OperationError::new(
-                    OperationErrorKind::Stopped,
-                    "receiving AVR event",
-                    "session event stream ended",
-                )),
-            }
-        })
-    }
-
-    fn query_audio_context(&mut self) -> BoxFuture<'_, AudioContextSnapshot> {
-        Box::pin(async move {
-            let mut snapshot = AudioContextSnapshot::default();
-            for command in ["SI?", "SD?", "DC?", "MS?", "CV?"] {
-                let started = std::time::Instant::now();
-                let result = self.request_query(command).await;
-                snapshot.record_raw(
-                    command,
-                    RawObservation {
-                        response: result.as_ref().ok().cloned(),
-                        error: result.as_ref().err().map(ToString::to_string),
-                        elapsed_millis: started.elapsed().as_millis(),
-                    },
-                );
-                match (command, result) {
-                    ("SI?", Ok(value)) => {
-                        if let Some(value) = value.strip_prefix("SI").filter(|v| !v.is_empty()) {
-                            snapshot.input_selection =
-                                Observed::known(value.to_owned(), "SI?", Confidence::Observed);
-                        } else {
-                            snapshot.input_selection = Observed::malformed("SI?");
-                        }
-                    }
-                    ("SD?", Ok(value)) => {
-                        if let Some(value) = value.strip_prefix("SD").filter(|v| !v.is_empty()) {
-                            snapshot.input_mode =
-                                Observed::known(value.to_owned(), "SD?", Confidence::Observed);
-                        } else {
-                            snapshot.input_mode = Observed::malformed("SD?");
-                        }
-                    }
-                    ("DC?", Ok(value)) => {
-                        if let Some(value) = value.strip_prefix("DC").filter(|v| !v.is_empty()) {
-                            snapshot.digital_mode =
-                                Observed::known(value.to_owned(), "DC?", Confidence::Observed);
-                        } else {
-                            snapshot.digital_mode = Observed::malformed("DC?");
-                        }
-                    }
-                    ("MS?", Ok(value)) => {
-                        if let Some(value) = value.strip_prefix("MS").filter(|v| !v.is_empty()) {
-                            if let Ok(value) = SurroundMode::new(value) {
-                                snapshot.current_mode =
-                                    Observed::known(value, "MS?", Confidence::Observed);
-                            } else {
-                                snapshot.current_mode = Observed::malformed("MS?");
-                            }
-                        } else {
-                            snapshot.current_mode = Observed::malformed("MS?");
-                        }
-                    }
-                    ("CV?", Ok(value)) => {
-                        if let Some(value) = value.strip_prefix("CV").filter(|v| !v.is_empty()) {
-                            snapshot.channel_volume =
-                                Observed::known(value.to_owned(), "CV?", Confidence::Observed);
-                        } else {
-                            snapshot.channel_volume = Observed::malformed("CV?");
-                        }
-                    }
-                    (_, Err(error)) => {
-                        let field = FieldError {
-                            kind: FieldErrorKind::Unavailable,
-                            message: error.to_string(),
-                        };
-                        match command {
-                            "SD?" => {
-                                snapshot.input_mode = Observed::unavailable(field.clone(), "SD?")
-                            }
-                            "DC?" => {
-                                snapshot.digital_mode = Observed::unavailable(field.clone(), "DC?")
-                            }
-                            "MS?" => {
-                                snapshot.current_mode = Observed::unavailable(field.clone(), "MS?")
-                            }
-                            "CV?" => {
-                                snapshot.channel_volume =
-                                    Observed::unavailable(field.clone(), "CV?")
-                            }
-                            "SI?" => snapshot.input_selection = Observed::unavailable(field, "SI?"),
-                            _ => {}
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            snapshot
-        })
-    }
-}
-
-impl AsyncControlGateway for AvrSession {
-    fn execute_once(
-        &mut self,
-        control: denon_avr_domain::MainZoneControl,
-    ) -> BoxFuture<'_, Result<(), OperationError>> {
-        Box::pin(async move {
-            let command = denon_avr_protocol::avr::encode_control(&control).map_err(|error| {
-                OperationError::new(
-                    OperationErrorKind::Malformed,
-                    "encoding control command",
-                    error.to_string(),
-                )
-            })?;
-            self.dispatch(command.as_str())
-                .await
-                .map_err(OperationError::from)
-        })
-    }
-}
-
-impl SourceCatalogReader for AvrSession {
-    fn refresh_source_catalog(
-        &mut self,
-    ) -> BoxFuture<'_, Result<denon_avr_domain::SourceCatalogObservation, OperationError>> {
-        <Self as ReceiverSession>::refresh_source_catalog(self)
-    }
-}
-
 impl AvrSession {
-    pub fn refresh_quick_select_names(
-        &mut self,
-    ) -> BoxFuture<'_, Result<QuickSelectNameObservation, OperationError>> {
-        let endpoint = denon_avr_domain::ReceiverEndpoint {
-            host: self.source_catalog_host.clone(),
-            port: self.source_catalog_port,
-        };
-        let timeout = self.source_catalog_timeout;
-        let generation = self.connection_generation();
-        Box::pin(async move {
-            tokio::task::spawn_blocking(move || {
-                crate::QuickSelectNamesHttpClient::new(endpoint, timeout)
-                    .and_then(|client| client.read(generation))
-            })
-            .await
-            .map_err(|error| {
-                OperationError::new(
-                    OperationErrorKind::Stopped,
-                    "Quick Select names",
-                    error.to_string(),
-                )
-            })?
-            .map_err(|error| {
-                OperationError::new(
-                    OperationErrorKind::Connection,
-                    "Quick Select names",
-                    error.to_string(),
-                )
-            })
-        })
-    }
-}
-
-impl ReceiverSession for AvrSession {
-    fn query_field(
-        &mut self,
-        field: MainZoneField,
-    ) -> BoxFuture<'_, Result<MainZoneValue, OperationError>> {
-        <Self as AsyncStatusGateway>::query_field(self, field)
-    }
-
-    fn execute_once(
-        &mut self,
-        control: denon_avr_domain::MainZoneControl,
-    ) -> BoxFuture<'_, Result<(), OperationError>> {
-        <Self as AsyncControlGateway>::execute_once(self, control)
-    }
-
-    fn query_zone2_power(&mut self) -> BoxFuture<'_, Result<PowerState, OperationError>> {
-        Box::pin(async move {
-            let response = self
-                .request_query("Z2?")
-                .await
-                .map_err(OperationError::from)?;
-            denon_avr_protocol::avr::parse_zone2_power(&response).map_err(|error| {
-                OperationError::new(
-                    OperationErrorKind::Malformed,
-                    "parsing Zone 2 power",
-                    error.to_string(),
-                )
-            })
-        })
-    }
-
-    fn execute_zone2_once(
-        &mut self,
-        control: Zone2Control,
-    ) -> BoxFuture<'_, Result<(), OperationError>> {
-        Box::pin(async move {
-            let command =
-                denon_avr_protocol::avr::encode_zone2_control(control).map_err(|error| {
-                    OperationError::new(
-                        OperationErrorKind::Malformed,
-                        "encoding Zone 2 control",
-                        error.to_string(),
-                    )
-                })?;
-            self.dispatch(command.as_str())
-                .await
-                .map_err(OperationError::from)
-        })
-    }
-
-    fn next_event(&mut self) -> BoxFuture<'_, Result<SessionEvent, OperationError>> {
-        Box::pin(async move { <Self as AsyncStatusGateway>::next_event(self).await })
-    }
-
-    fn close(&mut self) -> BoxFuture<'_, Result<(), OperationError>> {
-        Box::pin(async {
-            let task_handle =
-                std::mem::replace(&mut self.task_handle, tokio::task::spawn(async {}));
-            task_handle.abort();
-            match task_handle.await {
-                Ok(()) => Ok(()),
-                Err(join_error) => {
-                    // Treat normal cancellation as successful closure
-                    if join_error.is_cancelled() {
-                        Ok(())
-                    } else {
-                        Err(OperationError::new(
-                            OperationErrorKind::Stopped,
-                            "session shutdown",
-                            format!("unexpected task join error: {}", join_error),
-                        ))
-                    }
+    /// Stop the transport task and wait for it to end. Closing twice is harmless.
+    pub async fn close(&mut self) -> Result<(), OperationError> {
+        let task_handle = std::mem::replace(&mut self.task_handle, tokio::task::spawn(async {}));
+        task_handle.abort();
+        match task_handle.await {
+            Ok(()) => Ok(()),
+            Err(join_error) => {
+                // Treat normal cancellation as successful closure.
+                if join_error.is_cancelled() {
+                    Ok(())
+                } else {
+                    Err(OperationError::new(
+                        OperationErrorKind::Stopped,
+                        "session shutdown",
+                        format!("unexpected task join error: {}", join_error),
+                    ))
                 }
             }
-        })
-    }
-
-    fn query_audio_context(&mut self) -> BoxFuture<'_, AudioContextSnapshot> {
-        <Self as AsyncStatusGateway>::query_audio_context(self)
-    }
-
-    fn refresh_http_information(
-        &mut self,
-    ) -> BoxFuture<'_, Result<HttpInformationSnapshot, OperationError>> {
-        let host = self.source_catalog_host.clone();
-        let timeout = self.source_catalog_timeout;
-        let generation = self.generation.load(Ordering::SeqCst);
-        Box::pin(async move {
-            tokio::task::spawn_blocking(move || {
-                crate::HttpInformationHttpClient::new(host, timeout)?.read(generation)
-            })
-            .await
-            .map_err(|error| {
-                OperationError::new(
-                    OperationErrorKind::Stopped,
-                    "HTTP information",
-                    error.to_string(),
-                )
-            })?
-            .map_err(|error| {
-                OperationError::new(
-                    OperationErrorKind::Connection,
-                    "HTTP information",
-                    error.to_string(),
-                )
-            })
-        })
-    }
-
-    fn recall_quick_select(
-        &mut self,
-        slot: QuickSelectSlot,
-    ) -> BoxFuture<'_, Result<QuickSelectRecallConfirmation, OperationError>> {
-        Box::pin(async move {
-            self.request(quick_select_command(slot).as_str())
-                .await
-                .map(|_| QuickSelectRecallConfirmation::Dispatched)
-                .map_err(OperationError::from)
-        })
-    }
-
-    fn refresh_quick_select_names(
-        &mut self,
-    ) -> BoxFuture<'_, Result<denon_avr_domain::QuickSelectNameObservation, OperationError>> {
-        self.refresh_quick_select_names()
-    }
-
-    fn query_eq_status(&mut self) -> BoxFuture<'_, Result<EqStatus, OperationError>> {
-        Box::pin(async move {
-            let mut status = EqStatus::default();
-            for feature in EqFeature::ALL {
-                let started = std::time::Instant::now();
-                let result = self.request_query(eq_status_query(feature).as_str()).await;
-                let (state, response, error) = match result {
-                    Ok(response) => match parse_eq_status(feature, &response) {
-                        Ok(state) => (state, Some(response), None),
-                        Err(error) => (EqState::Unknown, Some(response), Some(error.to_string())),
-                    },
-                    Err(error) => {
-                        let message = error.to_string();
-                        (EqState::Unavailable(message.clone()), None, Some(message))
-                    }
-                };
-                status.record_evidence(EqEvidence {
-                    feature,
-                    response,
-                    error,
-                    elapsed_millis: started.elapsed().as_millis(),
-                    preserved_previous: false,
-                });
-                match feature {
-                    EqFeature::MultEqXt32 => status.multeq_xt32 = state,
-                    EqFeature::DynamicEq => status.dynamic_eq = state,
-                    EqFeature::DynamicEqReferenceLevel => status.dynamic_eq_reference_level = state,
-                    EqFeature::DynamicVolume => status.dynamic_volume = state,
-                    EqFeature::AudysseyLfc => status.audyssey_lfc = state,
-                    EqFeature::DiracLive => status.dirac_live = state,
-                }
-            }
-            status.generation = self.connection_generation();
-            status.freshness = if status.evidence.iter().any(|item| item.error.is_some()) {
-                Freshness::Partial
-            } else {
-                Freshness::Live
-            };
-            Ok(status)
-        })
-    }
-
-    fn refresh_source_catalog(
-        &mut self,
-    ) -> BoxFuture<'_, Result<denon_avr_domain::SourceCatalogObservation, OperationError>> {
-        let endpoint = denon_avr_domain::ReceiverEndpoint {
-            host: self.source_catalog_host.clone(),
-            port: self.source_catalog_port,
-        };
-        let timeout = self.source_catalog_timeout;
-        let generation = self.connection_generation();
-        Box::pin(async move {
-            tokio::task::spawn_blocking(move || {
-                crate::SourceCatalogHttpClient::new(endpoint, timeout)
-                    .and_then(|client| client.read(generation))
-            })
-            .await
-            .map_err(|error| {
-                OperationError::new(
-                    OperationErrorKind::Stopped,
-                    "reading source catalog",
-                    error.to_string(),
-                )
-            })?
-            .map_err(|error| {
-                let kind = match error.kind() {
-                    std::io::ErrorKind::TimedOut => OperationErrorKind::Timeout,
-                    std::io::ErrorKind::InvalidData => OperationErrorKind::Malformed,
-                    _ => OperationErrorKind::Connection,
-                };
-                OperationError::new(kind, "reading source catalog", error.to_string())
-            })
-        })
+        }
     }
 }
 
@@ -670,7 +242,6 @@ async fn run_session(
     mut requests: mpsc::Receiver<Request>,
     events: mpsc::Sender<AvrSessionEvent>,
     generation: Arc<AtomicU64>,
-    snapshot: Arc<Mutex<MainZoneSnapshot>>,
 ) {
     info!(%address, "AVR session transport started");
     if !publish_event(&events, AvrSessionEvent::Connected).await {
@@ -679,45 +250,37 @@ async fn run_session(
     let mut last_transmission = None;
     let mut power_on_quiet_until = None;
     loop {
-        let mut request = match next_request(
-            &mut reader,
-            &mut requests,
-            &events,
-            config.max_line_length,
-            &snapshot,
-        )
-        .await
-        {
-            Ok(Some(request)) => request,
-            Ok(None) => return,
-            Err(message) => {
-                warn!(%message, "AVR transport failed while waiting for a request");
-                invalidate_snapshot(&snapshot);
-                if !publish_event(
-                    &events,
-                    AvrSessionEvent::Disconnected {
-                        generation: generation.load(Ordering::Acquire),
-                        message,
-                    },
-                )
-                .await
-                {
-                    return;
-                }
-                match reconnect(address, &config, &events, &generation).await {
-                    Ok(new_reader) => {
-                        info!(%address, "AVR transport reconnected");
-                        reader = new_reader;
-                        generation.fetch_add(1, Ordering::AcqRel);
-                        if !publish_event(&events, AvrSessionEvent::Reconnected).await {
-                            return;
-                        }
-                        continue;
+        let mut request =
+            match next_request(&mut reader, &mut requests, &events, config.max_line_length).await {
+                Ok(Some(request)) => request,
+                Ok(None) => return,
+                Err(message) => {
+                    warn!(%message, "AVR transport failed while waiting for a request");
+                    if !publish_event(
+                        &events,
+                        AvrSessionEvent::Disconnected {
+                            generation: generation.load(Ordering::Acquire),
+                            message,
+                        },
+                    )
+                    .await
+                    {
+                        return;
                     }
-                    Err(_) => return,
+                    match reconnect(address, &config, &events, &generation).await {
+                        Ok(new_reader) => {
+                            info!(%address, "AVR transport reconnected");
+                            reader = new_reader;
+                            generation.fetch_add(1, Ordering::AcqRel);
+                            if !publish_event(&events, AvrSessionEvent::Reconnected).await {
+                                return;
+                            }
+                            continue;
+                        }
+                        Err(_) => return,
+                    }
                 }
-            }
-        };
+            };
         let family = get_command_family(request.command.as_str());
         let command_bytes = request.command.as_bytes();
         let now = tokio::time::Instant::now();
@@ -758,7 +321,6 @@ async fn run_session(
             if let Some(dispatched) = request.dispatched.take() {
                 let _ = dispatched.send(Err(error));
             }
-            invalidate_snapshot(&snapshot);
             if !publish_event(
                 &events,
                 AvrSessionEvent::Disconnected {
@@ -798,12 +360,10 @@ async fn run_session(
             config.response_timeout,
             config.max_line_length,
             &events,
-            &snapshot,
         )
         .await;
         match result {
             Ok(response) => {
-                apply_response(&snapshot, family, &response);
                 let _ = response_sender.send(Ok(response));
             }
             Err(error @ AvrSessionError::Timeout(_))
@@ -812,7 +372,6 @@ async fn run_session(
                 let message = error.to_string();
                 warn!(%message, "AVR response stream failed");
                 let _ = response_sender.send(Err(error));
-                invalidate_snapshot(&snapshot);
                 if !publish_event(
                     &events,
                     AvrSessionEvent::Disconnected {
@@ -848,7 +407,6 @@ async fn next_request(
     requests: &mut mpsc::Receiver<Request>,
     events: &mpsc::Sender<AvrSessionEvent>,
     max_line_length: usize,
-    snapshot: &Arc<Mutex<MainZoneSnapshot>>,
 ) -> Result<Option<Request>, String> {
     loop {
         tokio::select! {
@@ -858,7 +416,6 @@ async fn next_request(
                     Ok(line) => {
                         let text = frame_text(&line, max_line_length)
                             .map_err(|error| error.to_string())?;
-                        apply_line(snapshot, &text, StateAuthority::Event);
                         if !publish_event(events, AvrSessionEvent::Line(text)).await {
                             return Ok(None);
                         }
@@ -876,7 +433,6 @@ async fn read_response(
     timeout: Duration,
     max_line_length: usize,
     events: &mpsc::Sender<AvrSessionEvent>,
-    snapshot: &Arc<Mutex<MainZoneSnapshot>>,
 ) -> Result<String, AvrSessionError> {
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
@@ -893,7 +449,6 @@ async fn read_response(
         if response_matches(family, &text) {
             return Ok(text);
         }
-        apply_line(snapshot, &text, StateAuthority::Event);
         if !publish_event(events, AvrSessionEvent::Line(text)).await {
             return Err(AvrSessionError::SessionStopped);
         }
@@ -948,84 +503,12 @@ fn frame_text(line: &[u8], max_line_length: usize) -> Result<String, AvrSessionE
         .map_err(|_| AvrSessionError::MalformedFrame("AVR line is not valid UTF-8".to_owned()))
 }
 
-fn apply_line(snapshot: &Arc<Mutex<MainZoneSnapshot>>, line: &str, authority: StateAuthority) {
-    if line == "MV---" {
-        if let Ok(mut state) = snapshot.lock() {
-            state.set_error(
-                MainZoneField::Volume,
-                FieldError {
-                    kind: FieldErrorKind::Unavailable,
-                    message: "volume is unavailable".into(),
-                },
-            );
-        }
-        return;
-    }
-    apply_event(snapshot, line, authority);
-}
-
-fn apply_response(snapshot: &Arc<Mutex<MainZoneSnapshot>>, family: &str, response: &str) {
-    let field = match family {
-        "ZM" => MainZoneField::Power,
-        "SI" => MainZoneField::Input,
-        "MV" => MainZoneField::Volume,
-        "MU" => MainZoneField::Mute,
-        "MS" => MainZoneField::SurroundMode,
-        _ => return,
-    };
-    match denon_avr_protocol::avr::parse_main_zone_response(field, response) {
-        Ok(value) => {
-            if let Ok(mut state) = snapshot.lock() {
-                state.set_value(value, StateAuthority::Authoritative);
-            }
-        }
-        Err(denon_avr_protocol::avr::AvrProtocolError::Unavailable(message)) => {
-            if let Ok(mut state) = snapshot.lock() {
-                state.set_error(
-                    field,
-                    FieldError {
-                        kind: FieldErrorKind::Unavailable,
-                        message: message.into(),
-                    },
-                );
-            }
-        }
-        Err(_) => {}
-    }
-}
-
-fn apply_event(snapshot: &Arc<Mutex<MainZoneSnapshot>>, line: &str, authority: StateAuthority) {
-    if let Ok(mut state) = snapshot.lock() {
-        match authority {
-            StateAuthority::Event => {
-                state.apply_event(denon_avr_protocol::avr::parse_main_zone_event(line))
-            }
-            StateAuthority::Authoritative => state
-                .apply_authoritative_event(denon_avr_protocol::avr::parse_main_zone_event(line)),
-            StateAuthority::Unconfirmed => {}
-        }
-    }
-}
-
-fn retryable_query_error(error: &AvrSessionError) -> bool {
-    matches!(
-        error,
-        AvrSessionError::Disconnected(_) | AvrSessionError::Timeout(_)
-    )
-}
-
-fn invalidate_snapshot(snapshot: &Arc<Mutex<MainZoneSnapshot>>) {
-    if let Ok(mut state) = snapshot.lock() {
-        state.invalidate();
-    }
-}
-
 async fn publish_event(events: &mpsc::Sender<AvrSessionEvent>, event: AvrSessionEvent) -> bool {
     // The AVR can emit an unsolicited burst (notably a series of MV lines
-    // while its volume is being changed). Those lines have already been
-    // applied to the shared authoritative snapshot, so notification delivery
-    // must not apply backpressure to the protocol reader or block subsequent
-    // commands. Lifecycle notifications remain lossless and ordered.
+    // while its volume is being changed). A line the consumer cannot take yet
+    // is dropped, because notification delivery must not apply backpressure to
+    // the protocol reader or block subsequent commands; the canonical session
+    // reconciles by querying. Lifecycle notifications remain lossless and ordered.
     if matches!(event, AvrSessionEvent::Line(_)) {
         return match events.try_send(event) {
             Ok(()) => true,
@@ -1226,22 +709,6 @@ mod tests {
     }
 
     #[test]
-    fn retries_only_read_query_failures() {
-        assert!(retryable_query_error(&AvrSessionError::Timeout(
-            "timeout".into()
-        )));
-        assert!(retryable_query_error(&AvrSessionError::Disconnected(
-            "closed".into()
-        )));
-        assert!(!retryable_query_error(&AvrSessionError::MalformedFrame(
-            "bad".into()
-        )));
-        assert!(!retryable_query_error(
-            &AvrSessionError::UnexpectedResponse("bad".into())
-        ));
-    }
-
-    #[test]
     fn malformed_frame_validation_is_bounded() {
         assert!(matches!(
             frame_text(&[], 1),
@@ -1302,16 +769,11 @@ mod tests {
             reader.read_until(b'\r', &mut command).await.unwrap();
             assert_eq!(command, b"SIGAME\r");
         });
-        let mut session = AvrSession::connect_addr(address, AvrSessionConfig::default())
+        let session = AvrSession::connect_addr(address, AvrSessionConfig::default())
             .await
             .unwrap();
 
-        <AvrSession as AsyncControlGateway>::execute_once(
-            &mut session,
-            denon_avr_domain::MainZoneControl::Input(denon_avr_domain::Input::new("GAME").unwrap()),
-        )
-        .await
-        .unwrap();
+        session.dispatch("SIGAME").await.unwrap();
 
         server.await.unwrap();
     }

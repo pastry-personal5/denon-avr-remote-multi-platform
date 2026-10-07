@@ -10,7 +10,7 @@ use crate::{
     AvrSessionConfig, HttpInformationHttpClient, QuickSelectNamesHttpClient,
     SourceCatalogHttpClient,
 };
-use denon_avr_application::ports::{OperationError, ReceiverSession};
+use denon_avr_application::ports::OperationError;
 use denon_avr_application::{
     CanonicalReceiverSession, OperationRequest, Readiness, StateSubscription,
 };
@@ -1245,9 +1245,7 @@ mod tests {
             }
         ));
         assert!(debt.is_none());
-        <AvrSession as ReceiverSession>::close(&mut avr)
-            .await
-            .unwrap();
+        avr.close().await.unwrap();
         server.abort();
     }
 

@@ -160,15 +160,13 @@ The Operation Gate and Control API server are written against the state-first
 `crates/application/src/session_v3.rs`. Policy needs complete receiver state
 with per-field validity, and callers need `OperationOutcome` with its
 `DispatchCertainty`; both are first-class there. The GUI's present path (the
-legacy controller over a compatibility adapter) is replaced by projecting the
-same state and operation events received from the Control API. No third session
-contract is introduced.
-
-Today `ARCHITECTURE.md`, `AGENTS.md`, and the single-definition rule in
-`tools/check-boundaries.sh` pin `SessionEvent`, `ReceiverSession`, and
-`SessionFactory` to the application ports module. When this design is
-implemented they name `CanonicalReceiverSession` and its definition site
-instead, and the legacy contracts and the controller they serve are retired.
+legacy controller over a compatibility adapter) was replaced in milestone 2 by
+projecting the same state and operation results from the in-process control
+service; milestone 5 retargets that to the Control API. No third session contract
+is introduced. `ARCHITECTURE.md`, `AGENTS.md`, and the single-definition rule in
+`tools/check-boundaries.sh` name `CanonicalReceiverSession` and its definition
+site, and the legacy contracts and the controller they served are retired. See
+[Desktop GUI](../ARCHITECTURE.md#desktop-gui).
 
 The precondition, the typed rejection cause, and the inspection reads are
 implemented. See [Control service](../ARCHITECTURE.md#control-service). The

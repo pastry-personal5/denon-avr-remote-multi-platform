@@ -92,21 +92,26 @@ while IFS=: read -r from to; do
     esac
 done <"$boundary_edges"
 
-# Session events and factory/session contracts have one owner and exactly one
-# definition each. Counting matching files alone would miss duplicates placed
-# together in ports.rs.
-session_contracts=$(rg -n '^pub (enum|trait) (SessionEvent|ReceiverSession|SessionFactory)' crates --glob '*.rs')
-[ "$(printf '%s\n' "$session_contracts" | wc -l | tr -d ' ')" -eq 3 ] || fail "session contracts must each have exactly one definition"
-if printf '%s\n' "$session_contracts" | rg -q -v '^crates/application/src/ports\.rs:'; then
-    fail "session contracts must be defined only in application ports"
+# The canonical receiver-session contract has one definition, in the
+# application crate's session module, and nothing else defines a receiver
+# session. Counting matching files alone would miss a duplicate placed next to
+# the original.
+session_contract=$(rg -n '^pub trait CanonicalReceiverSession\b' crates --glob '*.rs')
+[ "$(printf '%s\n' "$session_contract" | wc -l | tr -d ' ')" -eq 1 ] || fail "the receiver-session contract must have exactly one definition"
+if printf '%s\n' "$session_contract" | rg -q -v '^crates/application/src/session_v3\.rs:'; then
+    fail "the receiver-session contract must be defined only in the application session module"
 fi
 
+# The legacy controller path was retired in version 4. Its names must not come
+# back: a second session contract or coordinator would compete with the control
+# service, which is the one owner of receiver sessions.
+legacy_names=$(rg -n '\b(ReceiverController|ControllerHandle|SessionFactory|CanonicalSessionFactory|CanonicalSessionAdapter|AsyncStatusGateway|AsyncControlGateway)\b|^pub (enum|trait) (SessionEvent|ReceiverSession)\b' crates apps --glob '*.rs' || true)
+[ -z "$legacy_names" ] || fail "retired legacy session path must not be reintroduced: $legacy_names"
+
 # The Operation Gate in the control service is the only caller of a session's
-# `operate` outside tests and the session implementation. One caller remains
-# until it is retired: the legacy compatibility adapter, which milestone 2
-# deletes.
+# `operate` outside tests and the session implementation.
 operate_callers=$(rg -l '\.operate\(' --glob '*.rs' --glob '!**/tests/**' crates apps |
-    rg -v '^(crates/application/src/service\.rs|crates/infrastructure/src/(x3800h_session|canonical_factory)\.rs)$' || true)
+    rg -v '^(crates/application/src/service\.rs|crates/infrastructure/src/x3800h_session\.rs)$' || true)
 [ -z "$operate_callers" ] || fail "only the Operation Gate may call a session's operate: $operate_callers"
 
 echo "architecture boundaries OK"
