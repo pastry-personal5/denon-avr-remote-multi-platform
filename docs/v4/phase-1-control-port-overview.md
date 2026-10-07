@@ -19,7 +19,7 @@ Work goes one numbered step at a time: `make check`, `make clippy`, and
 | 0 | Amend the design | Done |
 | 1 | Stable receiver id | Done |
 | 2 | Control-service port | Done |
-| 3 | Receiver connector port | Not started |
+| 3 | Receiver connector port | Done |
 | 4 | In-process control service and Operator gate | Not started |
 | 5 | Inspection reads on the canonical contract | Not started |
 | 6 | Session precondition | Not started |

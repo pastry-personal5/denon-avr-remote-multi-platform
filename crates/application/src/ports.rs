@@ -1,10 +1,11 @@
 //! Application ports for infrastructure abstraction.
 
+use crate::session_v3::SharedReceiverSession;
 use denon_avr_domain::{
     AudioContextSnapshot, ConfiguredReceivers, ConnectionState, DiscoveredReceiver, EqStatus,
     HttpInformationSnapshot, MainZoneControl, MainZoneEvent, MainZoneField, MainZoneValue,
     PowerState, QuickSelectNameObservation, QuickSelectRecallConfirmation, QuickSelectSlot,
-    ReceiverIdentity, SourceCatalogObservation, Zone2Control,
+    ReceiverId, ReceiverIdentity, SourceCatalogObservation, Zone2Control,
 };
 use std::fmt;
 use std::future::Future;
@@ -234,6 +235,32 @@ impl<T: SessionFactory + ?Sized> SessionFactory for Arc<T> {
         identity: ReceiverIdentity,
     ) -> BoxFuture<'_, Result<Box<dyn ReceiverSession>, OperationError>> {
         (**self).connect(identity)
+    }
+}
+
+/// Opens the canonical session for one receiver. The control service owns the
+/// returned session until it releases it.
+///
+/// The receiver id is passed explicitly: it is the configuration entry name and
+/// must not be derived from the address, which can change.
+pub trait ReceiverConnector: Send + Sync + 'static {
+    /// Connect and return a session that has not yet been synchronized. A
+    /// receiver that is unreachable, or whose single control connection is held
+    /// by another client, is an error.
+    fn connect<'a>(
+        &'a self,
+        receiver: &'a ReceiverId,
+        identity: &'a ReceiverIdentity,
+    ) -> BoxFuture<'a, Result<SharedReceiverSession, OperationError>>;
+}
+
+impl<T: ReceiverConnector + ?Sized> ReceiverConnector for Arc<T> {
+    fn connect<'a>(
+        &'a self,
+        receiver: &'a ReceiverId,
+        identity: &'a ReceiverIdentity,
+    ) -> BoxFuture<'a, Result<SharedReceiverSession, OperationError>> {
+        (**self).connect(receiver, identity)
     }
 }
 
