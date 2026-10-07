@@ -10,11 +10,11 @@ use crate::{
 use denon_avr_application::ports::{
     BoxFuture, OperationError, OperationErrorKind, ReceiverSession, SessionEvent, SessionFactory,
 };
+use denon_avr_application::receiver_selection::receiver_id;
 use denon_avr_application::CanonicalReceiverSession;
 use denon_avr_domain::{
-    MainZoneControl, MainZoneEvent, MainZoneField, MainZoneValue, PowerState, ReceiverId,
-    ReceiverIdentity, ReceiverIntent, SoundModeIntent, SurroundMode, Volume, VolumeLevel,
-    Zone2Control,
+    MainZoneControl, MainZoneEvent, MainZoneField, MainZoneValue, PowerState, ReceiverIdentity,
+    ReceiverIntent, SoundModeIntent, SurroundMode, Volume, VolumeLevel, Zone2Control,
 };
 use std::sync::Arc;
 use tracing::{debug, warn};
@@ -31,19 +31,10 @@ impl SessionFactory for CanonicalSessionFactory {
     ) -> BoxFuture<'_, Result<Box<dyn ReceiverSession>, OperationError>> {
         let config = self.config.clone();
         Box::pin(async move {
-            let receiver = ReceiverId::new(
-                identity
-                    .friendly_name
-                    .clone()
-                    .unwrap_or_else(|| identity.host.clone()),
-            )
-            .map_err(|error| {
-                OperationError::new(
-                    OperationErrorKind::InvalidSelection,
-                    "receiver identity",
-                    error,
-                )
-            })?;
+            // The legacy selection carries no configuration entry name. The
+            // repository persists the friendly name as the entry name, so it
+            // stands in here until the connector takes the id explicitly.
+            let receiver = receiver_id(identity.friendly_name.as_deref(), &identity)?;
             let host = identity.host.clone();
             let session = X3800hSession::connect(receiver, &host, config.clone()).await?;
             Ok(
@@ -551,7 +542,7 @@ fn changed_value(
 mod tests {
     use super::*;
     use denon_avr_domain::{
-        CoreFrame, Epoch, FrameSeq, MonotonicMillis, MuteState, ObservationOrigin,
+        CoreFrame, Epoch, FrameSeq, MonotonicMillis, MuteState, ObservationOrigin, ReceiverId,
     };
 
     #[test]

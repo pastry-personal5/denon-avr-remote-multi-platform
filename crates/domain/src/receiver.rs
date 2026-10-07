@@ -1,5 +1,6 @@
 //! Receiver identity and configuration types.
 
+use crate::ReceiverId;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// A user-owned detailed sound mode favorite.
@@ -63,6 +64,11 @@ impl ConfiguredReceivers {
             }
             if name.contains(['\r', '\n']) || receiver.host.contains(['\r', '\n']) {
                 return Err(format!("receiver {name} contains a line break"));
+            }
+            if ReceiverId::is_reserved_name(name) {
+                return Err(format!(
+                    "receiver name {name} uses a prefix reserved for receivers chosen by address"
+                ));
             }
         }
         if let Some(current) = &self.current {
@@ -146,6 +152,19 @@ impl DiscoveredReceiver {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn configuration_rejects_names_that_could_collide_with_ad_hoc_ids() {
+        let configured = ConfiguredReceivers {
+            current: Some("adhoc:192.0.2.10".into()),
+            receivers: BTreeMap::from([(
+                "adhoc:192.0.2.10".into(),
+                ReceiverIdentity::ad_hoc("192.0.2.10"),
+            )]),
+            ..ConfiguredReceivers::default()
+        };
+        assert!(configured.validate().unwrap_err().contains("reserved"));
+    }
 
     #[test]
     fn sound_mode_favorites_are_scoped_to_the_current_receiver() {

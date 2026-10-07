@@ -1,9 +1,10 @@
 //! Short-lived composition for the canonical Phase 5 receiver service.
 
 use denon_avr_application::ports::{ConfigRepository, ReceiverDiscovery};
+use denon_avr_application::receiver_selection::ResolvedReceiver;
 use denon_avr_application::{CanonicalReceiverSession, OperationRequest};
 use denon_avr_domain::{
-    ConfiguredReceivers, DiscoveredReceiver, MasterVolume, MuteState, OperationId, ReceiverId,
+    ConfiguredReceivers, DiscoveredReceiver, MasterVolume, MuteState, OperationId,
     ReceiverIdentity, ReceiverIntent, ReceiverState, SoundModeIntent, ZonePower,
 };
 use denon_avr_infrastructure::discovery_ssdp::{SsdpDiscoveryAdapter, DEFAULT_DISCOVERY_TIMEOUT};
@@ -166,29 +167,38 @@ fn parse_receiver(
     Ok(())
 }
 
-fn resolve_identity(selection: &Selection) -> Result<ReceiverIdentity, String> {
+fn resolve_target(selection: &Selection) -> Result<ResolvedReceiver, String> {
     if let Some(host) = &selection.host {
-        return Ok(ReceiverIdentity::ad_hoc(host));
+        return Ok(ResolvedReceiver {
+            name: None,
+            identity: ReceiverIdentity::ad_hoc(host),
+        });
     }
     if let Some(index) = selection.receiver {
         return SsdpDiscoveryAdapter
             .discover(DEFAULT_DISCOVERY_TIMEOUT)
             .map_err(|error| error.to_string())?
             .get(index)
-            .map(DiscoveredReceiver::identity)
+            .map(|receiver| ResolvedReceiver {
+                name: None,
+                identity: receiver.identity(),
+            })
             .ok_or("receiver selection is out of range".into());
     }
     YamlConfigRepository::default()
         .load()
         .map_err(|error| error.to_string())?
         .current()
-        .map(|(_, identity)| identity.clone())
+        .map(|(name, identity)| ResolvedReceiver {
+            name: Some(name.to_owned()),
+            identity: identity.clone(),
+        })
         .ok_or("a saved receiver or explicit selector is required".into())
 }
-async fn session(identity: &ReceiverIdentity) -> Result<std::sync::Arc<X3800hSession>, String> {
+async fn session(target: &ResolvedReceiver) -> Result<std::sync::Arc<X3800hSession>, String> {
     X3800hSession::connect(
-        ReceiverId::new(identity.host.clone()).map_err(str::to_owned)?,
-        &identity.host,
+        target.id().map_err(|error| error.to_string())?,
+        &target.identity.host,
         AvrSessionConfig::default(),
     )
     .await
@@ -209,13 +219,13 @@ fn save_identity(identity: &ReceiverIdentity) -> Result<(), String> {
 }
 
 async fn query(resource: Resource, selection: Selection) -> Result<(), String> {
-    let identity = resolve_identity(&selection)?;
-    let service = session(&identity).await?;
+    let target = resolve_target(&selection)?;
+    let service = session(&target).await?;
     let readiness = service
         .synchronize()
         .await
         .map_err(|error| error.to_string())?;
-    print_target(&identity);
+    print_target(&target.identity);
     render_resource(resource, &service.current_state());
     println!(
         "Readiness: {}{}",
@@ -227,7 +237,7 @@ async fn query(resource: Resource, selection: Selection) -> Result<(), String> {
         }
     );
     service.close().await.map_err(|error| error.to_string())?;
-    save_identity(&identity)
+    save_identity(&target.identity)
 }
 async fn set(
     operation: Operation,
@@ -240,8 +250,8 @@ async fn set(
         println!("Dry run: would submit {intent:?}");
         return Ok(());
     }
-    let identity = resolve_identity(&selection)?;
-    let service = session(&identity).await?;
+    let target = resolve_target(&selection)?;
+    let service = session(&target).await?;
     let _ = service
         .synchronize()
         .await
@@ -252,10 +262,10 @@ async fn set(
             intent,
         })
         .await;
-    print_target(&identity);
+    print_target(&target.identity);
     println!("Outcome: {outcome:?}");
     service.close().await.map_err(|error| error.to_string())?;
-    save_identity(&identity)
+    save_identity(&target.identity)
 }
 fn parse_intent(operation: Operation, value: &str) -> Result<ReceiverIntent, String> {
     match operation {

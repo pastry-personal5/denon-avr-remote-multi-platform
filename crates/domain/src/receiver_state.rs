@@ -7,20 +7,51 @@
 use crate::{MuteState, SourceId};
 use std::fmt;
 
+/// Prefix of the ids derived for receivers chosen only by address. A saved
+/// receiver's id is its configuration entry name, and `ReceiverId::new` refuses
+/// this prefix, so the two kinds of id cannot collide.
+const AD_HOC_PREFIX: &str = "adhoc:";
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ReceiverId(String);
 
 impl ReceiverId {
+    /// The id of a saved receiver: the name of its configuration entry. It does
+    /// not change when the receiver's address does.
     pub fn new(value: impl Into<String>) -> Result<Self, &'static str> {
         let value = value.into();
-        if value.trim().is_empty() || value.chars().any(char::is_control) {
-            return Err("receiver ID must be non-empty and contain no control characters");
+        Self::validate(&value)?;
+        if Self::is_reserved_name(&value) {
+            return Err("receiver ID must not use the reserved ad hoc prefix");
         }
         Ok(Self(value))
     }
 
+    /// The id derived for a receiver chosen only by its address. It is for
+    /// Operator use and is never listed to an Agent.
+    pub fn ad_hoc(host: &str) -> Result<Self, &'static str> {
+        Self::validate(host)?;
+        Ok(Self(format!("{AD_HOC_PREFIX}{host}")))
+    }
+
+    pub fn is_ad_hoc(&self) -> bool {
+        Self::is_reserved_name(&self.0)
+    }
+
+    /// Whether a configuration entry name would collide with an ad hoc id.
+    pub fn is_reserved_name(name: &str) -> bool {
+        name.starts_with(AD_HOC_PREFIX)
+    }
+
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    fn validate(value: &str) -> Result<(), &'static str> {
+        if value.trim().is_empty() || value.chars().any(char::is_control) {
+            return Err("receiver ID must be non-empty and contain no control characters");
+        }
+        Ok(())
     }
 }
 
@@ -553,6 +584,32 @@ fn mark_failed<T>(field: &mut FieldState<T>, message: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ad_hoc_ids_are_derived_from_the_address_and_marked() {
+        let id = ReceiverId::ad_hoc("192.0.2.10").unwrap();
+        assert!(id.is_ad_hoc());
+        assert_eq!(id.as_str(), "adhoc:192.0.2.10");
+        assert_ne!(id, ReceiverId::ad_hoc("192.0.2.11").unwrap());
+    }
+
+    #[test]
+    fn a_saved_id_cannot_collide_with_an_ad_hoc_id() {
+        let saved = ReceiverId::new("living-room").unwrap();
+        assert!(!saved.is_ad_hoc());
+        assert!(ReceiverId::new("adhoc:192.0.2.10").is_err());
+        assert!(ReceiverId::is_reserved_name("adhoc:anything"));
+        assert!(!ReceiverId::is_reserved_name("living-room"));
+    }
+
+    #[test]
+    fn ids_reject_blank_and_control_characters() {
+        for value in ["", "  ", "bad\nname", "tab\tname"] {
+            assert!(ReceiverId::new(value).is_err(), "{value:?}");
+            assert!(ReceiverId::ad_hoc(value).is_err(), "{value:?}");
+        }
+    }
+
     #[test]
     fn disconnect_preserves_last_good_evidence() {
         let id = ReceiverId::new("living-room").unwrap();
