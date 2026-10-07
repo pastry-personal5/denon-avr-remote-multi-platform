@@ -1,7 +1,7 @@
 # Version 4, Phase 2 — GUI on the port
 
 **In progress, started 2026-10-08** on branch `v4/phase-2-gui-on-port`. Steps
-1 to 5 are done. This is milestone 2 of the [roadmap](roadmap.md). It moves the
+1 to 5 are done, and the code is complete. Step 6 needs a window server and the receiver, which the implementing session did not have, so two exit criteria are open and the branch is not merged. This is milestone 2 of the [roadmap](roadmap.md). It moves the
 GUI from the legacy `ReceiverController` onto the control-service port and then
 deletes the legacy path. It is a refactoring: the intended user-visible
 differences are the ones the parity table lists as **Changed**. The owner asked
@@ -26,7 +26,7 @@ Work goes one numbered step at a time: `make check`, `make clippy`, and
 | 3 | Retarget `gui-lib` to the port; rewrite its tests | Done |
 | 4 | Delete the legacy path; flip the guards; update the contract documents | Done |
 | 5 | Scope the domain and protocol cleanup by inventory | Done |
-| 6 | Live checks and exit | Not started |
+| 6 | Live checks and exit | Waiting on the owner |
 
 The roadmap lists five steps; this phase adds step 2 because the table found
 gaps in the port, and splits the roadmap's guard rewrite across steps 3 and 4.
@@ -80,6 +80,27 @@ From the roadmap, with the Diagnostics exception that decision D4 proposes:
   except for the differences the owner accepted in D5.
 - `make check` and `make clippy` pass.
 
+## Exit status
+
+Steps 1 to 5 are implemented, committed one at a time, and `make check`,
+`make clippy`, and `git diff --check` pass at each commit. The criteria that
+`make check` can decide are met: no `ReceiverController`, legacy
+`ReceiverSession`, or `SessionFactory` symbol remains (`make boundary` fails if
+one returns), and the GUI, the control service, and the bridge are covered by
+deterministic tests, including one that fails without the ordering rule in the
+bridge.
+
+Two criteria are open and need the owner, recorded in the
+[validation record](../archive/v4/phase-2-live-validation-record.md), where every
+result is still **To fill**:
+
+- `make visual-baselines` on macOS: twelve baselines byte-identical, and the two
+  Diagnostics baselines recaptured on purpose (decision D4).
+- A live GUI session on the X3800H, including a forced reconnect, with the
+  differences the owner accepted in D5.
+
+Merge the branch to main only when both are met.
+
 ## Known limits
 
 - The first command that saves the configuration, from the CLI or the GUI,
@@ -106,10 +127,13 @@ From the roadmap, with the Diagnostics exception that decision D4 proposes:
 
    If the comparison fails on unchanged code, the committed baselines are stale.
    Refresh them in a commit of their own first, so a later pixel difference can
-   be attributed to a step in this phase and not to drift. This was not run when
-   step 1 was written, because the capture could not open a window in the
-   session that wrote it.
+   be attributed to a step in this phase and not to drift. The validation record
+   has the exact commands, for main and for this branch. Neither could be run by
+   the sessions that wrote the phase, because a capture opens a window.
 2. **Loopback tests.** The test suite binds loopback sockets. Run `make check`
    outside a sandbox that blocks local ports, or allow local binding for it.
-3. **Live checks.** The list under
-   [Live checks](phase-2-gui-on-port-architecture.md#live-checks), at step 6.
+3. **Live checks.** The table in the
+   [validation record](../archive/v4/phase-2-live-validation-record.md), which
+   carries each check from
+   [Live checks](phase-2-gui-on-port-architecture.md#live-checks) with its
+   expected result and a place for yours.

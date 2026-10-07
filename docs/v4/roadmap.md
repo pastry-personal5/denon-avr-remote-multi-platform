@@ -2,9 +2,9 @@
 
 **Planned — 2026-10-07. Scope settled with the project owner the same day.
 Milestone 1 is complete (2026-10-08), tracked in its
-[phase overview](phase-1-control-port-overview.md). Milestone 2 is in progress
-(started 2026-10-08), tracked in its
-[phase overview](phase-2-gui-on-port-overview.md). No version change is made
+[phase overview](phase-1-control-port-overview.md). Milestone 2 is implemented
+(started 2026-10-08) and waits on the owner's visual and live checks, tracked in
+its [phase overview](phase-2-gui-on-port-overview.md). No version change is made
 until the release milestone.**
 
 This roadmap sequences the work needed to implement the target design in
