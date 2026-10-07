@@ -3,8 +3,11 @@
 //! Unlike the legacy gateway traits, this is state-first: subscribers read the
 //! same complete receiver state that operation matching uses.
 
-use crate::ports::{BoxFuture, OperationError};
-use denon_avr_domain::{CoreField, OperationId, OperationOutcome, ReceiverIntent, ReceiverState};
+use crate::ports::{BoxFuture, OperationError, OperationErrorKind};
+use denon_avr_domain::{
+    CoreField, HttpInformationSnapshot, OperationId, OperationOutcome, QuickSelectNameObservation,
+    ReceiverIntent, ReceiverState, SourceCatalogObservation,
+};
 use std::any::Any;
 use std::sync::Arc;
 use tokio::sync::watch;
@@ -78,9 +81,40 @@ pub trait CanonicalReceiverSession: Send + Sync {
     }
     fn synchronize(&self) -> BoxFuture<'_, Result<Readiness, OperationError>>;
     fn operate(&self, request: OperationRequest) -> BoxFuture<'_, OperationOutcome>;
+
+    /// The receiver's own source names and visibility. A read: it never writes,
+    /// and the result carries the connection generation it was read under.
+    /// Sessions that cannot read it report `Unsupported`.
+    fn source_catalog(&self) -> BoxFuture<'_, Result<SourceCatalogObservation, OperationError>> {
+        unsupported_read("source catalog")
+    }
+
+    /// Quick Select names, for Operator use only. A read, like the others.
+    fn quick_select_names(
+        &self,
+    ) -> BoxFuture<'_, Result<QuickSelectNameObservation, OperationError>> {
+        unsupported_read("Quick Select names")
+    }
+
+    /// Audio, video, and Audyssey information over HTTP. A read, like the others.
+    fn http_information(&self) -> BoxFuture<'_, Result<HttpInformationSnapshot, OperationError>> {
+        unsupported_read("HTTP information")
+    }
     /// Close the serialized session. Implementations must make repeated
     /// close requests harmless and must not reopen transport work.
     fn close(&self) -> BoxFuture<'_, Result<(), OperationError>>;
+}
+
+fn unsupported_read<T: Send + 'static>(
+    what: &'static str,
+) -> BoxFuture<'static, Result<T, OperationError>> {
+    Box::pin(async move {
+        Err(OperationError::new(
+            OperationErrorKind::Unsupported,
+            what,
+            "this receiver session does not provide the read",
+        ))
+    })
 }
 
 pub type SharedReceiverSession = Arc<dyn CanonicalReceiverSession>;

@@ -781,19 +781,14 @@ impl ReceiverReads for ServiceHandle {
     ) -> BoxFuture<'a, Result<SourceCatalogObservation, ControlError>> {
         Box::pin(async move {
             self.visible_receiver(receiver)?;
-            let _lease = self.inner.lease(receiver).await?;
-            Err(not_yet_readable("source catalog"))
+            let lease = self.inner.lease(receiver).await?;
+            lease
+                .session
+                .source_catalog()
+                .await
+                .map_err(ControlError::Receiver)
         })
     }
-}
-
-/// The session contract has no inspection reads until they are added to it.
-fn not_yet_readable(what: &'static str) -> ControlError {
-    ControlError::Receiver(OperationError::new(
-        crate::ports::OperationErrorKind::Unsupported,
-        what,
-        "the receiver session does not provide this read",
-    ))
 }
 
 impl OperationControl for ServiceHandle {
@@ -952,8 +947,12 @@ impl OperatorAdmin for ServiceHandle {
     ) -> BoxFuture<'a, Result<QuickSelectNameObservation, ControlError>> {
         Box::pin(async move {
             self.require_operator()?;
-            let _lease = self.inner.lease(receiver).await?;
-            Err(not_yet_readable("Quick Select names"))
+            let lease = self.inner.lease(receiver).await?;
+            lease
+                .session
+                .quick_select_names()
+                .await
+                .map_err(ControlError::Receiver)
         })
     }
 
@@ -963,8 +962,12 @@ impl OperatorAdmin for ServiceHandle {
     ) -> BoxFuture<'a, Result<HttpInformationSnapshot, ControlError>> {
         Box::pin(async move {
             self.require_operator()?;
-            let _lease = self.inner.lease(receiver).await?;
-            Err(not_yet_readable("HTTP information"))
+            let lease = self.inner.lease(receiver).await?;
+            lease
+                .session
+                .http_information()
+                .await
+                .map_err(ControlError::Receiver)
         })
     }
 }

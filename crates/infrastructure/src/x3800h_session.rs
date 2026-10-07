@@ -6,7 +6,10 @@
 //! a `watch` channel.
 
 use crate::avr_session::{AvrSession, AvrSessionError, AvrSessionEvent};
-use crate::AvrSessionConfig;
+use crate::{
+    AvrSessionConfig, HttpInformationHttpClient, QuickSelectNamesHttpClient,
+    SourceCatalogHttpClient,
+};
 use denon_avr_application::ports::{OperationError, ReceiverSession};
 use denon_avr_application::{
     CanonicalReceiverSession, OperationRequest, Readiness, StateSubscription,
@@ -70,6 +73,16 @@ pub struct X3800hSession {
     states: watch::Sender<ReceiverState>,
     actor: Arc<Mutex<Option<JoinHandle<()>>>>,
     closed: AtomicBool,
+    inspection: Inspection,
+}
+
+/// Where the receiver's HTTP inspection reads go. The session records it at
+/// connect time so a caller never supplies an address for a read.
+#[derive(Debug, Clone)]
+struct Inspection {
+    host: String,
+    timeout: std::time::Duration,
+    app_command_port: u16,
 }
 
 impl X3800hSession {
@@ -102,18 +115,33 @@ impl X3800hSession {
                     "receiver host has no address",
                 )
             })?;
-        Self::connect_addr(receiver, address, config).await
+        Self::connect_with_host(receiver, address, host.to_owned(), config).await
     }
 
     pub async fn connect_addr(
         receiver: ReceiverId,
         address: SocketAddr,
+        config: AvrSessionConfig,
+    ) -> Result<Arc<Self>, OperationError> {
+        let host = address.ip().to_string();
+        Self::connect_with_host(receiver, address, host, config).await
+    }
+
+    async fn connect_with_host(
+        receiver: ReceiverId,
+        address: SocketAddr,
+        host: String,
         mut config: AvrSessionConfig,
     ) -> Result<Arc<Self>, OperationError> {
         info!(receiver = receiver.as_str(), %address, "connecting to X3800H receiver");
         // Canonical monitoring is long-lived. A temporary connection refusal
         // is degraded evidence, never a reason to silently stop monitoring.
         config.reconnect_indefinitely = true;
+        let inspection = Inspection {
+            host,
+            timeout: config.connect_timeout,
+            app_command_port: config.app_command_port,
+        };
         let avr = AvrSession::connect_addr(address, config)
             .await
             .map_err(|error| {
@@ -134,6 +162,7 @@ impl X3800hSession {
             states,
             actor: Arc::clone(&actor),
             closed: AtomicBool::new(false),
+            inspection,
         });
         let task = tokio::spawn(run_actor(avr, rx, handle.states.clone()));
         *actor.lock().await = Some(task);
@@ -142,6 +171,35 @@ impl X3800hSession {
 
     pub fn current_state(&self) -> ReceiverState {
         self.states.borrow().clone()
+    }
+
+    /// The connection generation an inspection read is stamped with: the
+    /// receiver epoch, which starts at one.
+    fn generation(&self) -> u64 {
+        self.states
+            .borrow()
+            .epoch
+            .map_or(0, |epoch| epoch.0.saturating_sub(1))
+    }
+
+    /// Run a blocking HTTP read off the async runtime, mapping its failures
+    /// into the session's error type. The reads only ever issue queries.
+    async fn inspect<T: Send + 'static>(
+        &self,
+        what: &'static str,
+        read: impl FnOnce(&Inspection, u64) -> std::io::Result<T> + Send + 'static,
+    ) -> Result<T, OperationError> {
+        use denon_avr_application::ports::OperationErrorKind;
+        let inspection = self.inspection.clone();
+        let generation = self.generation();
+        tokio::task::spawn_blocking(move || read(&inspection, generation))
+            .await
+            .map_err(|error| {
+                OperationError::new(OperationErrorKind::Stopped, what, error.to_string())
+            })?
+            .map_err(|error| {
+                OperationError::new(OperationErrorKind::Connection, what, error.to_string())
+            })
     }
 }
 
@@ -209,6 +267,54 @@ impl CanonicalReceiverSession for X3800hSession {
                 reason: "receiver session stopped before operation completion".into(),
             })
         })
+    }
+
+    fn source_catalog(
+        &self,
+    ) -> denon_avr_application::ports::BoxFuture<
+        '_,
+        Result<denon_avr_domain::SourceCatalogObservation, OperationError>,
+    > {
+        Box::pin(self.inspect("source catalog", |target, generation| {
+            SourceCatalogHttpClient::new(
+                denon_avr_domain::ReceiverEndpoint {
+                    host: target.host.clone(),
+                    port: target.app_command_port,
+                },
+                target.timeout,
+            )
+            .and_then(|client| client.read(generation))
+        }))
+    }
+
+    fn quick_select_names(
+        &self,
+    ) -> denon_avr_application::ports::BoxFuture<
+        '_,
+        Result<denon_avr_domain::QuickSelectNameObservation, OperationError>,
+    > {
+        Box::pin(self.inspect("Quick Select names", |target, generation| {
+            QuickSelectNamesHttpClient::new(
+                denon_avr_domain::ReceiverEndpoint {
+                    host: target.host.clone(),
+                    port: target.app_command_port,
+                },
+                target.timeout,
+            )
+            .and_then(|client| client.read(generation))
+        }))
+    }
+
+    fn http_information(
+        &self,
+    ) -> denon_avr_application::ports::BoxFuture<
+        '_,
+        Result<denon_avr_domain::HttpInformationSnapshot, OperationError>,
+    > {
+        Box::pin(self.inspect("HTTP information", |target, generation| {
+            HttpInformationHttpClient::new(target.host.clone(), target.timeout)
+                .and_then(|client| client.read(generation))
+        }))
     }
 
     fn close(&self) -> denon_avr_application::ports::BoxFuture<'_, Result<(), OperationError>> {
@@ -965,7 +1071,7 @@ mod tests {
     use super::*;
     use denon_avr_application::CanonicalReceiverSession;
     use denon_avr_domain::{MasterVolume, OperationId};
-    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
     use tokio::net::TcpListener;
 
     #[test]
@@ -1245,6 +1351,122 @@ mod tests {
         session.close().await.unwrap();
         session.close().await.unwrap();
         server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn source_catalog_is_read_over_http_and_stamped_with_the_connection_generation() {
+        let telnet = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = telnet.local_addr().unwrap();
+        let telnet_server = tokio::spawn(async move {
+            let (stream, _) = telnet.accept().await.unwrap();
+            let mut stream = BufReader::new(stream);
+            let mut line = Vec::new();
+            loop {
+                line.clear();
+                if stream.read_until(b'\r', &mut line).await.unwrap() == 0 {
+                    break;
+                }
+                let response = match std::str::from_utf8(&line).unwrap() {
+                    "PW?\r" => "PWON\r",
+                    "ZM?\r" => "ZMON\r",
+                    "Z2?\r" => "Z2OFF\r",
+                    "SI?\r" => "SICD\r",
+                    "MV?\r" => "MV80\r",
+                    "MU?\r" => "MUOFF\r",
+                    "MS?\r" => "MSSTEREO\r",
+                    unexpected => panic!("unexpected command {unexpected:?}"),
+                };
+                stream
+                    .get_mut()
+                    .write_all(response.as_bytes())
+                    .await
+                    .unwrap();
+            }
+        });
+        let http = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let http_port = http.local_addr().unwrap().port();
+        let http_server = tokio::spawn(async move {
+            let (mut stream, _) = http.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut chunk = [0_u8; 1024];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let read = stream.read(&mut chunk).await.unwrap();
+                assert_ne!(read, 0, "the client closed before sending a request");
+                request.extend_from_slice(&chunk[..read]);
+            }
+            let request = String::from_utf8_lossy(&request).into_owned();
+            assert!(
+                request.starts_with("POST /goform/AppCommand.xml HTTP/1.1\r\n"),
+                "{request}"
+            );
+            let body = "<rx><functionrename><list><name>GAME</name><rename>Console</rename></list></functionrename><functiondelete><list><FuncName>GAME</FuncName><use>1</use></list></functiondelete></rx>";
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        });
+        let session = X3800hSession::connect_addr(
+            ReceiverId::new("catalog").unwrap(),
+            address,
+            AvrSessionConfig {
+                transmission_interval: std::time::Duration::from_millis(1),
+                app_command_port: http_port,
+                ..AvrSessionConfig::default()
+            },
+        )
+        .await
+        .unwrap();
+        session.synchronize().await.unwrap();
+
+        let observation = session.source_catalog().await.unwrap();
+        let game = observation
+            .catalog
+            .entries
+            .iter()
+            .find(|entry| entry.id.as_str() == "GAME")
+            .expect("GAME is in the catalog");
+        assert_eq!(game.display_name.as_deref(), Some("Console"));
+        // The first connection is epoch one, which is generation zero.
+        assert_eq!(observation.catalog.generation, 0);
+
+        session.close().await.unwrap();
+        http_server.await.unwrap();
+        telnet_server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_unreachable_http_endpoint_is_a_connection_error_not_a_hang() {
+        let telnet = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = telnet.local_addr().unwrap();
+        let telnet_server = tokio::spawn(async move {
+            let _ = telnet.accept().await;
+            std::future::pending::<()>().await;
+        });
+        // Bind and release a port so nothing is listening on it.
+        let closed_port = {
+            let probe = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            probe.local_addr().unwrap().port()
+        };
+        let session = X3800hSession::connect_addr(
+            ReceiverId::new("unreachable-http").unwrap(),
+            address,
+            AvrSessionConfig {
+                app_command_port: closed_port,
+                connect_timeout: std::time::Duration::from_millis(500),
+                ..AvrSessionConfig::default()
+            },
+        )
+        .await
+        .unwrap();
+        let error = session.source_catalog().await.unwrap_err();
+        assert_eq!(
+            error.kind,
+            denon_avr_application::ports::OperationErrorKind::Connection
+        );
+        assert_eq!(error.context, "source catalog");
+        session.close().await.unwrap();
+        telnet_server.abort();
     }
 
     #[tokio::test]

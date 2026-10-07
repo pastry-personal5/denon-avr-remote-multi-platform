@@ -70,6 +70,33 @@ impl CanonicalReceiverSession for FakeSession {
         })
     }
 
+    fn source_catalog(&self) -> BoxFuture<'_, Result<SourceCatalogObservation, OperationError>> {
+        Box::pin(async move {
+            Ok(SourceCatalogObservation {
+                catalog: denon_avr_domain::SourceCatalog {
+                    generation: 7,
+                    ..Default::default()
+                },
+                raw_response: "<rx/>".into(),
+                response_evidence: denon_avr_domain::CatalogResponseEvidence::Complete,
+            })
+        })
+    }
+
+    fn quick_select_names(
+        &self,
+    ) -> BoxFuture<'_, Result<QuickSelectNameObservation, OperationError>> {
+        Box::pin(async move {
+            Ok(QuickSelectNameObservation {
+                generation: 7,
+                ..Default::default()
+            })
+        })
+    }
+
+    // `http_information` is left at the contract's default so a test can see an
+    // unsupported read pass through.
+
     fn close(&self) -> BoxFuture<'_, Result<(), OperationError>> {
         Box::pin(async move {
             if let Some(hold) = &self.hold_close {
@@ -1104,4 +1131,28 @@ async fn power_and_zone_intents_pass_through_unchanged() {
         .unwrap();
     finished(&h, snapshot.id).await;
     assert_eq!(h.connector.session(0).calls()[0].intent, intent);
+}
+
+#[tokio::test(start_paused = true)]
+async fn inspection_reads_connect_on_demand_and_pass_the_sessions_answer_through() {
+    let h = harness();
+    let catalog = h.operator.source_catalog(&living_room()).await.unwrap();
+    assert_eq!(catalog.catalog.generation, 7);
+    assert_eq!(h.connector.attempts(), 1);
+    let names = h.operator.quick_select_names(&living_room()).await.unwrap();
+    assert_eq!(names.generation, 7);
+    // The same session served both reads.
+    assert_eq!(h.connector.attempts(), 1);
+
+    // A read the session does not provide stays a typed error.
+    match h.operator.http_information(&living_room()).await {
+        Err(ControlError::Receiver(error)) => {
+            assert_eq!(error.kind, OperationErrorKind::Unsupported)
+        }
+        other => panic!("expected an unsupported read, got {other:?}"),
+    }
+
+    // A read is only activity: it does not hold the receiver connected.
+    advance(IDLE + Duration::from_secs(1)).await;
+    assert_eq!(h.connector.session(0).closes(), 1);
 }
