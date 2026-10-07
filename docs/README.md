@@ -5,6 +5,8 @@ Start here for current project guidance.
 | Need | Authoritative document |
 | --- | --- |
 | Current package boundaries, session ownership, and receiver invariants | [Architecture](../ARCHITECTURE.md) |
+| Target design for agent control: MCP servers (stdio and Streamable HTTP), Control API server, policy, and approval (not yet implemented) | [Planned architecture](planned-architecture.md) |
+| Dedicated macOS account for the planned HTTP MCP server: setup, checks, removal (not yet implemented) | [MCP HTTP service account](mcp-http-service-account.md) |
 | Engineering policy, review expectations, and documentation maintenance | [Contributing](contributing.md) |
 | Prerequisites, commands, and verification gates | [Development](development.md) |
 | CLI operation | [CLI user guide](cli-user-guide.md) |
