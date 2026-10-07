@@ -38,6 +38,10 @@ Decided with the project owner on 2026-10-07.
 | Claude Desktop | Not connected to the receiver. It would run under the owner's account, where policy cannot bind it. |
 | Live receiver | Available at any time, so each milestone's live checks run at its exit |
 | Git workflow | A `v4/phase-N-{theme}` branch per milestone, merged to main when its exit criteria pass |
+| Control-service port | Three traits: receiver reads, operation control, and operator administration. A read-only agent gets the first, a writing agent the first two, the GUI and CLI all three. |
+| Receiver connection | On demand, released after a configurable idle time with no subscribers and no operation in flight. This frees the receiver's single control connection for other tools. |
+| Receiver configuration file | A multi-receiver YAML schema. The single-receiver file is still read, then rewritten in the new schema with a one-time backup. |
+| CLI with no server running | Fails with a clear message, as the design words it. It does not start a server. |
 | Claude Code's tier | Read-only until S4 passes. Then it widens to the same `Allow` operations as OpenClaw. |
 | S4 timing | In parallel with milestone 1 |
 | Working mode | One numbered step at a time: run `make check`, review the diff, then continue |
@@ -229,17 +233,22 @@ numbered step at a time: run `make check`, review the diff, then continue.
    use it.
 2. **Control-service port** in `application`, as the design's
    [control service port](../planned-architecture.md#control-service-port)
-   defines it: state subscription, operation submit, status, and cancel,
-   receiver listing, selection and discovery, configuration, and inspection
-   reads. The handle is bound to a principal. The Agent principal exists as a
-   type but nothing can construct one until milestone 3. Approval, audit, and
-   policy views join the port when those components exist.
+   defines it, in three traits: receiver reads (receiver listing, state
+   subscription, inspection reads), operation control (submit, status, and
+   cancel of the caller's own operations), and operator administration
+   (discovery, configuration, and later tokens and the approval, audit, and
+   policy views). The handle is bound to a principal. `mcp-tools` takes only the
+   first two, so it cannot name an Operator method. The Agent principal exists
+   as a type but nothing can construct one until milestone 3. This step proposes
+   the signatures for review before any implementation sits behind them.
 3. **Receiver connector port.** It replaces the legacy `SessionFactory` and
    returns a `SharedReceiverSession`. Infrastructure implements it with
    `X3800hSession`.
 4. **In-process control service** in `application`: a registry with one
-   session per receiver, connected lazily, and the **Operation Gate for the
-   Operator principal only**. The gate allocates operation ids on the server
+   session per receiver, connected on demand and released after a configurable
+   idle time with no subscribers and no operation in flight, and the
+   **Operation Gate for the Operator principal only**. State is stale while a
+   receiver is released, and a read connects and synchronizes first. The gate allocates operation ids on the server
    side, records the owning principal, honors an idempotency key and coalesces
    identical in-flight operations, follows the lifecycle table, maps session
    outcomes to `status`, `dispatch`, and `confirmed` exactly as the
@@ -262,6 +271,15 @@ numbered step at a time: run `make check`, review the diff, then continue.
    links infrastructure for now. It stops constructing a session and stops using
    `OperationId(1)`. Grammar is unchanged, and the outcome is printed in the
    design's status, dispatch, and confirmed terms.
+8. **Multi-receiver configuration file.** The YAML adapter reads the
+   single-receiver file and the new multi-receiver schema, and writes only the
+   new one, with a version field and a one-time backup of the old file before
+   the first rewrite. Entry names become the receiver ids from step 1, which also
+   ends the mismatch where the GUI names an unnamed entry after its host and the
+   file reloads it as `default`. 3.0.0 cannot read the new file. Nothing in 4.0
+   adds a second receiver through the GUI or CLI, so a multi-receiver file comes
+   from hand edits until a later release adds that. This step is independent of
+   the port and comes last so it does not delay the contract steps.
 
 There is no CI. Each phase document carries a manual macOS checklist for the
 checks that `make check` does not cover.
@@ -274,6 +292,11 @@ checks that `make check` does not cover.
 - Every `OperationOutcome` variant is tested against the status mapping.
 - Gate tests with a fake session assert at most one dispatch, including a retry
   with the same idempotency key.
+- With a fake connector and clock, an idle receiver is released and the next
+  request reconnects. A receiver with a subscriber or an operation in flight is
+  not released.
+- The configuration adapter round-trips the new schema, reads the old file, backs
+  it up once, and rejects duplicate or reserved names.
 - Live read-only validation and the armed, state-restoring controls run pass on
   the X3800H through the CLI, with the result recorded as in v3.
 
@@ -580,6 +603,8 @@ Gaps found by the review and the milestone that closes each:
 
 Nothing here blocks milestone 1.
 
+- The default idle time before a receiver is released, and whether an Agent read
+  alone keeps it connected. Settled in step 4.
 - Whether your router can do a guest VLAN, which S4 answers.
 - When the External Approval Service will exist. It sets the start of
   milestone 7b and does not affect 4.0.0.

@@ -202,12 +202,26 @@ digests, and the audit log all key on it. A receiver chosen only by address, as
 the CLI allows, gets a derived id that exists for Operator use and is never
 listed to an Agent. The Agent view carries no network address.
 
+### Receiver connection
+
+The Control API server connects to a receiver on demand. The first subscription
+or operation opens its session, and the server closes the session after a
+configurable idle time with no subscribers and no operation in flight, which
+frees the receiver's single control connection for other tools. State is stale
+while a receiver is released, and a read connects and synchronizes before it
+answers.
+
 ### Control service port
 
-`application` defines one control-service port covering state subscription,
-operation submission and cancellation, receiver listing and discovery, receiver
-configuration, inspection reads, token management, and read-only views of
-approvals, audit, and effective policy. The Control API server implements it in
+`application` defines the control-service port as three traits that one handle
+implements. **Receiver reads** cover receiver listing, state subscription, and
+inspection reads. **Operation control** covers operation submission, status, and
+cancellation of the caller's own operations. **Operator administration** covers
+discovery, receiver configuration, token management, read-only views of
+approvals, audit, and effective policy, and the policy reload. A surface takes
+only the traits it needs, so one that is not handed a trait cannot name its
+methods: a read-only agent takes the first, a writing agent the first two, and
+the GUI and CLI all three. The Control API server implements the port in
 process, behind the gate. `api-client` implements it over the Control API. GUI,
 CLI, and MCP servers consume only the port, through a handle bound to one
 credential. The caller's principal is derived by the server from the bearer
@@ -952,7 +966,7 @@ share.
 
 | Item | Location and rule |
 | --- | --- |
-| Receiver configuration | Existing YAML, owned by the Control API server and reached by clients through the API |
+| Receiver configuration | YAML, owned by the Control API server and reached by clients through the API. The schema holds several receivers by name. An earlier single-receiver file is read, then rewritten in the new schema with a one-time backup |
 | Policy | Separate YAML in the per-user data directory, edited as a file and loaded on start or Operator reload |
 | Audit log | Append-only JSON Lines in the same directory; one record per operation event with principal, request, policy decision and matched rules, approval ticket and decision, dispatch certainty, and outcome. Rotated by size, with a configurable size limit and file count; the oldest file is deleted beyond the count, and the audit view reads across the retained files |
 | Endpoints | The Operator endpoint in the owner-only data directory; the Agent endpoint in a separate location whose permissions are configured and applied at start |
