@@ -306,7 +306,10 @@ async fn run_session(
         // schedule. We must not immediately issue another command after an
         // ambiguous transport boundary.
         last_transmission = Some(tokio::time::Instant::now());
-        if request.command.as_str() == "PWON" {
+        // The receiver is busy for about a second after it is powered on, from
+        // standby (`PWON`) or for the main zone (`ZMON`, which is what the GUI's
+        // power button sends). Nothing else is sent until it has had that time.
+        if matches!(request.command.as_str(), "PWON" | "ZMON") {
             power_on_quiet_until = Some(
                 last_transmission.expect("transmission timestamp was just recorded")
                     + Duration::from_secs(1),
@@ -625,8 +628,9 @@ mod tests {
         server.await.unwrap();
     }
 
-    #[tokio::test]
-    async fn enforces_denon_power_on_quiet_period() {
+    /// Dispatch `power_on`, then ask a question, and check the question reaches
+    /// the receiver no sooner than the receiver's quiet period.
+    async fn assert_quiet_period_after(power_on: &'static str) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
@@ -634,7 +638,7 @@ mod tests {
             let mut reader = BufReader::new(stream);
             let mut command = Vec::new();
             reader.read_until(b'\r', &mut command).await.unwrap();
-            assert_eq!(command, b"PWON\r");
+            assert_eq!(command, format!("{power_on}\r").as_bytes());
             command.clear();
             let started = tokio::time::Instant::now();
             reader.read_until(b'\r', &mut command).await.unwrap();
@@ -651,7 +655,47 @@ mod tests {
         )
         .await
         .unwrap();
-        session.dispatch("PWON").await.unwrap();
+        session.dispatch(power_on).await.unwrap();
+        assert_eq!(session.request("MV?").await.unwrap(), "MV80");
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn enforces_denon_power_on_quiet_period() {
+        assert_quiet_period_after("PWON").await;
+    }
+
+    #[tokio::test]
+    async fn enforces_the_same_quiet_period_after_a_main_zone_power_on() {
+        assert_quiet_period_after("ZMON").await;
+    }
+
+    #[tokio::test]
+    async fn does_not_pause_after_commands_that_are_not_a_power_on() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut reader = BufReader::new(stream);
+            let mut command = Vec::new();
+            reader.read_until(b'\r', &mut command).await.unwrap();
+            assert_eq!(command, b"ZMOFF\r");
+            command.clear();
+            let started = tokio::time::Instant::now();
+            reader.read_until(b'\r', &mut command).await.unwrap();
+            assert!(started.elapsed() < Duration::from_millis(500));
+            reader.get_mut().write_all(b"MV80\r").await.unwrap();
+        });
+        let session = AvrSession::connect_addr(
+            address,
+            AvrSessionConfig {
+                transmission_interval: Duration::from_millis(1),
+                ..AvrSessionConfig::default()
+            },
+        )
+        .await
+        .unwrap();
+        session.dispatch("ZMOFF").await.unwrap();
         assert_eq!(session.request("MV?").await.unwrap(), "MV80");
         server.await.unwrap();
     }
