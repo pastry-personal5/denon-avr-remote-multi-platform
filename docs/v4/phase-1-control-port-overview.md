@@ -24,7 +24,7 @@ Work goes one numbered step at a time: `make check`, `make clippy`, and
 | 5 | Inspection reads on the canonical contract | Done |
 | 6 | Session precondition | Done |
 | 7 | CLI on the port | Done |
-| 8 | Multi-receiver configuration file | Not started |
+| 8 | Multi-receiver configuration file | Done |
 
 ## Exit criteria
 
@@ -56,9 +56,11 @@ Work goes one numbered step at a time: `make check`, `make clippy`, and
    `Dispatch`, and `Confirmed` lines, and only `--dry-run` skips the receiver.
 3. **Single control connection.** While the CLI runs, the receiver accepts no
    second Telnet client; after it exits, another client can connect at once.
-4. **Configuration migration.** Copy a version 3 file to a scratch path, point
-   the CLI at it, run any command, and check that the file is now version 2 and
-   a `.v3.bak` copy holds the original.
+4. **Configuration migration.** Copy your version 3 file aside. Run a `get`
+   with the real file and check that it now starts with `version: 2`, that a
+   `.v3.bak` copy holds the original, and that the receiver and any sound mode
+   favorites are unchanged. Run another command and check that no second
+   backup appears.
 5. **Armed controls.** With `ALLOW_RECEIVER_WRITES=1`, `DENON_X3800H_HOST`, and a
    safe volume set, run the state-restoring live controls and record model,
    firmware, settings, commands, responses, and date as in

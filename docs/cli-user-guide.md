@@ -96,10 +96,37 @@ dispatching.
 
 ## Configuration and troubleshooting
 
-Successful selected reads and writes save the selected identity as the current
-receiver using the YAML configuration adapter. The CLI creates an ad-hoc
-identity for `--host`; configured metadata is descriptive and does not itself
-grant capabilities.
+Successful selected reads and writes save the selected receiver as the current
+one in the YAML configuration file. The CLI creates an ad-hoc identity for
+`--host`; configured metadata is descriptive and does not itself grant
+capabilities.
+
+The file holds several receivers by name. The name of an entry is the
+receiver's id and stays the same when its address changes:
+
+```yaml
+version: 2
+current: living-room
+receivers:
+  living-room:
+    host: 192.0.2.10
+    model: AVR-X3800H
+    friendly_name: Living Room
+sound_mode_favorites:
+  living-room:
+    - DOLBY SURROUND
+```
+
+Names must be unique, non-empty, and must not start with `adhoc:`, which is
+reserved for receivers chosen by address; a file that breaks these rules is
+refused rather than repaired. Version 3.0.0 wrote a single-receiver file with a
+top-level `receiver:` key. This release still reads it, and copies it to
+`<file>.v3.bak` (or `.v3.bak.1` and so on, never over an existing backup) the
+first time it rewrites the file in the new schema. Version 3.0.0 cannot read the
+new file, so keep the backup if you may go back.
+
+Nothing in this release adds a second receiver. A file with several receivers
+comes from editing the file by hand, and the CLI never rewrites it.
 
 - Check LAN reachability, multicast, and Network Control if discovery finds no
   device.

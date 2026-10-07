@@ -199,12 +199,17 @@ sound_mode_favorites:
 - **Reading.** A file with a top-level `receiver` is the single-receiver form.
   It is read as one entry named by its friendly name, or `default`, as before.
   Category-keyed favorites keep flattening as before.
-- **Writing.** Only the new schema is written. Before the first rewrite of a
-  single-receiver file, the original is copied to `<file>.v3.bak`. An existing
-  backup is never overwritten; a numbered suffix is used instead.
-- **Rejections.** Duplicate entry names, empty names, and names with the reserved
-  ad hoc prefix are rejected on read and on write. A `current` entry that is not
-  configured is rejected.
+- **Writing.** Only the new schema is written. Before a file that is not already
+  in the new schema is replaced, whether it is the single-receiver file or one
+  this release cannot read, its contents are copied to `<file>.v3.bak`. An
+  existing backup is never overwritten; a numbered suffix is used instead. If the
+  copy fails, nothing is replaced. A save that fails validation writes no backup.
+- **Empty.** An empty configuration is a valid state and can be saved. The
+  single-receiver file could not represent it.
+- **Rejections.** Duplicate entry names (a YAML parse error, never a silent
+  merge), empty names, and names with the reserved ad hoc prefix are rejected on
+  read and on write. A `current` entry or a favorites entry that names an
+  unconfigured receiver is rejected, as is any version other than 2.
 - **3.0.0 compatibility.** 3.0.0 cannot read the new file.
 - **One code path.** The synchronous and asynchronous repositories share the
   decode, encode, and backup code.
