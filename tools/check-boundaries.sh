@@ -96,4 +96,12 @@ if printf '%s\n' "$session_contracts" | rg -q -v '^crates/application/src/ports\
     fail "session contracts must be defined only in application ports"
 fi
 
+# The Operation Gate in the control service is the only caller of a session's
+# `operate` outside tests and the session implementation. Two callers remain
+# until they are retired: the legacy compatibility adapter, which milestone 2
+# deletes, and the CLI, which step 7 of milestone 1 moves onto the port.
+operate_callers=$(rg -l '\.operate\(' --glob '*.rs' --glob '!**/tests/**' crates apps |
+    rg -v '^(crates/application/src/service\.rs|crates/infrastructure/src/(x3800h_session|canonical_factory)\.rs|apps/cli/src/main\.rs)$' || true)
+[ -z "$operate_callers" ] || fail "only the Operation Gate may call a session's operate: $operate_callers"
+
 echo "architecture boundaries OK"

@@ -20,7 +20,7 @@ Work goes one numbered step at a time: `make check`, `make clippy`, and
 | 1 | Stable receiver id | Done |
 | 2 | Control-service port | Done |
 | 3 | Receiver connector port | Done |
-| 4 | In-process control service and Operator gate | Not started |
+| 4 | In-process control service and Operator gate | Done, except that the two inspection reads on the service return `Unsupported` until step 5 |
 | 5 | Inspection reads on the canonical contract | Not started |
 | 6 | Session precondition | Not started |
 | 7 | CLI on the port | Not started |

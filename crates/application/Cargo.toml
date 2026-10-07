@@ -10,3 +10,5 @@ path = "src/lib.rs"
 denon-avr-domain = { path = "../domain" }
 tracing = "0.1"
 tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
+[dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }

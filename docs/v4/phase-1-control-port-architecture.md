@@ -155,6 +155,12 @@ and the session implementation.
 - An operation moves `Allowed` to `InSession` and calls `operate` exactly once.
   The move and cancellation are decided under one lock, so a cancel either wins
   before the session is called or is told it is too late.
+- A receiver that cannot be reached ends the operation as `rejected` with
+  `not_dispatched`, carrying the connection error as its reason. The lifecycle
+  table has no separate status for it, and nothing was written.
+- If the task running an operation ends without resolving it, which only a panic
+  can cause, the operation is resolved as `indeterminate` with `unknown`
+  dispatch when it was in the session, so it is never left running.
 - A request with an idempotency key that was already used returns the existing
   operation, and a key reused for a different request is an invalid request. An
   identical in-flight operation from the same principal and receiver also

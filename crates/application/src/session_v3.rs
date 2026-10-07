@@ -5,6 +5,7 @@
 
 use crate::ports::{BoxFuture, OperationError};
 use denon_avr_domain::{CoreField, OperationId, OperationOutcome, ReceiverIntent, ReceiverState};
+use std::any::Any;
 use std::sync::Arc;
 use tokio::sync::watch;
 use tracing::debug;
@@ -13,6 +14,12 @@ use tracing::debug;
 pub struct OperationRequest {
     pub id: OperationId,
     pub intent: ReceiverIntent,
+}
+
+impl OperationRequest {
+    pub fn new(id: OperationId, intent: ReceiverIntent) -> Self {
+        Self { id, intent }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,11 +33,24 @@ pub struct Readiness {
 /// state; it cannot exert backpressure on the socket owner.
 pub struct StateSubscription {
     receiver: watch::Receiver<ReceiverState>,
+    /// Whatever the owner of the session wants kept alive for as long as this
+    /// subscription lives. The control service uses it to keep a receiver
+    /// connected while a subscriber is reading.
+    _hold: Option<Box<dyn Any + Send + Sync>>,
 }
 
 impl StateSubscription {
     pub fn new(receiver: watch::Receiver<ReceiverState>) -> Self {
-        Self { receiver }
+        Self {
+            receiver,
+            _hold: None,
+        }
+    }
+
+    /// Keep `hold` alive until this subscription is dropped.
+    pub fn holding(mut self, hold: impl Any + Send + Sync) -> Self {
+        self._hold = Some(Box::new(hold));
+        self
     }
     pub fn latest(&self) -> ReceiverState {
         self.receiver.borrow().clone()
