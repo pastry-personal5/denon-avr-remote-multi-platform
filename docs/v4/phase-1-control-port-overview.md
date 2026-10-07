@@ -1,8 +1,10 @@
 # Version 4, Phase 1 — Control port and in-process service
 
 **Steps 0–8 are implemented on branch `v4/phase-1-control-port` (started
-2026-10-07). The phase is not complete: its last exit criterion, live receiver
-validation through the CLI, has not been run.** This is milestone 1 of the
+2026-10-07). The owner reports that its last exit criterion, live receiver
+validation through the CLI, passed on 2026-10-08. The
+[record](../archive/v4/phase-1-live-validation-record.md) still needs its device
+fields completed before it is release evidence.** This is milestone 1 of the
 [roadmap](roadmap.md). It is a refactoring: it adds no user-visible behavior
 except that the CLI reads and writes the receiver configuration in the new
 multi-receiver schema, prints `set` results as `Outcome`, `Dispatch`, and
@@ -51,17 +53,19 @@ Work goes one numbered step at a time: `make check`, `make clippy`, and
 All exit criteria except the last are met by deterministic tests that
 `make check` runs. The last, live read-only validation and the armed,
 state-restoring controls, needs the receiver and the owner's explicit safety
-controls (`ALLOW_RECEIVER_WRITES=1`, `DENON_X3800H_HOST`, a safe volume). It is
-recorded in the archive when it is run, and the phase is complete when it
-passes. Merge to main waits for it.
+controls (`ALLOW_RECEIVER_WRITES=1`, `DENON_X3800H_HOST`, a safe volume). It was
+run on 2026-10-08 and reported as passing; it is recorded in the
+[archive](../archive/v4/phase-1-live-validation-record.md), whose fields marked
+**To fill** come from the owner's run notes. The phase is complete when the
+record is complete. Merge to main waits for that.
 
 ## Known limits until milestone 2
 
 - The desktop app still reaches the receiver through the legacy controller. Its
   receiver selection replaces the whole configuration with the selected
   receiver, so it overwrites a hand-edited multi-receiver file without a backup
-  (the backup applies only to a file not yet in the new schema). Milestone 2
-  moves the GUI onto the port.
+  (the backup applies only to a file this release does not read as the new
+  schema). Milestone 2 moves the GUI onto the port.
 - The first command that saves the configuration, from the CLI or the GUI,
   rewrites a version 3 file in the new schema. An installed 3.0.0 cannot read it
   until the `.v3.bak` copy is restored.

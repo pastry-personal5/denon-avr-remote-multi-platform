@@ -395,10 +395,17 @@ fn encode_text(config: &ConfiguredReceivers) -> Result<String, OperationError> {
 /// What a save writes, and the old file it must keep first.
 struct SavePlan {
     text: String,
-    /// The existing file's contents when it is not already in the current
+    /// The existing file's contents unless this release reads it as the current
     /// schema: the single-receiver file the first rewrite replaces, or a file
     /// this release cannot read. It is copied aside before anything is written.
     backup: Option<String>,
+}
+
+/// Whether `text` is a file this release reads in the current schema. Having the
+/// current schema's keys is not enough: a later version, a misspelt key, or an
+/// inconsistent entry makes it unreadable, and replacing it would lose it.
+fn is_readable_current_schema(text: &str) -> bool {
+    schema_of(text).ok() == Some(Schema::MultiReceiver) && decode_text(text).is_ok()
 }
 
 fn plan_save(
@@ -406,7 +413,8 @@ fn plan_save(
     config: &ConfiguredReceivers,
 ) -> Result<SavePlan, OperationError> {
     let text = encode_text(config)?;
-    let backup = existing.filter(|old| schema_of(old).ok() != Some(Schema::MultiReceiver));
+    // A blank file holds nothing worth keeping.
+    let backup = existing.filter(|old| !old.trim().is_empty() && !is_readable_current_schema(old));
     Ok(SavePlan { text, backup })
 }
 
@@ -593,18 +601,26 @@ mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    /// A scratch directory per test, so backups beside the file are visible.
+    /// A scratch directory per call, so backups beside the file are visible.
     struct Scratch {
         dir: PathBuf,
     }
 
     impl Scratch {
         fn new(name: &str) -> Self {
+            // The clock alone is not unique: tests run in parallel, several
+            // share a name, and a coarse clock gives two of them the same
+            // directory, so one deletes the other's file.
+            static NEXT: AtomicU64 = AtomicU64::new(0);
             let stamp = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
                 .as_nanos();
-            let dir = std::env::temp_dir().join(format!("denon-config-{stamp}-{name}"));
+            let unique = NEXT.fetch_add(1, Ordering::Relaxed);
+            let dir = std::env::temp_dir().join(format!(
+                "denon-config-{}-{stamp}-{unique}-{name}",
+                std::process::id()
+            ));
             fs::create_dir_all(&dir).unwrap();
             Self { dir }
         }
@@ -808,6 +824,77 @@ mod tests {
             fs::read_to_string(scratch.dir.join("denon-avr-remote.yaml.v3.bak")).unwrap(),
             "this is not a configuration"
         );
+    }
+
+    /// Save over `old` through each repository in turn, with a fresh file each
+    /// time, and hand the stored text and the backups to `check`.
+    fn save_over(old: &str, check: impl Fn(&Scratch)) {
+        for asynchronous in [false, true] {
+            let scratch = Scratch::new(if asynchronous { "async" } else { "sync" });
+            fs::write(scratch.file(), old).unwrap();
+            let repository = YamlConfigRepository::new(scratch.file());
+            if asynchronous {
+                block_on(AsyncConfigRepository::save(&repository, &two_receivers())).unwrap();
+            } else {
+                ConfigRepository::save(&repository, &two_receivers()).unwrap();
+            }
+            check(&scratch);
+        }
+    }
+
+    fn assert_kept_before_replacing(old: &str) {
+        save_over(old, |scratch| {
+            assert_eq!(scratch.backups(), vec!["denon-avr-remote.yaml.v3.bak"]);
+            assert_eq!(
+                fs::read_to_string(scratch.dir.join("denon-avr-remote.yaml.v3.bak")).unwrap(),
+                old,
+                "the backup is the old file, byte for byte"
+            );
+            assert!(fs::read_to_string(scratch.file())
+                .unwrap()
+                .starts_with("version: 2\n"));
+        });
+    }
+
+    #[test]
+    fn a_file_in_a_version_this_release_does_not_know_is_kept_before_it_is_replaced() {
+        // It has the new schema's keys, so the keys alone do not make it readable.
+        assert_kept_before_replacing("version: 3\nreceivers:\n  den:\n    host: 192.0.2.1\n");
+        assert_kept_before_replacing("version: 1\nreceivers:\n  den:\n    host: 192.0.2.1\n");
+    }
+
+    #[test]
+    fn a_hand_edited_current_file_this_release_cannot_read_is_kept_before_it_is_replaced() {
+        // A misspelt key.
+        assert_kept_before_replacing(
+            "version: 2\nreceivers:\n  den:\n    host: 192.0.2.1\n    hots: 192.0.2.2\n",
+        );
+        // A current receiver that is not configured.
+        assert_kept_before_replacing(
+            "version: 2\ncurrent: gone\nreceivers:\n  den:\n    host: 192.0.2.1\n",
+        );
+        // A duplicate name, which is refused rather than merged.
+        assert_kept_before_replacing(
+            "version: 2\nreceivers:\n  den:\n    host: 192.0.2.1\n  den:\n    host: 192.0.2.2\n",
+        );
+    }
+
+    #[test]
+    fn a_readable_current_file_is_replaced_without_a_backup() {
+        let old = "version: 2\ncurrent: den\nreceivers:\n  den:\n    host: 192.0.2.1\n";
+        save_over(old, |scratch| assert!(scratch.backups().is_empty()));
+    }
+
+    #[test]
+    fn a_blank_file_has_nothing_to_keep() {
+        for old in ["", "\n  \n"] {
+            save_over(old, |scratch| {
+                assert!(scratch.backups().is_empty());
+                assert!(fs::read_to_string(scratch.file())
+                    .unwrap()
+                    .starts_with("version: 2\n"));
+            });
+        }
     }
 
     #[test]

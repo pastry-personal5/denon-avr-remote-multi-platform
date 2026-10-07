@@ -209,6 +209,37 @@ impl Slot {
     }
 }
 
+/// Marks a slot as connecting for as long as an attempt runs. A caller can drop
+/// the attempt at any await, and the slot must not stay `Connecting` for a
+/// connection nobody is making, so an attempt that did not finish puts it back.
+struct ConnectAttempt<'a> {
+    status: &'a Mutex<ConnectionStatus>,
+    finished: bool,
+}
+
+impl<'a> ConnectAttempt<'a> {
+    fn start(status: &'a Mutex<ConnectionStatus>) -> Self {
+        *locked(status) = ConnectionStatus::Connecting;
+        Self {
+            status,
+            finished: false,
+        }
+    }
+
+    fn finish(mut self, status: ConnectionStatus) {
+        *locked(self.status) = status;
+        self.finished = true;
+    }
+}
+
+impl Drop for ConnectAttempt<'_> {
+    fn drop(&mut self) {
+        if !self.finished {
+            *locked(self.status) = ConnectionStatus::Released;
+        }
+    }
+}
+
 /// Keeps a receiver connected while it lives.
 struct Lease {
     inner: Arc<Inner>,
@@ -294,7 +325,7 @@ impl Inner {
         receiver: &ReceiverId,
         slot: &Slot,
     ) -> Result<SharedReceiverSession, ControlError> {
-        *locked(&slot.status) = ConnectionStatus::Connecting;
+        let attempt = ConnectAttempt::start(&slot.status);
         let result = async {
             let identity = self.identity(receiver).await?;
             let session = self
@@ -310,10 +341,10 @@ impl Inner {
             Ok(session)
         }
         .await;
-        *locked(&slot.status) = match result {
+        attempt.finish(match result {
             Ok(_) => ConnectionStatus::Connected,
             Err(_) => ConnectionStatus::Released,
-        };
+        });
         result
     }
 

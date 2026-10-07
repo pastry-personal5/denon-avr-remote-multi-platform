@@ -679,6 +679,37 @@ async fn concurrent_first_requests_connect_once() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_caller_that_gives_up_while_connecting_does_not_leave_the_receiver_connecting() {
+    let h = harness();
+    let connect = h.connector.hold_connect();
+    let handle = h.service.handle(Principal::Operator).unwrap();
+    let request = tokio::spawn(async move { handle.state(&living_room()).await.map(drop) });
+    settle().await;
+    assert_eq!(
+        h.operator.receivers().await.unwrap()[0].connection,
+        ConnectionStatus::Connecting
+    );
+
+    request.abort();
+    settle().await;
+    assert_eq!(
+        h.operator.receivers().await.unwrap()[0].connection,
+        ConnectionStatus::Released,
+        "nothing is connecting once the only caller has gone"
+    );
+
+    // The next request connects as usual. The gate keeps one permit for it.
+    connect.notify_one();
+    let subscription = h.operator.state(&living_room()).await.unwrap();
+    assert_eq!(h.connector.attempts(), 2);
+    assert_eq!(
+        h.operator.receivers().await.unwrap()[0].connection,
+        ConnectionStatus::Connected
+    );
+    drop(subscription);
+}
+
+#[tokio::test(start_paused = true)]
 async fn an_idle_receiver_is_released_and_the_next_request_reconnects() {
     let h = harness();
     drop(h.operator.state(&living_room()).await.unwrap());

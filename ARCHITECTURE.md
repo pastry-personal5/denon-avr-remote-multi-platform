@@ -132,9 +132,11 @@ carries three things beyond core state and operations:
 
 **Configuration file.** The YAML file holds several receivers by name, under a
 `version: 2` key, and the entry names are the receiver ids. The single-receiver
-file written by 3.0.0 is still read. A file that is not already in the new schema
-is copied once to `<file>.v3.bak` before it is replaced, never over an existing
-backup. Duplicate, empty, and reserved names and unknown versions are refused.
+file written by 3.0.0 is still read. A file this release does not read as the new
+schema (the 3.0.0 file, another version, or a file with an error such as an
+unknown key) is copied to `<file>.v3.bak` before it is replaced, never over an
+existing backup; a file that reads cleanly is replaced without one. Duplicate,
+empty, and reserved names and unknown versions are refused.
 3.0.0 cannot read the new file. Nothing adds a second receiver through the GUI
 or CLI.
 

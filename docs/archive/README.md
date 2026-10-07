@@ -5,7 +5,9 @@ release notes, changelogs, validation records, and retired research for audit
 and context. It is non-authoritative: use the [documentation map](../README.md)
 to find current architecture, policy, commands, and user guidance.
 
-Versioned material remains grouped under `v1/`, `v2/`, and `v3/`. Links within
+Versioned material remains grouped under `v1/`, `v2/`, `v3/`, and `v4/`, where
+`v4/` holds only validation records so far; its design stays in `docs/v4/` while
+the version is in progress. Links within
 archived records were retained or updated when the records moved so their
 historical narrative remains navigable; an archived statement does not override
 current documentation.
