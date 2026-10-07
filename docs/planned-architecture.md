@@ -48,6 +48,12 @@ Non-goals:
   operating-system account as the user's operator tools. Software here cannot;
   see [Choosing a build](#choosing-a-build).
 - Remote (off-LAN) access, multi-user accounts, and HEOS control.
+- Windows and Linux in the first release, which supports macOS only. The
+  Windows named-pipe transport and its access control remain the intended later
+  direction, and nothing here commits to either system.
+- Quick Select recall and EQ status. Neither is a receiver intent or part of the
+  control surface. Each would return as a classified intent with its own tool,
+  as [Policy Engine](#policy-engine) requires of every intent.
 - Operating-system services. The design uses no launchd, Keychain, or similar
   facility: processes are started from a terminal, by the GUI, or by an agent
   host, and credentials live in owner-only files and the agent host's
@@ -130,7 +136,7 @@ no receiver path, and can mint only Agent credentials.
 
 | Component | Package | Responsibility | Relative to current code |
 | --- | --- | --- | --- |
-| Receiver core | `domain`, `protocol`, `application`, `infrastructure` | Receiver model, wire protocols, serialized session, evidence-based state | Existing; one contract addition, see below |
+| Receiver core | `domain`, `protocol`, `application`, `infrastructure` | Receiver model, wire protocols, serialized session, evidence-based state | Existing; contract additions, see below |
 | Operation Gate | `application` | The only path from a request to a dispatching session call | New |
 | Policy Engine | `policy` | Pure classification of an operation as allow, require approval, or deny | New |
 | Approval Broker | `application` (port), `infrastructure` (adapter) | Creates, tracks, verifies, and expires approval requests | New |
@@ -142,7 +148,7 @@ no receiver path, and can mint only Agent credentials.
 | MCP stdio server | `apps/mcp-stdio` | The tool surface over stdio, for an agent on the server's machine | New |
 | MCP HTTP server | `apps/mcp-http` | The tool surface over Streamable HTTP, for agent hosts on the LAN | New |
 | Authorization server | `apps/auth-server` | Optional OAuth 2.1 server for the HTTP build: issues short-lived Agent access tokens and exchanges them for tokens the Agent endpoint accepts | New |
-| GUI app | `gui-lib`, `apps/desktop` | Presentation on macOS, Windows, and Linux; an Operator client | Changed |
+| GUI app | `gui-lib`, `apps/desktop` | Presentation, supported on macOS in the first release; an Operator client | Changed |
 | CLI | `apps/cli` | Operator commands and token management; an Operator client | Changed |
 | Diagnostics | `apps/diagnostics` | Explicit read-only evidence probes | Existing; unchanged |
 | External Approval Service | none | Asks the user and returns a signed decision | External |
@@ -164,24 +170,48 @@ Today `ARCHITECTURE.md`, `AGENTS.md`, and the single-definition rule in
 implemented they name `CanonicalReceiverSession` and its definition site
 instead, and the legacy contracts and the controller they serve are retired.
 
-One addition to the contract is required. `OperationRequest` gains an optional
-**precondition**: the receiver epoch and the baseline values the policy decision
-depended on. The session already observes the target field immediately before
-it writes; it compares that observation with the precondition and returns
-`RejectedBeforeDispatch` on a mismatch. Without it, receiver state could change
-between the gate's last evaluation and the session's write, a window the
-approval digest cannot close. Operator operations carry no precondition.
+Three additions to the contract are required.
+
+- **Precondition.** `OperationRequest` gains an optional precondition: the
+  receiver epoch and, for every field the matched policy rules consulted, the
+  value the decision saw or the fact that no usable value existed. The target
+  field is one of them but not the only one, because the default policy makes
+  main zone power-on and unmute depend on the volume. Before it writes, the
+  session re-observes each named field and compares it with the precondition. A
+  mismatch, or a different epoch, returns `RejectedBeforeDispatch` and nothing
+  is written. Re-observing adds no retry path and leaves the at-most-once rule
+  unchanged. Without a precondition, receiver state could change between the
+  gate's last evaluation and the session's write, a window the approval digest
+  cannot close. Operator operations carry no precondition.
+- **Typed rejection reason.** `RejectedBeforeDispatch` carries a typed reason
+  as well as free text, with at least one variant for a precondition mismatch
+  that names the field, so the gate can tell it from other rejections without
+  matching strings. The free text stays for display. The phase 1 architecture
+  document fixes the full set of variants.
+- **Inspection reads.** The contract gains typed, read-only reads of
+  receiver-owned facts that are not core state: the source catalog, Quick Select
+  names, and HTTP information. They never write, and the HTTP clients that serve
+  them stay in infrastructure. The `list_sources` tool and the GUI reach them
+  through the control-service port. No third session contract is introduced.
+
+### Receiver identity
+
+A receiver's id is the name of its saved configuration entry. It stays the same
+when the receiver's address changes, and API paths, the policy ledger, approval
+digests, and the audit log all key on it. A receiver chosen only by address, as
+the CLI allows, gets a derived id that exists for Operator use and is never
+listed to an Agent. The Agent view carries no network address.
 
 ### Control service port
 
 `application` defines one control-service port covering state subscription,
 operation submission and cancellation, receiver listing and discovery, receiver
-configuration, token management, and read-only views of approvals, audit, and
-effective policy. The Control API server implements it in process, behind the
-gate. `api-client` implements it over the Control API. GUI, CLI, and MCP servers
-consume only the port, through a handle bound to one credential. The caller's
-principal is derived by the server from the bearer credential presented with
-each request and is never a request parameter.
+configuration, inspection reads, token management, and read-only views of
+approvals, audit, and effective policy. The Control API server implements it in
+process, behind the gate. `api-client` implements it over the Control API. GUI,
+CLI, and MCP servers consume only the port, through a handle bound to one
+credential. The caller's principal is derived by the server from the bearer
+credential presented with each request and is never a request parameter.
 
 ### Process model
 
@@ -519,10 +549,11 @@ are not coalesced; a client that missed one reads `GET /v1/operations/{id}`.
 
 Transport and identity:
 
-- The Control API is reachable only locally: a Unix domain socket where the OS
-  provides one and a named pipe on Windows. The Control API server has no
-  network listener. Only `mcp-http` and, when OAuth is enabled, the
-  authorization server listen on the network, and `mcp-stdio` listens on
+- The Control API is reachable only locally, over a Unix domain socket. The
+  first release supports macOS only, so it implements no other transport; a
+  named pipe is the intended later direction for Windows. The Control API
+  server has no network listener. Only `mcp-http` and, when OAuth is enabled,
+  the authorization server listen on the network, and `mcp-stdio` listens on
   nothing.
 - There are two endpoints. The **Operator endpoint** lives in a per-user
   location with owner-only access (file mode or ACL), accepts connections only
@@ -769,15 +800,16 @@ so it uses `mcp-http`. Background and unverified details are in
 ## GUI app and CLI
 
 **GUI.** The existing Iced presentation (`gui-lib`, `apps/desktop`) is
-retargeted to be an Operator client. It stays cross-platform (macOS, Windows,
-and Linux) with its per-platform visual baselines, and the macOS app bundle is
-a packaged distribution of it. It projects presentation state from receiver
-state and operation events and adds views for the operation feed, pending
-approvals (observe and cancel), the audit log, and the effective policy
-(read-only, with its digest and a reload action). It authenticates with the
-Operator token file on the Operator endpoint. It neither issues nor revokes
-agent credentials; the CLI manages those. The GUI sees only the
-control-service port, so its toolkit is not an architectural commitment.
+retargeted to be an Operator client. The first release supports macOS only: the
+macOS visual baselines are updated, the Windows and Linux baselines are left as
+they were and are not validated, and the macOS app bundle is a packaged
+distribution of it. It projects presentation state from receiver state and
+operation events and adds views for the operation feed, pending approvals
+(observe and cancel), the audit log, and the effective policy (read-only, with
+its digest and a reload action). It authenticates with the Operator token file
+on the Operator endpoint. It neither issues nor revokes agent credentials; the
+CLI manages those. The GUI sees only the control-service port, so its toolkit
+is not an architectural commitment.
 
 **CLI.** The CLI becomes an Operator client with the same `get` and `set`
 surface and authenticates with the Operator token file. `--dry-run` becomes a
@@ -1012,9 +1044,9 @@ and opt-in live validation.
    building separately. The server only makes outbound connections and verifies
    signatures with public keys.
 2. **Agent endpoint access.** The mechanism that admits a dedicated agent or MCP
-   service account to the Agent endpoint on each operating system (group
-   membership, access lists, or a Windows ACL), and what the server verifies
-   about the peer.
+   service account to the Agent endpoint on macOS (group membership or an access
+   list), with other systems deferred, and what the server verifies about the
+   peer.
 3. **MCP protocol revision and SDK.** The revision to target, and whether to
    adopt the official Rust SDK, which publishes both a stdio transport and a
    Streamable HTTP server with host, origin, and body-size settings behind
@@ -1033,10 +1065,12 @@ and opt-in live validation.
    details; the format and refresh of the registry export; and the account and
    address the authorization server runs under.
 5. **Same-machine receiver isolation.** Whether and how an operating-system
-   firewall rule matching the agent's account is validated and recorded for
-   macOS, Linux, and Windows.
-6. **Session-contract precondition.** The exact shape of the precondition on
-   `OperationRequest` and how the session reports a mismatch.
+   firewall rule matching the agent's account is validated and recorded, for
+   macOS first.
+6. **Session-contract precondition.** Decided: the shape of the precondition and
+   the typed rejection reason are in
+   [Receiver core and the session contract](#receiver-core-and-the-session-contract).
+   Left: the Rust types, which the phase 1 architecture document fixes.
 
 ## References
 
