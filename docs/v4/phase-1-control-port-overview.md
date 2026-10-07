@@ -1,9 +1,13 @@
 # Version 4, Phase 1 — Control port and in-process service
 
-**In progress — started 2026-10-07 on branch `v4/phase-1-control-port`.** This is
-milestone 1 of the [roadmap](roadmap.md). It is a refactoring: it adds no
-user-visible behavior except that the CLI reads and writes the receiver
-configuration in the new multi-receiver schema.
+**Steps 0–8 are implemented on branch `v4/phase-1-control-port` (started
+2026-10-07). The phase is not complete: its last exit criterion, live receiver
+validation through the CLI, has not been run.** This is milestone 1 of the
+[roadmap](roadmap.md). It is a refactoring: it adds no user-visible behavior
+except that the CLI reads and writes the receiver configuration in the new
+multi-receiver schema, prints `set` results as `Outcome`, `Dispatch`, and
+`Confirmed`, and stops discarding sound mode favorites when it remembers the
+last receiver.
 
 The rules the phase relies on are in
 [Planned architecture](../planned-architecture.md). The types and decisions it
@@ -41,6 +45,15 @@ Work goes one numbered step at a time: `make check`, `make clippy`, and
   backs it up once, and rejects duplicate or reserved names.
 - Live read-only validation and the armed, state-restoring controls run pass on
   the X3800H through the CLI, with the result recorded as in version 3.
+
+## Exit status
+
+All exit criteria except the last are met by deterministic tests that
+`make check` runs. The last, live read-only validation and the armed,
+state-restoring controls, needs the receiver and the owner's explicit safety
+controls (`ALLOW_RECEIVER_WRITES=1`, `DENON_X3800H_HOST`, a safe volume). It is
+recorded in the archive when it is run, and the phase is complete when it
+passes. Merge to main waits for it.
 
 ## Manual macOS checklist
 

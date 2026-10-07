@@ -608,7 +608,9 @@ Gaps found by the review and the milestone that closes each:
 Nothing here blocks milestone 1.
 
 - The default idle time before a receiver is released, and whether an Agent read
-  alone keeps it connected. Settled in step 4.
+  alone keeps it connected. Settled in step 4: 60 seconds, and any read or
+  operation restarts the clock. Only a held subscription or an operation in
+  flight keeps a receiver connected, so an agent read does not hold it.
 - Whether your router can do a guest VLAN, which S4 answers.
 - When the External Approval Service will exist. It sets the start of
   milestone 7b and does not affect 4.0.0.

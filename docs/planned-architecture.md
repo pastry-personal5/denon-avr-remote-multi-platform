@@ -170,63 +170,24 @@ Today `ARCHITECTURE.md`, `AGENTS.md`, and the single-definition rule in
 implemented they name `CanonicalReceiverSession` and its definition site
 instead, and the legacy contracts and the controller they serve are retired.
 
-Three additions to the contract are required.
-
-- **Precondition.** `OperationRequest` gains an optional precondition: the
-  receiver epoch and, for every field the matched policy rules consulted, the
-  value the decision saw or the fact that no usable value existed. The target
-  field is one of them but not the only one, because the default policy makes
-  main zone power-on and unmute depend on the volume. Before it writes, the
-  session re-observes each named field and compares it with the precondition. A
-  mismatch, or a different epoch, returns `RejectedBeforeDispatch` and nothing
-  is written. Re-observing adds no retry path and leaves the at-most-once rule
-  unchanged. Without a precondition, receiver state could change between the
-  gate's last evaluation and the session's write, a window the approval digest
-  cannot close. Operator operations carry no precondition.
-- **Typed rejection reason.** `RejectedBeforeDispatch` carries a typed reason
-  as well as free text, with at least one variant for a precondition mismatch
-  that names the field, so the gate can tell it from other rejections without
-  matching strings. The free text stays for display. The phase 1 architecture
-  document fixes the full set of variants.
-- **Inspection reads.** The contract gains typed, read-only reads of
-  receiver-owned facts that are not core state: the source catalog, Quick Select
-  names, and HTTP information. They never write, and the HTTP clients that serve
-  them stay in infrastructure. The `list_sources` tool and the GUI reach them
-  through the control-service port. No third session contract is introduced.
+The precondition, the typed rejection cause, and the inspection reads are
+implemented. See [Control service](../ARCHITECTURE.md#control-service). The
+sections below keep their headings so links resolve, and are removed with the
+release milestone.
 
 ### Receiver identity
 
-A receiver's id is the name of its saved configuration entry. It stays the same
-when the receiver's address changes, and API paths, the policy ledger, approval
-digests, and the audit log all key on it. A receiver chosen only by address, as
-the CLI allows, gets a derived id that exists for Operator use and is never
-listed to an Agent. The Agent view carries no network address.
+Implemented. See [Control service](../ARCHITECTURE.md#control-service).
 
 ### Receiver connection
 
-The Control API server connects to a receiver on demand. The first subscription
-or operation opens its session, and the server closes the session after a
-configurable idle time with no subscribers and no operation in flight, which
-frees the receiver's single control connection for other tools. State is stale
-while a receiver is released, and a read connects and synchronizes before it
-answers.
+Implemented. See [Control service](../ARCHITECTURE.md#control-service).
 
 ### Control service port
 
-`application` defines the control-service port as three traits that one handle
-implements. **Receiver reads** cover receiver listing, state subscription, and
-the source catalog. **Operation control** covers operation submission, status,
-and cancellation of the caller's own operations. **Operator administration**
-covers discovery, receiver configuration, the inspection reads that no agent
-tool uses (Quick Select names and HTTP information), token management,
-read-only views of approvals, audit, and effective policy, and the policy
-reload. A surface takes only the traits it needs, so one that is not handed a trait cannot name its
-methods: a read-only agent takes the first, a writing agent the first two, and
-the GUI and CLI all three. The Control API server implements the port in
-process, behind the gate. `api-client` implements it over the Control API. GUI,
-CLI, and MCP servers consume only the port, through a handle bound to one
-credential. The caller's principal is derived by the server from the bearer
-credential presented with each request and is never a request parameter.
+Implemented in process. See [Control service](../ARCHITECTURE.md#control-service).
+What remains is `api-client`, which implements the same port over the Control
+API, and the token, approval, audit, and policy views on `OperatorAdmin`.
 
 ### Process model
 
@@ -1082,10 +1043,8 @@ and opt-in live validation.
 5. **Same-machine receiver isolation.** Whether and how an operating-system
    firewall rule matching the agent's account is validated and recorded, for
    macOS first.
-6. **Session-contract precondition.** Decided: the shape of the precondition and
-   the typed rejection reason are in
-   [Receiver core and the session contract](#receiver-core-and-the-session-contract).
-   Left: the Rust types, which the phase 1 architecture document fixes.
+6. **Session-contract precondition.** Closed: implemented, and described in
+   [Control service](../ARCHITECTURE.md#control-service).
 
 ## References
 
