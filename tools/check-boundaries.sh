@@ -47,6 +47,11 @@ fi
 if contains 'denon_avr_protocol' apps/cli/src; then
     fail "CLI must use application ports rather than protocol encoding"
 fi
+# The CLI reaches the receiver only through the control-service port. It may
+# compose the service, but it never constructs or names a session.
+if contains '\b(X3800hSession|AvrSession|CanonicalReceiverSession)\b' apps/cli/src; then
+    fail "CLI must not construct or name a receiver session"
+fi
 
 # Validate every normal workspace dependency edge from Cargo's resolved
 # metadata. This catches renamed dependencies and new packages, neither of
@@ -97,11 +102,11 @@ if printf '%s\n' "$session_contracts" | rg -q -v '^crates/application/src/ports\
 fi
 
 # The Operation Gate in the control service is the only caller of a session's
-# `operate` outside tests and the session implementation. Two callers remain
-# until they are retired: the legacy compatibility adapter, which milestone 2
-# deletes, and the CLI, which step 7 of milestone 1 moves onto the port.
+# `operate` outside tests and the session implementation. One caller remains
+# until it is retired: the legacy compatibility adapter, which milestone 2
+# deletes.
 operate_callers=$(rg -l '\.operate\(' --glob '*.rs' --glob '!**/tests/**' crates apps |
-    rg -v '^(crates/application/src/service\.rs|crates/infrastructure/src/(x3800h_session|canonical_factory)\.rs|apps/cli/src/main\.rs)$' || true)
+    rg -v '^(crates/application/src/service\.rs|crates/infrastructure/src/(x3800h_session|canonical_factory)\.rs)$' || true)
 [ -z "$operate_callers" ] || fail "only the Operation Gate may call a session's operate: $operate_callers"
 
 echo "architecture boundaries OK"

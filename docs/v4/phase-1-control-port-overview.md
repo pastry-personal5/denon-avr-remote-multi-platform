@@ -23,7 +23,7 @@ Work goes one numbered step at a time: `make check`, `make clippy`, and
 | 4 | In-process control service and Operator gate | Done |
 | 5 | Inspection reads on the canonical contract | Done |
 | 6 | Session precondition | Done |
-| 7 | CLI on the port | Not started |
+| 7 | CLI on the port | Done |
 | 8 | Multi-receiver configuration file | Not started |
 
 ## Exit criteria
@@ -52,6 +52,8 @@ Work goes one numbered step at a time: `make check`, `make clippy`, and
 2. **Read-only CLI.** With a receiver reachable, `make run ARGS="get status"`
    prints the state and a readiness line, then exits. Repeat with
    `--host HOST`.
+   The CLI no longer prints `Outcome: {debug}`: a `set` prints `Outcome`,
+   `Dispatch`, and `Confirmed` lines, and only `--dry-run` skips the receiver.
 3. **Single control connection.** While the CLI runs, the receiver accepts no
    second Telnet client; after it exits, another client can connect at once.
 4. **Configuration migration.** Copy a version 3 file to a scratch path, point

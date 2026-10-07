@@ -1,10 +1,11 @@
 # CLI user guide
 
 `denon-avr-remote` discovers local Denon and Marantz receivers, reads Main Zone
-state, and submits Main Zone controls through the canonical async receiver
-service. It does not control HEOS. Receiver outcomes are evidence-based: a
-write acknowledgement is not reported as confirmed state; run a later `get`
-command for authoritative receiver evidence.
+state, and submits Main Zone controls through the in-process control service.
+It does not control HEOS. Receiver outcomes are evidence-based: a write
+acknowledgement is not reported as confirmed state, and a result says
+separately whether anything was dispatched and whether receiver evidence
+confirms the requested value.
 
 ## Requirements
 
@@ -56,10 +57,11 @@ make run ARGS="get status --receiver 1"
 make run ARGS="get power --host 192.0.2.10"
 ```
 
-Each read connects, synchronizes through the canonical service, prints the
+Each read connects, synchronizes through the control service, prints the
 selected target and requested field or full state, reports readiness, then
-closes the session. A degraded or unavailable field remains explicitly
-represented; it is not replaced with a guessed value.
+closes the session so the receiver's single control connection is free for
+other tools. A degraded or unavailable field remains explicitly represented;
+it is not replaced with a guessed value.
 
 ## Main Zone controls
 
@@ -68,11 +70,29 @@ represented; it is not replaced with a guessed value.
 Volume accepts `min` or an exact dB value from `-79.5` through `+18.0` in
 `0.5` dB steps. `min` is a distinct receiver value, not an alias for `-79.5`.
 
-Before a live operation, the CLI synchronizes the selected receiver and submits
-one operation through the canonical service. `--dry-run` validates the intent
-and prints it without connecting or dispatching. A live result is printed as
-the service outcome; only a subsequent receiver observation can confirm the
-new state.
+A live operation is submitted to the control service, which allocates its id,
+connects to the receiver and dispatches at most once. The CLI waits until the
+operation is finished and prints its result:
+
+```text
+Outcome: completed
+Dispatch: complete_write
+Confirmed: true
+Observation: post-dispatch receiver observation
+```
+
+`Outcome` is the operation's status (`completed`, `already_in_state`,
+`rejected`, `cancelled`, `superseded`, or `indeterminate`). `Dispatch` says
+whether a command was sent: `not_dispatched`, `possibly_dispatched`,
+`complete_write` (the local write completed, which is not an acknowledgement
+by the receiver), or `unknown`. `Confirmed` is `true` only when receiver
+evidence shows the requested value. A `rejected` outcome always says
+`not_dispatched` and gives a `Reason`; an `indeterminate` one says what is
+known. The exit status is 0 whenever the operation finished, whatever its
+outcome, so scripts should read `Confirmed`.
+
+`--dry-run` validates the intent and prints it without connecting or
+dispatching.
 
 ## Configuration and troubleshooting
 

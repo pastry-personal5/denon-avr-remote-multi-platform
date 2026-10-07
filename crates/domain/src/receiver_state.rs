@@ -320,6 +320,18 @@ pub enum DispatchCertainty {
     Unknown,
 }
 
+impl DispatchCertainty {
+    /// The stable name clients see: `dispatch` in the operation lifecycle.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::NotDispatched => "not_dispatched",
+            Self::PossiblyDispatched => "possibly_dispatched",
+            Self::CompleteWrite => "complete_write",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
 /// Why a session refused an operation before writing anything. A write that
 /// began and then failed is `Indeterminate`, never a rejection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -620,6 +632,17 @@ mod tests {
         assert!(ReceiverId::new("adhoc:192.0.2.10").is_err());
         assert!(ReceiverId::is_reserved_name("adhoc:anything"));
         assert!(!ReceiverId::is_reserved_name("living-room"));
+    }
+
+    #[test]
+    fn dispatch_names_are_the_lifecycle_names() {
+        assert_eq!(DispatchCertainty::NotDispatched.as_str(), "not_dispatched");
+        assert_eq!(
+            DispatchCertainty::PossiblyDispatched.as_str(),
+            "possibly_dispatched"
+        );
+        assert_eq!(DispatchCertainty::CompleteWrite.as_str(), "complete_write");
+        assert_eq!(DispatchCertainty::Unknown.as_str(), "unknown");
     }
 
     #[test]
