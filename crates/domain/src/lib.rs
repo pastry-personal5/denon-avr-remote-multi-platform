@@ -8,6 +8,7 @@ pub mod capabilities;
 pub mod eq_status;
 pub mod http_information;
 pub mod main_zone;
+pub mod precondition;
 pub mod quick_select;
 pub mod quick_select_names;
 pub mod receiver;
@@ -37,6 +38,7 @@ pub use main_zone::{
     MainZoneValue, MuteState, PowerState, SoundModeCategory, StateAuthority, SurroundMode, Volume,
     VolumeLevel, Zone2Control, Zone2Snapshot,
 };
+pub use precondition::{FieldBaseline, FieldValue, Precondition, PreconditionMismatch};
 pub use quick_select::{
     QuickSelectName, QuickSelectPreset, QuickSelectRecallConfirmation, QuickSelectRecallOutcome,
     QuickSelectSlot, QuickSelectSnapshot, QuickSelectSummary, Registered,
@@ -49,8 +51,8 @@ pub use receiver_state::{
     CoreField, CoreFrame, DispatchCertainty, Epoch, FieldIssue, FieldState as ReceiverFieldState,
     FieldSynchronization, FieldValidity as ReceiverFieldValidity, FrameSeq, MasterVolume,
     MonotonicMillis, Observation as ReceiverObservation, ObservationOrigin, OperationId,
-    OperationOutcome, ReceiverId, ReceiverIntent, ReceiverState, SoundModeIntent, SoundModeStatus,
-    StaleReason, StateRevision, SyncCause, SyncCycleId, SystemPower, ZonePower,
+    OperationOutcome, ReceiverId, ReceiverIntent, ReceiverState, RejectionCause, SoundModeIntent,
+    SoundModeStatus, StaleReason, StateRevision, SyncCause, SyncCycleId, SystemPower, ZonePower,
 };
 pub use source_catalog::{
     CatalogResponseEvidence, SourceCatalog, SourceCatalogObservation, SourceEntry, SourceId,

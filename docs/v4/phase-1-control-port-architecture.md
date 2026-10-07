@@ -31,7 +31,9 @@ RejectionCause
 ```
 
 A cause always means nothing was written. A write that began and then failed is
-`Indeterminate`, never a rejection.
+`Indeterminate`, never a rejection. The cause is `RejectionCause` in `domain`,
+carried next to the display text as `RejectedBeforeDispatch { operation, cause,
+reason }`.
 
 ## Precondition
 
@@ -48,8 +50,9 @@ PreconditionMismatch
                   Epoch | Field(CoreField)
 ```
 
-`OperationRequest` gains `precondition: Option<Precondition>`. Operator
-operations carry none.
+`OperationRequest` gains `precondition: Option<Precondition>` and is
+`#[non_exhaustive]`, so it is built with `OperationRequest::new` and
+`with_precondition`. Operator operations carry none.
 
 **Capture.** `FieldBaseline::capture(state, field)` records the field's value
 only when its validity is `Current` and it has a last good observation. Stale,

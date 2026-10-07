@@ -5,8 +5,8 @@
 
 use crate::ports::{BoxFuture, OperationError, OperationErrorKind};
 use denon_avr_domain::{
-    CoreField, HttpInformationSnapshot, OperationId, OperationOutcome, QuickSelectNameObservation,
-    ReceiverIntent, ReceiverState, SourceCatalogObservation,
+    CoreField, HttpInformationSnapshot, OperationId, OperationOutcome, Precondition,
+    QuickSelectNameObservation, ReceiverIntent, ReceiverState, SourceCatalogObservation,
 };
 use std::any::Any;
 use std::sync::Arc;
@@ -14,14 +14,28 @@ use tokio::sync::watch;
 use tracing::debug;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct OperationRequest {
     pub id: OperationId,
     pub intent: ReceiverIntent,
+    /// What the decision behind this request saw. The session re-observes every
+    /// field it names before writing and refuses the write if any differs.
+    /// Operator operations carry none.
+    pub precondition: Option<Precondition>,
 }
 
 impl OperationRequest {
     pub fn new(id: OperationId, intent: ReceiverIntent) -> Self {
-        Self { id, intent }
+        Self {
+            id,
+            intent,
+            precondition: None,
+        }
+    }
+
+    pub fn with_precondition(mut self, precondition: Precondition) -> Self {
+        self.precondition = Some(precondition);
+        self
     }
 }
 

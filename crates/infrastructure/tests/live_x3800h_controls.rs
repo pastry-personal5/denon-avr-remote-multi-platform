@@ -58,20 +58,20 @@ async fn armed_live_mute_round_trip_restores_original_state() {
         MuteState::Off => MuteState::On,
     };
     let toggled = session
-        .operate(OperationRequest {
-            id: OperationId(1),
-            intent: ReceiverIntent::Mute(temporary),
-        })
+        .operate(OperationRequest::new(
+            OperationId(1),
+            ReceiverIntent::Mute(temporary),
+        ))
         .await;
     assert!(matches!(
         toggled,
         denon_avr_domain::OperationOutcome::ObservedRequestedValue { .. }
     ));
     let restored = session
-        .operate(OperationRequest {
-            id: OperationId(2),
-            intent: ReceiverIntent::Mute(original),
-        })
+        .operate(OperationRequest::new(
+            OperationId(2),
+            ReceiverIntent::Mute(original),
+        ))
         .await;
     assert!(matches!(
         restored,

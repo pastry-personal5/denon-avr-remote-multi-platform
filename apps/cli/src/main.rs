@@ -257,10 +257,7 @@ async fn set(
         .await
         .map_err(|error| error.to_string())?;
     let outcome = service
-        .operate(OperationRequest {
-            id: OperationId(1),
-            intent,
-        })
+        .operate(OperationRequest::new(OperationId(1), intent))
         .await;
     print_target(&target.identity);
     println!("Outcome: {outcome:?}");

@@ -16,7 +16,8 @@ use denon_avr_application::{
 };
 use denon_avr_domain::{
     CoreField, CoreFrame, DispatchCertainty, Epoch, FrameSeq, MonotonicMillis, ObservationOrigin,
-    OperationOutcome, ReceiverId, ReceiverIntent, ReceiverState, SyncCause, SyncCycleId, SyncDebt,
+    OperationOutcome, Precondition, PreconditionMismatch, ReceiverId, ReceiverIntent,
+    ReceiverState, RejectionCause, SyncCause, SyncCycleId, SyncDebt,
 };
 use denon_avr_protocol::avr::{encode_x3800h, parse_x3800h, x3800h_query, X3800hFrame};
 use std::net::SocketAddr;
@@ -440,6 +441,7 @@ async fn run_actor(
                         &mut avr,
                         request.id,
                         request.intent,
+                        request.precondition,
                         &reply,
                         &states,
                         &mut debt,
@@ -570,11 +572,79 @@ async fn synchronize(
     })
 }
 
+/// A refusal before anything is written. `cause` is what callers branch on.
+fn reject(
+    operation: denon_avr_domain::OperationId,
+    cause: RejectionCause,
+    reason: impl Into<String>,
+) -> OperationOutcome {
+    OperationOutcome::RejectedBeforeDispatch {
+        operation,
+        cause,
+        reason: reason.into(),
+    }
+}
+
+fn describe_mismatch(mismatch: PreconditionMismatch) -> String {
+    match mismatch {
+        PreconditionMismatch::Epoch => {
+            "the receiver connection changed since the request was evaluated".into()
+        }
+        PreconditionMismatch::Field(field) => {
+            format!("{field:?} no longer shows what the request was evaluated against")
+        }
+    }
+}
+
+/// Re-observe every field the precondition names besides the target, which the
+/// preflight has just read, and compare them all with what the decision saw.
+/// Only reads are issued. A field that cannot be re-observed refuses the write,
+/// because the decision can no longer be checked.
+#[allow(clippy::too_many_arguments)]
+async fn verify_precondition(
+    avr: &AvrSession,
+    precondition: &Precondition,
+    target: CoreField,
+    operation: denon_avr_domain::OperationId,
+    states: &watch::Sender<ReceiverState>,
+    epoch: &mut Epoch,
+    frame_seq: &mut FrameSeq,
+    started: Instant,
+) -> Result<(), OperationOutcome> {
+    for field in precondition.fields().filter(|field| *field != target) {
+        let intent = intent_for_field(field);
+        if let Err(error) = query_and_reduce(avr, &intent, states, epoch, frame_seq, started).await
+        {
+            mark_query_failed(states, field, error.to_string());
+            return Err(reject(
+                operation,
+                RejectionCause::ObservationFailed,
+                format!("could not re-observe {field:?} before writing: {error}"),
+            ));
+        }
+    }
+    match precondition.mismatch(&states.borrow()) {
+        None => Ok(()),
+        Some(mismatch) => Err(reject(
+            operation,
+            RejectionCause::PreconditionMismatch(mismatch),
+            describe_mismatch(mismatch),
+        )),
+    }
+}
+
+/// Run one operation. The order of the checks before the write is part of the
+/// session contract: admit the intent, re-observe the target, re-observe and
+/// compare the precondition when there is one, and only then ask whether the
+/// target is already in state. A precondition mismatch therefore takes
+/// precedence over `AlreadyObserved`, because the precondition guards the
+/// decision and not only the write. Nothing is retried.
 #[allow(clippy::too_many_arguments)]
 async fn operate(
     avr: &mut AvrSession,
     operation: denon_avr_domain::OperationId,
     intent: ReceiverIntent,
+    precondition: Option<Precondition>,
     reply: &oneshot::Sender<OperationOutcome>,
     states: &watch::Sender<ReceiverState>,
     debt: &mut Option<SyncDebt>,
@@ -589,52 +659,63 @@ async fn operate(
         return OperationOutcome::Cancelled { operation };
     }
     if let Err(reason) = admit_intent(&intent) {
-        return OperationOutcome::RejectedBeforeDispatch { operation, reason };
+        return reject(operation, RejectionCause::UnsupportedIntent, reason);
     }
     for dependency in dependencies {
         mark_converging(states, *dependency, SyncCause::LocalControl, cycle, started);
     }
-    match query_and_reduce(avr, &intent, states, epoch, frame_seq, started).await {
-        Ok(()) if state_matches(&states.borrow(), &intent) => {
-            for dependency in dependencies {
-                mark_settled(states, *dependency, cycle, started);
-            }
-            return OperationOutcome::AlreadyObserved {
-                operation,
-                observation: "targeted preflight observation".into(),
-            };
+    if let Err(error) = query_and_reduce(avr, &intent, states, epoch, frame_seq, started).await {
+        mark_query_failed(states, field, error.to_string());
+        return reject(
+            operation,
+            RejectionCause::ObservationFailed,
+            format!("preflight failed: {error}"),
+        );
+    }
+    if let Some(precondition) = &precondition {
+        if let Err(outcome) = verify_precondition(
+            avr,
+            precondition,
+            field,
+            operation,
+            states,
+            epoch,
+            frame_seq,
+            started,
+        )
+        .await
+        {
+            return outcome;
         }
-        Ok(()) => {}
-        Err(error) => {
-            mark_query_failed(states, field, error.to_string());
-            return OperationOutcome::RejectedBeforeDispatch {
-                operation,
-                reason: format!("preflight failed: {error}"),
-            };
+    }
+    if state_matches(&states.borrow(), &intent) {
+        for dependency in dependencies {
+            mark_settled(states, *dependency, cycle, started);
         }
+        return OperationOutcome::AlreadyObserved {
+            operation,
+            observation: "targeted preflight observation".into(),
+        };
     }
     if reply.is_closed() {
         return OperationOutcome::Cancelled { operation };
     }
     let command = match encode_x3800h(&intent) {
         Ok(command) => command,
-        Err(error) => {
-            return OperationOutcome::RejectedBeforeDispatch {
-                operation,
-                reason: error.to_string(),
-            }
-        }
+        Err(error) => return reject(operation, RejectionCause::CommandRefused, error.to_string()),
     };
     if let Err(error) = avr.dispatch(command.as_str()).await {
         return match error {
-            AvrSessionError::InvalidCommand(message) => OperationOutcome::RejectedBeforeDispatch {
+            AvrSessionError::InvalidCommand(message) => reject(
                 operation,
-                reason: format!("command was not dispatched: {message}"),
-            },
-            AvrSessionError::SessionStopped => OperationOutcome::RejectedBeforeDispatch {
+                RejectionCause::CommandRefused,
+                format!("command was not dispatched: {message}"),
+            ),
+            AvrSessionError::SessionStopped => reject(
                 operation,
-                reason: "session stopped before command dispatch".into(),
-            },
+                RejectionCause::SessionStopped,
+                "session stopped before command dispatch",
+            ),
             error => {
                 // A failed write is never replayed. A read-only observation
                 // may nevertheless prove that the receiver applied it.
@@ -1070,7 +1151,7 @@ fn stopped() -> OperationError {
 mod tests {
     use super::*;
     use denon_avr_application::CanonicalReceiverSession;
-    use denon_avr_domain::{MasterVolume, OperationId};
+    use denon_avr_domain::{FieldBaseline, MasterVolume, OperationId};
     use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
     use tokio::net::TcpListener;
 
@@ -1147,6 +1228,7 @@ mod tests {
             &mut avr,
             OperationId(99),
             ReceiverIntent::Mute(denon_avr_domain::MuteState::On),
+            None,
             &reply,
             &states,
             &mut debt,
@@ -1323,10 +1405,10 @@ mod tests {
             denon_avr_domain::ZonePower::On
         );
         let outcome = session
-            .operate(OperationRequest {
-                id: OperationId(1),
-                intent: ReceiverIntent::Volume(MasterVolume::db_half_steps(-78).unwrap()),
-            })
+            .operate(OperationRequest::new(
+                OperationId(1),
+                ReceiverIntent::Volume(MasterVolume::db_half_steps(-78).unwrap()),
+            ))
             .await;
         assert!(
             matches!(
@@ -1469,6 +1551,394 @@ mod tests {
         telnet_server.abort();
     }
 
+    /// A receiver whose volume and mute a test can change behind the session's
+    /// back, and which records every write it is sent.
+    #[derive(Default)]
+    struct FakeReceiver {
+        volume: String,
+        mute: String,
+        writes: Vec<String>,
+        /// Stop answering mute queries, so a re-observation fails.
+        silent_mute: bool,
+    }
+
+    type SharedReceiver = Arc<std::sync::Mutex<FakeReceiver>>;
+
+    fn fake_receiver() -> SharedReceiver {
+        Arc::new(std::sync::Mutex::new(FakeReceiver {
+            volume: "MV80".into(),
+            mute: "MUOFF".into(),
+            ..FakeReceiver::default()
+        }))
+    }
+
+    /// Serve the Telnet protocol on loopback until aborted. `drop_connection`
+    /// closes the current connection, which the session sees as a reconnect.
+    async fn serve(
+        shared: SharedReceiver,
+        drop_connection: Arc<tokio::sync::Notify>,
+    ) -> (SocketAddr, JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                let mut stream = BufReader::new(stream);
+                let mut line = Vec::new();
+                loop {
+                    line.clear();
+                    let read = tokio::select! {
+                        read = stream.read_until(b'\r', &mut line) => read.unwrap(),
+                        _ = drop_connection.notified() => break,
+                    };
+                    if read == 0 {
+                        break;
+                    }
+                    let command = std::str::from_utf8(&line).unwrap().to_owned();
+                    let response = {
+                        let mut receiver = shared.lock().unwrap();
+                        match command.as_str() {
+                            "PW?\r" => Some("PWON".to_owned()),
+                            "ZM?\r" => Some("ZMON".to_owned()),
+                            "Z2?\r" => Some("Z2OFF".to_owned()),
+                            "SI?\r" => Some("SICD".to_owned()),
+                            "MS?\r" => Some("MSSTEREO".to_owned()),
+                            "MV?\r" => Some(receiver.volume.clone()),
+                            "MU?\r" if receiver.silent_mute => None,
+                            "MU?\r" => Some(receiver.mute.clone()),
+                            write if write.starts_with("MV") || write.starts_with("MU") => {
+                                let write = write.trim_end().to_owned();
+                                if write.starts_with("MV") {
+                                    receiver.volume = write.clone();
+                                } else {
+                                    receiver.mute = write.clone();
+                                }
+                                receiver.writes.push(write);
+                                None
+                            }
+                            unexpected => panic!("unexpected command {unexpected:?}"),
+                        }
+                    };
+                    if let Some(response) = response {
+                        stream
+                            .get_mut()
+                            .write_all(format!("{response}\r").as_bytes())
+                            .await
+                            .unwrap();
+                    }
+                }
+            }
+        });
+        (address, task)
+    }
+
+    async fn connect_to(address: SocketAddr, name: &str) -> Arc<X3800hSession> {
+        let session = X3800hSession::connect_addr(
+            ReceiverId::new(name).unwrap(),
+            address,
+            AvrSessionConfig {
+                transmission_interval: std::time::Duration::from_millis(1),
+                response_timeout: std::time::Duration::from_millis(200),
+                reconnect_delay: std::time::Duration::from_millis(10),
+                ..AvrSessionConfig::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert!(session.synchronize().await.unwrap().ready);
+        session
+    }
+
+    fn volume_request(half_steps: i16) -> OperationRequest {
+        OperationRequest::new(
+            OperationId(1),
+            ReceiverIntent::Volume(MasterVolume::db_half_steps(half_steps).unwrap()),
+        )
+    }
+
+    fn baseline(session: &X3800hSession, fields: &[CoreField]) -> Precondition {
+        Precondition::capture(&session.current_state(), fields.iter().copied()).unwrap()
+    }
+
+    fn writes(shared: &SharedReceiver) -> Vec<String> {
+        shared.lock().unwrap().writes.clone()
+    }
+
+    fn rejected_with(outcome: &OperationOutcome, expected: RejectionCause) {
+        match outcome {
+            OperationOutcome::RejectedBeforeDispatch { cause, .. } => {
+                assert_eq!(*cause, expected, "{outcome:?}")
+            }
+            other => panic!("expected a rejection, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_matching_precondition_lets_the_write_through_exactly_once() {
+        let shared = fake_receiver();
+        let (address, server) = serve(Arc::clone(&shared), Default::default()).await;
+        let session = connect_to(address, "precondition-match").await;
+        let precondition = baseline(&session, &[CoreField::Volume, CoreField::Mute]);
+
+        let outcome = session
+            .operate(volume_request(-78).with_precondition(precondition))
+            .await;
+
+        assert!(
+            matches!(outcome, OperationOutcome::ObservedRequestedValue { .. }),
+            "{outcome:?}"
+        );
+        assert_eq!(writes(&shared), vec!["MV41"]);
+        session.close().await.unwrap();
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn a_changed_target_refuses_the_write_and_reports_the_field() {
+        let shared = fake_receiver();
+        let (address, server) = serve(Arc::clone(&shared), Default::default()).await;
+        let session = connect_to(address, "precondition-target").await;
+        let precondition = baseline(&session, &[CoreField::Volume, CoreField::Mute]);
+        // Someone turns the volume down after the decision was made.
+        shared.lock().unwrap().volume = "MV60".into();
+
+        let outcome = session
+            .operate(volume_request(-78).with_precondition(precondition))
+            .await;
+
+        rejected_with(
+            &outcome,
+            RejectionCause::PreconditionMismatch(PreconditionMismatch::Field(CoreField::Volume)),
+        );
+        assert!(writes(&shared).is_empty(), "nothing may be written");
+        // The re-observation is real: the session now shows the new volume.
+        assert_eq!(
+            session
+                .current_state()
+                .main_zone
+                .volume
+                .last_good
+                .unwrap()
+                .value,
+            MasterVolume::db_half_steps(-40).unwrap()
+        );
+        session.close().await.unwrap();
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn a_changed_non_target_field_refuses_the_write() {
+        let shared = fake_receiver();
+        let (address, server) = serve(Arc::clone(&shared), Default::default()).await;
+        let session = connect_to(address, "precondition-other").await;
+        // The decision to raise the volume also depended on the mute state.
+        let precondition = baseline(&session, &[CoreField::Volume, CoreField::Mute]);
+        shared.lock().unwrap().mute = "MUON".into();
+
+        let outcome = session
+            .operate(volume_request(-78).with_precondition(precondition))
+            .await;
+
+        rejected_with(
+            &outcome,
+            RejectionCause::PreconditionMismatch(PreconditionMismatch::Field(CoreField::Mute)),
+        );
+        assert!(writes(&shared).is_empty(), "nothing may be written");
+        // The non-target field was re-observed, not assumed.
+        assert_eq!(
+            session
+                .current_state()
+                .main_zone
+                .mute
+                .last_good
+                .unwrap()
+                .value,
+            denon_avr_domain::MuteState::On
+        );
+        session.close().await.unwrap();
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn a_change_in_an_unnamed_field_does_not_void_the_decision() {
+        let shared = fake_receiver();
+        let (address, server) = serve(Arc::clone(&shared), Default::default()).await;
+        let session = connect_to(address, "precondition-unnamed").await;
+        let precondition = baseline(&session, &[CoreField::Volume]);
+        shared.lock().unwrap().mute = "MUON".into();
+
+        let outcome = session
+            .operate(volume_request(-78).with_precondition(precondition))
+            .await;
+
+        assert!(
+            matches!(outcome, OperationOutcome::ObservedRequestedValue { .. }),
+            "{outcome:?}"
+        );
+        assert_eq!(writes(&shared), vec!["MV41"]);
+        session.close().await.unwrap();
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn a_mismatch_takes_precedence_over_already_in_state() {
+        let shared = fake_receiver();
+        let (address, server) = serve(Arc::clone(&shared), Default::default()).await;
+        let session = connect_to(address, "precondition-precedence").await;
+        let precondition = baseline(&session, &[CoreField::Volume]);
+        // The receiver already holds the requested volume, but not the baseline.
+        shared.lock().unwrap().volume = "MV41".into();
+
+        let outcome = session
+            .operate(volume_request(-78).with_precondition(precondition))
+            .await;
+        rejected_with(
+            &outcome,
+            RejectionCause::PreconditionMismatch(PreconditionMismatch::Field(CoreField::Volume)),
+        );
+
+        // Without a precondition, the same request is simply already in state.
+        let outcome = session.operate(volume_request(-78)).await;
+        assert!(
+            matches!(outcome, OperationOutcome::AlreadyObserved { .. }),
+            "{outcome:?}"
+        );
+        assert!(writes(&shared).is_empty());
+        session.close().await.unwrap();
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn a_baseline_of_no_usable_value_is_void_once_the_field_is_known() {
+        let shared = fake_receiver();
+        let (address, server) = serve(Arc::clone(&shared), Default::default()).await;
+        let session = connect_to(address, "precondition-unknown").await;
+        // The decision saw no usable mute state; the receiver reports one now.
+        let precondition = Precondition::new(Epoch(1))
+            .with(FieldBaseline::capture(
+                &session.current_state(),
+                CoreField::Volume,
+            ))
+            .with(FieldBaseline::NoUsableValue(CoreField::Mute));
+
+        let outcome = session
+            .operate(volume_request(-78).with_precondition(precondition))
+            .await;
+
+        rejected_with(
+            &outcome,
+            RejectionCause::PreconditionMismatch(PreconditionMismatch::Field(CoreField::Mute)),
+        );
+        assert!(writes(&shared).is_empty());
+        session.close().await.unwrap();
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn a_precondition_from_another_epoch_refuses_the_write() {
+        let shared = fake_receiver();
+        let (address, server) = serve(Arc::clone(&shared), Default::default()).await;
+        let session = connect_to(address, "precondition-epoch").await;
+        let precondition = Precondition::new(Epoch(9)).with(FieldBaseline::capture(
+            &session.current_state(),
+            CoreField::Volume,
+        ));
+
+        let outcome = session
+            .operate(volume_request(-78).with_precondition(precondition))
+            .await;
+
+        rejected_with(
+            &outcome,
+            RejectionCause::PreconditionMismatch(PreconditionMismatch::Epoch),
+        );
+        assert!(writes(&shared).is_empty());
+        session.close().await.unwrap();
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn a_reconnect_voids_a_precondition_captured_before_it() {
+        let shared = fake_receiver();
+        let drop_connection = Arc::new(tokio::sync::Notify::new());
+        let (address, server) = serve(Arc::clone(&shared), Arc::clone(&drop_connection)).await;
+        let session = connect_to(address, "precondition-reconnect").await;
+        let before = baseline(&session, &[CoreField::Volume]);
+        assert_eq!(before.epoch(), Epoch(1));
+
+        // The receiver drops the connection and the session reconnects.
+        drop_connection.notify_one();
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        while session.current_state().epoch != Some(Epoch(2)) {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the session did not reconnect"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(session.synchronize().await.unwrap().ready);
+
+        let outcome = session
+            .operate(volume_request(-78).with_precondition(before))
+            .await;
+        rejected_with(
+            &outcome,
+            RejectionCause::PreconditionMismatch(PreconditionMismatch::Epoch),
+        );
+        assert!(
+            writes(&shared).is_empty(),
+            "authority from the old connection is void"
+        );
+
+        // A decision made on the new connection goes through.
+        let after = baseline(&session, &[CoreField::Volume]);
+        assert_eq!(after.epoch(), Epoch(2));
+        let outcome = session
+            .operate(volume_request(-78).with_precondition(after))
+            .await;
+        assert!(
+            matches!(outcome, OperationOutcome::ObservedRequestedValue { .. }),
+            "{outcome:?}"
+        );
+        assert_eq!(writes(&shared), vec!["MV41"]);
+        session.close().await.unwrap();
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn a_field_that_cannot_be_re_observed_refuses_the_write() {
+        let shared = fake_receiver();
+        let (address, server) = serve(Arc::clone(&shared), Default::default()).await;
+        let session = connect_to(address, "precondition-unobservable").await;
+        let precondition = baseline(&session, &[CoreField::Volume, CoreField::Mute]);
+        shared.lock().unwrap().silent_mute = true;
+
+        let outcome = session
+            .operate(volume_request(-78).with_precondition(precondition))
+            .await;
+
+        rejected_with(&outcome, RejectionCause::ObservationFailed);
+        assert!(writes(&shared).is_empty());
+        session.close().await.unwrap();
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn unsupported_intents_are_rejected_with_a_typed_cause() {
+        let shared = fake_receiver();
+        let (address, server) = serve(Arc::clone(&shared), Default::default()).await;
+        let session = connect_to(address, "typed-cause").await;
+        let outcome = session
+            .operate(OperationRequest::new(
+                OperationId(2),
+                ReceiverIntent::Source(denon_avr_domain::SourceId::new("NOT-A-SOURCE").unwrap()),
+            ))
+            .await;
+        rejected_with(&outcome, RejectionCause::UnsupportedIntent);
+        assert!(writes(&shared).is_empty());
+        session.close().await.unwrap();
+        server.abort();
+    }
+
     #[tokio::test]
     async fn dropped_operation_requester_does_not_replay_or_rollback_receiver_state() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1527,10 +1997,10 @@ mod tests {
             let session = Arc::clone(&session);
             async move {
                 session
-                    .operate(OperationRequest {
-                        id: OperationId(44),
-                        intent: ReceiverIntent::Volume(MasterVolume::db_half_steps(-119).unwrap()),
-                    })
+                    .operate(OperationRequest::new(
+                        OperationId(44),
+                        ReceiverIntent::Volume(MasterVolume::db_half_steps(-119).unwrap()),
+                    ))
                     .await
             }
         });

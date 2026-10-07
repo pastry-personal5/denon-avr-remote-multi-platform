@@ -189,10 +189,9 @@ impl ReceiverSession for CanonicalSessionAdapter {
         self.next_operation = self.next_operation.saturating_add(1);
         Box::pin(async move {
             let outcome = session
-                .operate(denon_avr_application::OperationRequest {
-                    id: operation,
-                    intent,
-                })
+                .operate(denon_avr_application::OperationRequest::new(
+                    operation, intent,
+                ))
                 .await;
             match outcome {
                 denon_avr_domain::OperationOutcome::ObservedRequestedValue { .. }
@@ -289,10 +288,9 @@ impl ReceiverSession for CanonicalSessionAdapter {
                 Zone2Control::Power(PowerState::Standby) => denon_avr_domain::ZonePower::Off,
             });
             match session
-                .operate(denon_avr_application::OperationRequest {
-                    id: operation,
-                    intent,
-                })
+                .operate(denon_avr_application::OperationRequest::new(
+                    operation, intent,
+                ))
                 .await
             {
                 denon_avr_domain::OperationOutcome::ObservedRequestedValue { .. }

@@ -64,10 +64,10 @@ async fn smk_01_connect_sync_and_targeted_control_have_receiver_evidence() {
     );
 
     let outcome = session
-        .operate(OperationRequest {
-            id: OperationId(7),
-            intent: ReceiverIntent::Volume(MasterVolume::db_half_steps(-78).unwrap()),
-        })
+        .operate(OperationRequest::new(
+            OperationId(7),
+            ReceiverIntent::Volume(MasterVolume::db_half_steps(-78).unwrap()),
+        ))
         .await;
     assert!(matches!(
         outcome,

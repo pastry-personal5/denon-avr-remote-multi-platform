@@ -5,7 +5,7 @@ use super::*;
 use crate::control::AgentLabel;
 use crate::ports::OperationErrorKind;
 use crate::session_v3::{CanonicalReceiverSession, Readiness};
-use denon_avr_domain::{MasterVolume, MuteState, ReceiverState, ZonePower};
+use denon_avr_domain::{MasterVolume, MuteState, ReceiverState, RejectionCause, ZonePower};
 use std::collections::BTreeMap;
 use std::sync::atomic::AtomicUsize;
 use tokio::sync::Notify;
@@ -362,6 +362,7 @@ fn every_session_outcome_maps_to_status_dispatch_and_confirmed() {
         (
             OperationOutcome::RejectedBeforeDispatch {
                 operation,
+                cause: RejectionCause::UnsupportedIntent,
                 reason: "unsupported".into(),
             },
             OperationStatus::Rejected,
@@ -1101,6 +1102,7 @@ async fn a_rejection_from_the_session_is_reported_with_its_reason() {
     h.connector
         .script(|request| OperationOutcome::RejectedBeforeDispatch {
             operation: request.id,
+            cause: RejectionCause::UnsupportedIntent,
             reason: "source is not supported by the X3800H profile".into(),
         });
     let snapshot = h

@@ -22,7 +22,7 @@ Work goes one numbered step at a time: `make check`, `make clippy`, and
 | 3 | Receiver connector port | Done |
 | 4 | In-process control service and Operator gate | Done |
 | 5 | Inspection reads on the canonical contract | Done |
-| 6 | Session precondition | Not started |
+| 6 | Session precondition | Done |
 | 7 | CLI on the port | Not started |
 | 8 | Multi-receiver configuration file | Not started |
 

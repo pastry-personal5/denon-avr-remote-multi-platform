@@ -320,6 +320,23 @@ pub enum DispatchCertainty {
     Unknown,
 }
 
+/// Why a session refused an operation before writing anything. A write that
+/// began and then failed is `Indeterminate`, never a rejection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RejectionCause {
+    /// The receiver profile does not support the requested value.
+    UnsupportedIntent,
+    /// The receiver could not be observed before writing.
+    ObservationFailed,
+    /// What the caller's decision saw is no longer true.
+    PreconditionMismatch(crate::PreconditionMismatch),
+    /// The command could not be encoded, or the transport refused it before any
+    /// byte was written.
+    CommandRefused,
+    /// The session ended before the write.
+    SessionStopped,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OperationOutcome {
     AlreadyObserved {
@@ -331,8 +348,11 @@ pub enum OperationOutcome {
         dispatch: DispatchCertainty,
         observation: String,
     },
+    /// Nothing was written. `cause` is what callers branch on; `reason` is
+    /// text for display and is never matched.
     RejectedBeforeDispatch {
         operation: OperationId,
+        cause: RejectionCause,
         reason: String,
     },
     Cancelled {
