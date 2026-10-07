@@ -12,7 +12,7 @@
 //! handle is created from a credential and is never a request parameter.
 
 use crate::ports::{BoxFuture, OperationError};
-use crate::session_v3::StateSubscription;
+use crate::session_v3::{Readiness, StateSubscription};
 use denon_avr_domain::{
     ConfiguredReceivers, DiscoveredReceiver, DispatchCertainty, HttpInformationSnapshot,
     ModelCapabilities, OperationId, QuickSelectNameObservation, ReceiverId, ReceiverIdentity,
@@ -381,6 +381,14 @@ pub trait OperatorAdmin: Send + Sync {
         &'a self,
         receiver: &'a ReceiverId,
     ) -> BoxFuture<'a, Result<HttpInformationSnapshot, ControlError>>;
+
+    /// Read every core field from the receiver again, connecting first if the
+    /// receiver is released. It dispatches nothing and does not use the gate.
+    /// State subscribers see the result as an ordinary state change.
+    fn refresh<'a>(
+        &'a self,
+        receiver: &'a ReceiverId,
+    ) -> BoxFuture<'a, Result<Readiness, ControlError>>;
 }
 
 /// What a writing agent is handed: observation and operations, no administration.
@@ -479,6 +487,12 @@ mod tests {
             &'a self,
             _: &'a ReceiverId,
         ) -> BoxFuture<'a, Result<HttpInformationSnapshot, ControlError>> {
+            unavailable()
+        }
+        fn refresh<'a>(
+            &'a self,
+            _: &'a ReceiverId,
+        ) -> BoxFuture<'a, Result<Readiness, ControlError>> {
             unavailable()
         }
     }

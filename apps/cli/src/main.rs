@@ -831,6 +831,12 @@ mod tests {
         ) -> BoxFuture<'a, Result<HttpInformationSnapshot, ControlError>> {
             unexpected("http_information")
         }
+        fn refresh<'a>(
+            &'a self,
+            _: &'a ReceiverId,
+        ) -> BoxFuture<'a, Result<denon_avr_application::Readiness, ControlError>> {
+            unexpected("refresh")
+        }
     }
 
     fn block_on<T>(future: impl std::future::Future<Output = T>) -> T {

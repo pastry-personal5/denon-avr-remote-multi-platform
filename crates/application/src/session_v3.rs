@@ -54,6 +54,10 @@ pub struct StateSubscription {
     /// subscription lives. The control service uses it to keep a receiver
     /// connected while a subscriber is reading.
     _hold: Option<Box<dyn Any + Send + Sync>>,
+    /// Becomes true when the owner closes the session. A session keeps the
+    /// sender of its state channel for as long as it exists, so without this a
+    /// subscriber to a closed session would wait for ever.
+    ended: Option<watch::Receiver<bool>>,
 }
 
 impl StateSubscription {
@@ -61,6 +65,7 @@ impl StateSubscription {
         Self {
             receiver,
             _hold: None,
+            ended: None,
         }
     }
 
@@ -69,18 +74,37 @@ impl StateSubscription {
         self._hold = Some(Box::new(hold));
         self
     }
+
+    /// End this subscription when `ended` becomes true, or its sender is dropped.
+    pub fn ending_with(mut self, ended: watch::Receiver<bool>) -> Self {
+        self.ended = Some(ended);
+        self
+    }
+
     pub fn latest(&self) -> ReceiverState {
         self.receiver.borrow().clone()
     }
+
+    /// The next state, or an error once the session has closed.
     pub async fn changed(&mut self) -> Result<ReceiverState, OperationError> {
-        self.receiver.changed().await.map_err(|_| {
+        let closed = || {
             debug!("receiver state subscription closed");
             OperationError::new(
                 crate::ports::OperationErrorKind::Stopped,
                 "receiver state subscription",
                 "session closed",
             )
-        })?;
+        };
+        match self.ended.as_mut() {
+            Some(ended) => {
+                tokio::select! {
+                    biased;
+                    _ = ended.wait_for(|ended| *ended) => return Err(closed()),
+                    changed = self.receiver.changed() => changed.map_err(|_| closed())?,
+                }
+            }
+            None => self.receiver.changed().await.map_err(|_| closed())?,
+        }
         Ok(self.latest())
     }
 }

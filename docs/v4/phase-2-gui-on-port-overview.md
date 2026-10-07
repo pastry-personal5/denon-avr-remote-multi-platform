@@ -1,13 +1,13 @@
 # Version 4, Phase 2 — GUI on the port
 
-**In progress, started 2026-10-08.** Step 1, the behavior parity table, is
-written on branch `v4/phase-2-gui-on-port`. No code has changed yet, and four
-owner decisions (D2 to D5 in the [architecture](phase-2-gui-on-port-architecture.md#owner-decisions))
-are open. This is milestone 2 of the [roadmap](roadmap.md). It moves the GUI
-from the legacy `ReceiverController` onto the control-service port and then
+**In progress, started 2026-10-08** on branch `v4/phase-2-gui-on-port`. Steps
+1 and 2 are done. This is milestone 2 of the [roadmap](roadmap.md). It moves the
+GUI from the legacy `ReceiverController` onto the control-service port and then
 deletes the legacy path. It is a refactoring: the intended user-visible
-differences are the ones the parity table lists as **Changed**, and each is
-either a decision for the owner or an acceptance for them to confirm.
+differences are the ones the parity table lists as **Changed**. The owner asked
+for the milestone to be completed without answering decisions D2 to D5 (in the
+[architecture](phase-2-gui-on-port-architecture.md#owner-decisions)), so the
+recommendations were taken as the decisions.
 
 The rules the phase relies on are in
 [Planned architecture](../planned-architecture.md). What the GUI keeps,
@@ -22,7 +22,7 @@ Work goes one numbered step at a time: `make check`, `make clippy`, and
 | # | Step | State |
 | --- | --- | --- |
 | 1 | Behavior parity table | Done |
-| 2 | Port changes P1 `refresh` and P2 retiring a changed session, and the session checks they need | Not started |
+| 2 | Port changes P1 `refresh` and P2 retiring a changed session, and the session checks they need | Done |
 | 3 | Retarget `gui-lib` to the port; rewrite its tests | Not started |
 | 4 | Delete the legacy path; flip the guards; update the contract documents | Not started |
 | 5 | Scope the domain and protocol cleanup by inventory | Not started |

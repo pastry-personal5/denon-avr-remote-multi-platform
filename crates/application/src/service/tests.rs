@@ -110,6 +110,8 @@ impl CanonicalReceiverSession for FakeSession {
 
 struct FakeConnector {
     sessions: Mutex<Vec<Arc<FakeSession>>>,
+    /// The identity each connection attempt was made with, in order.
+    identities: Mutex<Vec<ReceiverIdentity>>,
     attempts: AtomicUsize,
     fail: AtomicBool,
     script: Mutex<Script>,
@@ -123,6 +125,7 @@ impl FakeConnector {
     fn new() -> Self {
         Self {
             sessions: Mutex::new(Vec::new()),
+            identities: Mutex::new(Vec::new()),
             attempts: AtomicUsize::new(0),
             fail: AtomicBool::new(false),
             script: Mutex::new(Arc::new(completed)),
@@ -140,6 +143,12 @@ impl FakeConnector {
     }
     fn sessions(&self) -> usize {
         locked(&self.sessions).len()
+    }
+    fn hosts(&self) -> Vec<String> {
+        locked(&self.identities)
+            .iter()
+            .map(|identity| identity.host.clone())
+            .collect()
     }
     fn hold_connect(&self) -> Arc<Notify> {
         let gate = Arc::new(Notify::new());
@@ -168,10 +177,11 @@ impl ReceiverConnector for FakeConnector {
     fn connect<'a>(
         &'a self,
         receiver: &'a ReceiverId,
-        _identity: &'a ReceiverIdentity,
+        identity: &'a ReceiverIdentity,
     ) -> BoxFuture<'a, Result<SharedReceiverSession, OperationError>> {
         Box::pin(async move {
             self.attempts.fetch_add(1, Ordering::SeqCst);
+            locked(&self.identities).push(identity.clone());
             let hold = locked(&self.hold_connect).clone();
             if let Some(hold) = hold {
                 hold.notified().await;
@@ -1188,4 +1198,195 @@ async fn inspection_reads_connect_on_demand_and_pass_the_sessions_answer_through
     // A read is only activity: it does not hold the receiver connected.
     advance(IDLE + Duration::from_secs(1)).await;
     assert_eq!(h.connector.session(0).closes(), 1);
+}
+
+/// The saved configuration with the living room moved to `host`.
+fn moved_to(h: &Harness, host: &str) -> ConfiguredReceivers {
+    let mut configuration = locked(&h.config.0).clone();
+    configuration.receivers.get_mut("living-room").unwrap().host = host.into();
+    configuration
+}
+
+#[tokio::test(start_paused = true)]
+async fn refresh_reads_every_field_again_and_dispatches_nothing() {
+    let h = harness();
+    // It connects on demand, like any read.
+    let readiness = h.operator.refresh(&living_room()).await.unwrap();
+    assert!(readiness.ready);
+    assert_eq!(h.connector.attempts(), 1);
+    let session = h.connector.session(0);
+    // One pass to connect and one for the refresh.
+    assert_eq!(session.synchronizes.load(Ordering::SeqCst), 2);
+    assert!(session.calls().is_empty());
+
+    h.operator.refresh(&living_room()).await.unwrap();
+    assert_eq!(h.connector.attempts(), 1);
+    assert_eq!(session.synchronizes.load(Ordering::SeqCst), 3);
+
+    let bedroom = ReceiverId::new("bedroom").unwrap();
+    assert_eq!(
+        h.operator.refresh(&bedroom).await.unwrap_err(),
+        ControlError::NotFound("receiver")
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn refresh_is_the_operators_alone() {
+    let h = harness();
+    // An Agent is refused a handle at all until the policy path exists, so the
+    // check on the method is exercised through a handle forged for the test.
+    let agent = ServiceHandle {
+        inner: Arc::clone(&h.service.inner),
+        principal: Principal::Agent(AgentLabel::new("openclaw").unwrap()),
+    };
+    assert_eq!(
+        agent.refresh(&living_room()).await.unwrap_err(),
+        ControlError::Forbidden
+    );
+    assert_eq!(h.connector.attempts(), 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_changed_address_retires_the_session_and_the_next_lease_uses_the_new_one() {
+    let h = harness();
+    let subscription = h.operator.state(&living_room()).await.unwrap();
+    assert_eq!(h.connector.hosts(), ["192.0.2.10"]);
+
+    h.operator
+        .save_configuration(&moved_to(&h, "192.0.2.99"))
+        .await
+        .unwrap();
+    assert_eq!(
+        h.connector.session(0).closes(),
+        1,
+        "closed despite the lease"
+    );
+    assert_eq!(
+        h.operator.receivers().await.unwrap()[0].connection,
+        ConnectionStatus::Released
+    );
+
+    drop(subscription);
+    drop(h.operator.state(&living_room()).await.unwrap());
+    assert_eq!(h.connector.hosts(), ["192.0.2.10", "192.0.2.99"]);
+    assert_eq!(h.connector.session(1).closes(), 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_subscriber_to_a_retired_session_is_told_it_ended() {
+    let h = harness();
+    let mut subscription = h.operator.state(&living_room()).await.unwrap();
+    h.operator
+        .save_configuration(&moved_to(&h, "192.0.2.99"))
+        .await
+        .unwrap();
+
+    let error = subscription.changed().await.unwrap_err();
+    assert_eq!(error.kind, OperationErrorKind::Stopped);
+
+    // Subscribing again reaches the new address.
+    drop(subscription);
+    let mut again = h.operator.state(&living_room()).await.unwrap();
+    assert_eq!(h.connector.hosts(), ["192.0.2.10", "192.0.2.99"]);
+    // And that subscription is live: it ends only when its own session does.
+    let waiting = tokio::time::timeout(Duration::from_secs(1), again.changed()).await;
+    assert!(waiting.is_err(), "no change and no end yet");
+}
+
+#[tokio::test(start_paused = true)]
+async fn retiring_waits_for_an_operation_in_flight_and_loses_nothing() {
+    let h = harness();
+    let release = h.connector.hold_operate();
+    let snapshot = h
+        .operator
+        .submit(&living_room(), volume(-78))
+        .await
+        .unwrap();
+    h.connector.entered.notified().await;
+
+    let operator = Arc::clone(&h.operator);
+    let moved = moved_to(&h, "192.0.2.99");
+    let save = tokio::spawn(async move { operator.save_configuration(&moved).await });
+    settle().await;
+    assert!(!save.is_finished(), "the retirement must wait");
+    assert_eq!(h.connector.session(0).closes(), 0);
+
+    release.notify_one();
+    save.await.unwrap().unwrap();
+    let done = finished(&h, snapshot.id).await;
+    assert_eq!(done.status, OperationStatus::Completed);
+    assert!(done.confirmed);
+    assert_eq!(h.connector.session(0).closes(), 1);
+    assert_eq!(h.connector.session(0).calls().len(), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_new_connection_never_opens_beside_the_old_one() {
+    let h = harness();
+    let close = h.connector.hold_close();
+    drop(h.operator.state(&living_room()).await.unwrap());
+
+    let operator = Arc::clone(&h.operator);
+    let moved = moved_to(&h, "192.0.2.99");
+    let save = tokio::spawn(async move { operator.save_configuration(&moved).await });
+    settle().await;
+    assert!(!save.is_finished(), "the old session is still closing");
+
+    let operator = Arc::clone(&h.operator);
+    let request = tokio::spawn(async move { operator.state(&living_room()).await.map(drop) });
+    settle().await;
+    assert!(!request.is_finished(), "it must wait for the close");
+    assert_eq!(h.connector.attempts(), 1, "no second connection yet");
+
+    close.notify_one();
+    save.await.unwrap().unwrap();
+    request.await.unwrap().unwrap();
+    assert_eq!(h.connector.session(0).closes(), 1);
+    assert_eq!(h.connector.hosts(), ["192.0.2.10", "192.0.2.99"]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_save_that_keeps_the_address_retires_nothing() {
+    let h = harness();
+    let subscription = h.operator.state(&living_room()).await.unwrap();
+    let mut configuration = locked(&h.config.0).clone();
+    let entry = configuration.receivers.get_mut("living-room").unwrap();
+    entry.friendly_name = Some("Living Room".into());
+    entry.model = Some("AVR-X3800H".into());
+    h.operator.save_configuration(&configuration).await.unwrap();
+    // A second receiver being added is no reason to touch the first.
+    configuration
+        .receivers
+        .insert("den".into(), ReceiverIdentity::ad_hoc("192.0.2.11"));
+    h.operator.save_configuration(&configuration).await.unwrap();
+
+    assert_eq!(h.connector.session(0).closes(), 0);
+    assert_eq!(h.connector.attempts(), 1);
+    drop(subscription);
+}
+
+#[tokio::test(start_paused = true)]
+async fn removing_an_entry_retires_its_session() {
+    let h = harness();
+    let mut subscription = h.operator.state(&living_room()).await.unwrap();
+    let mut configuration = locked(&h.config.0).clone();
+    configuration.receivers.clear();
+    configuration.current = None;
+    h.operator.save_configuration(&configuration).await.unwrap();
+
+    assert_eq!(h.connector.session(0).closes(), 1);
+    assert!(subscription.changed().await.is_err());
+    assert!(matches!(
+        h.operator.state(&living_room()).await,
+        Err(ControlError::NotFound("receiver"))
+    ));
+}
+
+#[tokio::test(start_paused = true)]
+async fn shutdown_ends_the_subscriptions_it_closes() {
+    let h = harness();
+    let mut subscription = h.operator.state(&living_room()).await.unwrap();
+    h.service.shutdown().await;
+    assert_eq!(h.connector.session(0).closes(), 1);
+    assert!(subscription.changed().await.is_err());
 }

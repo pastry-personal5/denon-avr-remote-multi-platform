@@ -60,9 +60,11 @@ authority, and a surface takes only the traits it needs:
   source catalog.
 - `OperationControl`: submitting an operation, reading its status, cancelling
   it, and the operation event stream, for the caller's own operations.
-- `OperatorAdmin`: discovery, receiver configuration, ad hoc receivers, and the
-  inspection reads no agent tool uses (Quick Select names and HTTP
-  information).
+- `OperatorAdmin`: discovery, receiver configuration, ad hoc receivers, the
+  inspection reads no agent tool uses (Quick Select names and HTTP information),
+  and `refresh`, which reads every core field again. `refresh` is a read: it
+  connects if the receiver is released, dispatches nothing, and does not use the
+  gate.
 
 `AgentControl` is the first two and `OperatorControl` all three. A handle is
 bound to one `Principal` when it is created and the principal is never a request
@@ -86,6 +88,20 @@ unless something used it since, which frees the receiver's single control
 connection for other tools. Connect, use, and release are serialized by one lock
 per receiver, so concurrent first requests connect once and a request that
 arrives during release waits for the close and reconnects.
+
+Saving the configuration retires the session of every receiver whose entry was
+removed or now holds a different host, so the next lease connects to the address
+in the file. A held subscription would otherwise keep the old session, which
+reconnects for ever to an address that no longer answers, and idle release would
+never come. Retirement takes the same per-receiver lock, so a new connection
+never opens beside the old one, and it waits for operations in flight because a
+close that outlasts its grace period aborts the session and would lose their
+outcome. It does not wait for subscribers. The service ends the subscriptions of
+every session it closes (retirement, idle release, shutdown), and
+`StateSubscription::changed` then returns the "session closed" error, because a
+session keeps the sender of its own state channel for as long as it exists.
+A subscriber that sees the error subscribes again. A change of model or name
+alone retires nothing.
 
 **Operation Gate.** Every state-changing request becomes an operation owned by
 the gate. The gate allocates the operation id, records the owning principal,

@@ -20,7 +20,7 @@ use crate::ports::{
     AsyncConfigRepository, AsyncReceiverDiscovery, BoxFuture, OperationError, ReceiverConnector,
 };
 use crate::receiver_selection::receiver_id;
-use crate::session_v3::{OperationRequest, SharedReceiverSession, StateSubscription};
+use crate::session_v3::{OperationRequest, Readiness, SharedReceiverSession, StateSubscription};
 use denon_avr_domain::{
     ConfiguredReceivers, DiscoveredReceiver, DispatchCertainty, HttpInformationSnapshot, Model,
     ModelCapabilities, OperationId, OperationOutcome, QuickSelectNameObservation, ReceiverId,
@@ -135,12 +135,9 @@ impl ControlService {
         let _ = idle.wait_for(|count| *count == 0).await;
         let slots: Vec<Arc<Slot>> = locked(&self.inner.slots).values().cloned().collect();
         for slot in slots {
-            let mut session = slot.session.lock().await;
-            if let Some(open) = session.take() {
-                if let Err(error) = open.close().await {
-                    warn!(%error, "closing receiver session during shutdown");
-                }
-                *locked(&slot.status) = ConnectionStatus::Released;
+            let mut held = slot.session.lock().await;
+            if let Some(open) = held.take() {
+                close_held(&slot, open, "during shutdown").await;
             }
         }
         // Ends every event stream.
@@ -189,9 +186,13 @@ struct Inner {
 /// One receiver's connection. The async lock serializes connect, use, and
 /// release, which is what makes each of those safe against the others.
 struct Slot {
-    session: tokio::sync::Mutex<Option<SharedReceiverSession>>,
+    session: tokio::sync::Mutex<Option<Held>>,
     /// Leases alive: reads, held subscriptions, and operations in flight.
     leases: AtomicUsize,
+    /// How many of those leases belong to an operation. Retiring a session
+    /// waits for this to reach zero, because closing under an operation in
+    /// flight would lose its outcome.
+    operations: watch::Sender<usize>,
     /// Bumped whenever a lease is taken or dropped, so an idle timer can tell
     /// whether anything happened after it was armed.
     activity: AtomicU64,
@@ -203,10 +204,31 @@ impl Slot {
         Self {
             session: tokio::sync::Mutex::new(None),
             leases: AtomicUsize::new(0),
+            operations: watch::channel(0).0,
             activity: AtomicU64::new(0),
             status: Mutex::new(ConnectionStatus::Released),
         }
     }
+}
+
+/// An open session, with what it was opened for and the signal that ends its
+/// subscribers when the service closes it.
+struct Held {
+    session: SharedReceiverSession,
+    /// The identity the session connected with. A saved entry whose host later
+    /// differs retires the session.
+    identity: ReceiverIdentity,
+    ended: watch::Sender<bool>,
+}
+
+/// Tell the session's subscribers it is over, then close it. The caller has
+/// taken it out of the slot, under the slot lock.
+async fn close_held(slot: &Slot, held: Held, why: &str) {
+    held.ended.send_replace(true);
+    if let Err(error) = held.session.close().await {
+        warn!(%error, why, "closing receiver session");
+    }
+    *locked(&slot.status) = ConnectionStatus::Released;
 }
 
 /// Marks a slot as connecting for as long as an attempt runs. A caller can drop
@@ -245,10 +267,15 @@ struct Lease {
     inner: Arc<Inner>,
     slot: Arc<Slot>,
     session: SharedReceiverSession,
+    ended: watch::Receiver<bool>,
+    operation: bool,
 }
 
 impl Drop for Lease {
     fn drop(&mut self) {
+        if self.operation {
+            self.slot.operations.send_modify(|count| *count -= 1);
+        }
         self.slot.activity.fetch_add(1, Ordering::SeqCst);
         if self.slot.leases.fetch_sub(1, Ordering::SeqCst) == 1 {
             self.inner.arm_idle_timer(&self.slot);
@@ -282,6 +309,16 @@ impl Inner {
     /// first when there is none. Concurrent callers wait on the slot lock, so
     /// exactly one connection is attempted.
     async fn lease(self: &Arc<Self>, receiver: &ReceiverId) -> Result<Lease, ControlError> {
+        self.lease_as(receiver, false).await
+    }
+
+    /// As [`Inner::lease`], counting the lease as an operation's when
+    /// `operation` is set.
+    async fn lease_as(
+        self: &Arc<Self>,
+        receiver: &ReceiverId,
+        operation: bool,
+    ) -> Result<Lease, ControlError> {
         let closed = || ControlError::Unavailable("the control service has shut down".into());
         if self.closed.load(Ordering::SeqCst) {
             return Err(closed());
@@ -302,21 +339,32 @@ impl Inner {
         if self.closed.load(Ordering::SeqCst) {
             return Err(closed());
         }
-        let session = match held.as_ref() {
-            Some(session) => Arc::clone(session),
+        let (session, ended) = match held.as_ref() {
+            Some(open) => (Arc::clone(&open.session), open.ended.subscribe()),
             None => {
-                let session = self.connect(receiver, &slot).await?;
-                *held = Some(Arc::clone(&session));
-                session
+                let (session, identity) = self.connect(receiver, &slot).await?;
+                let ended = watch::channel(false).0;
+                let subscriber = ended.subscribe();
+                *held = Some(Held {
+                    session: Arc::clone(&session),
+                    identity,
+                    ended,
+                });
+                (session, subscriber)
             }
         };
         // Counted while the lock is held, so a release cannot slip in between.
         slot.leases.fetch_add(1, Ordering::SeqCst);
+        if operation {
+            slot.operations.send_modify(|count| *count += 1);
+        }
         slot.activity.fetch_add(1, Ordering::SeqCst);
         Ok(Lease {
             inner: Arc::clone(self),
             slot: Arc::clone(&slot),
             session,
+            ended,
+            operation,
         })
     }
 
@@ -324,7 +372,7 @@ impl Inner {
         &self,
         receiver: &ReceiverId,
         slot: &Slot,
-    ) -> Result<SharedReceiverSession, ControlError> {
+    ) -> Result<(SharedReceiverSession, ReceiverIdentity), ControlError> {
         let attempt = ConnectAttempt::start(&slot.status);
         let result = async {
             let identity = self.identity(receiver).await?;
@@ -338,7 +386,7 @@ impl Inner {
                 let _ = session.close().await;
                 return Err(unavailable(error));
             }
-            Ok(session)
+            Ok((session, identity))
         }
         .await;
         attempt.finish(match result {
@@ -346,6 +394,47 @@ impl Inner {
             Err(_) => ConnectionStatus::Released,
         });
         result
+    }
+
+    /// Close the session of every receiver whose saved entry no longer reaches
+    /// the address it connected to, or was removed, so the next lease connects
+    /// to the address now in the file.
+    ///
+    /// Each close takes the slot lock, which keeps a new connection from opening
+    /// beside the old one (the receiver accepts a single control connection),
+    /// and waits for operations in flight, because a close that outlasts its
+    /// grace period aborts the session and would lose an outcome. It does not
+    /// wait for subscribers, who can hold a session indefinitely: they are told
+    /// it ended and subscribe again.
+    async fn retire_changed(&self, saved: &ConfiguredReceivers) {
+        let slots: Vec<(ReceiverId, Arc<Slot>)> = locked(&self.slots)
+            .iter()
+            .map(|(id, slot)| (id.clone(), Arc::clone(slot)))
+            .collect();
+        for (id, slot) in slots {
+            if id.is_ad_hoc() {
+                continue;
+            }
+            let mut held = slot.session.lock().await;
+            let unchanged = held.as_ref().is_none_or(|open| {
+                saved
+                    .receivers
+                    .get(id.as_str())
+                    .is_some_and(|entry| entry.host == open.identity.host)
+            });
+            if unchanged {
+                continue;
+            }
+            let mut operations = slot.operations.subscribe();
+            let _ = operations.wait_for(|count| *count == 0).await;
+            if let Some(open) = held.take() {
+                debug!(
+                    receiver = id.as_str(),
+                    "retiring session for a changed entry"
+                );
+                close_held(&slot, open, "its saved entry changed").await;
+            }
+        }
     }
 
     /// Start the idle clock. One timer runs per time the last lease drops; a
@@ -376,10 +465,7 @@ impl Inner {
         }
         if let Some(open) = session.take() {
             debug!("releasing idle receiver session");
-            if let Err(error) = open.close().await {
-                warn!(%error, "closing idle receiver session");
-            }
-            *locked(&slot.status) = ConnectionStatus::Released;
+            close_held(slot, open, "idle").await;
         }
     }
 
@@ -743,7 +829,7 @@ async fn run_operation(
         inner: Arc::clone(&inner),
         id,
     };
-    let lease = match inner.lease(&receiver).await {
+    let lease = match inner.lease_as(&receiver, true).await {
         Ok(lease) => lease,
         Err(error) => {
             inner.finish(
@@ -802,7 +888,11 @@ impl ReceiverReads for ServiceHandle {
         Box::pin(async move {
             self.visible_receiver(receiver)?;
             let lease = self.inner.lease(receiver).await?;
-            Ok(lease.session.state().holding(lease))
+            Ok(lease
+                .session
+                .state()
+                .ending_with(lease.ended.clone())
+                .holding(lease))
         })
     }
 
@@ -962,13 +1052,16 @@ impl OperatorAdmin for ServiceHandle {
             configuration
                 .validate()
                 .map_err(ControlError::InvalidRequest)?;
-            // A receiver whose address changed keeps its open session until it
-            // is released; the next connection uses the new address.
             self.inner
                 .config
                 .save(configuration)
                 .await
-                .map_err(ControlError::Receiver)
+                .map_err(ControlError::Receiver)?;
+            // A session open to an address the file no longer holds would
+            // otherwise serve it until released, and a held subscription keeps
+            // it from ever being released.
+            self.inner.retire_changed(configuration).await;
+            Ok(())
         })
     }
 
@@ -997,6 +1090,21 @@ impl OperatorAdmin for ServiceHandle {
             lease
                 .session
                 .http_information()
+                .await
+                .map_err(ControlError::Receiver)
+        })
+    }
+
+    fn refresh<'a>(
+        &'a self,
+        receiver: &'a ReceiverId,
+    ) -> BoxFuture<'a, Result<Readiness, ControlError>> {
+        Box::pin(async move {
+            self.require_operator()?;
+            let lease = self.inner.lease(receiver).await?;
+            lease
+                .session
+                .synchronize()
                 .await
                 .map_err(ControlError::Receiver)
         })

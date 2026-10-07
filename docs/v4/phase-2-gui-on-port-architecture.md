@@ -179,12 +179,13 @@ and must meet three constraints:
 - **Never two connections for one receiver.** The receiver accepts one control
   connection, so the close finishes before the next connect begins. The slot
   lock already serializes connect and release; retirement takes the same lock.
-- **Subscribers learn that the session ended.** Today a closed session leaves
+- **Subscribers learn that the session ended.** A closed session leaves
   `StateSubscription::changed` pending forever, because the session itself owns
-  the `watch` sender. A session closes its state stream when it closes, so
-  `changed` returns the existing "session closed" error, and the bridge treats
-  that error as a lost connection and calls `state` again. This does not depend
-  on the order in which the GUI drops and re-takes its subscription.
+  the `watch` sender. The service ends the subscriptions of every session it
+  closes, so `changed` returns the existing "session closed" error, and the
+  bridge treats that error as a lost connection and calls `state` again. This
+  does not depend on the order in which the GUI drops and re-takes its
+  subscription, and it works for any session implementation.
 
 This lives in the service, so the CLI and later clients get it too. Tests with the
 fake connector: a save with a new host, then a lease, connects with the new
@@ -207,13 +208,11 @@ Considered and not needed:
   enough. The Operator event stream carries every client's operations, so the
   GUI would have to filter it; the operation feed is milestone 5.
 - **Shutdown on the trait.** `ControlService::shutdown` stays inherent (L8).
-- **Evicting a stopped session.** `lease` returns whatever session the slot
-  holds until idle release. If the session actor can end other than by `close`,
-  the service would keep handing out a dead session. P2's rule that a closed
-  session ends its subscriptions covers the subscribers; step 2 also reads
-  `AvrSession::next_event` and `reconnect_indefinitely` and either records that
-  the actor cannot end by itself or makes a stopped actor close its stream and
-  evicts the slot's session, with a test.
+- **Evicting a stopped session.** Settled in step 2: not needed. The canonical
+  session sets `reconnect_indefinitely`, and the transport's reconnect loop then
+  returns only when its own event receiver has been dropped, which happens only
+  when the session itself is dropped or closed. A session's actor therefore
+  cannot end by itself, and the service never holds a dead session.
 
 ## Presentation design
 
@@ -296,8 +295,9 @@ every commit.
 ## Owner decisions
 
 D1 (remove Quick Select recall and EQ status) is in the roadmap. These are new.
-Each has a recommendation; nothing is implemented against them until they are
-answered.
+Each has a recommendation. The owner asked on 2026-10-08 for the milestone to be
+completed without answering them, so the recommendations were taken as the
+decisions and step 3 implements them. Any can be reversed in a follow-up commit.
 
 **D2. Optimistic concurrency (C6).** 3.0.0 rejected a control whose snapshot was
 stale. Operator operations carry no precondition. The exposure is the volume
@@ -333,7 +333,9 @@ differ only in the rows named here.
 3. No extra wait after a main-zone power-on and no second confirmation query (C4,
    C5), which shortens the time to "confirmed".
 4. The dashboard opens after two synchronization passes, 14 paced queries, and
-   not when the socket opens (L3), unless step 2 removes one pass.
+   not when the socket opens (L3). Step 2 kept both passes: the actor's startup
+   pass is not observable from outside, and the service's own pass is what
+   reports a failed first read and closes the session. Measure it live.
 5. Manual setup and "save discovered" keep other receivers and all favorites
    (G2).
 6. A receiver saved again under its old name with a new address reconnects at
