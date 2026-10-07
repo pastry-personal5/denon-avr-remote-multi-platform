@@ -1,11 +1,12 @@
 # Version 4, Phase 1 — Control port and in-process service
 
-**Steps 0–8 are implemented on branch `v4/phase-1-control-port` (started
-2026-10-07). The owner reports that its last exit criterion, live receiver
-validation through the CLI, passed on 2026-10-08. The
-[record](../archive/v4/phase-1-live-validation-record.md) still needs its device
-fields completed before it is release evidence.** This is milestone 1 of the
-[roadmap](roadmap.md). It is a refactoring: it adds no user-visible behavior
+**Complete, 2026-10-08.** Steps 0–8 are implemented on branch
+`v4/phase-1-control-port` (started 2026-10-07) and every exit criterion is met.
+The last, live receiver validation through the CLI, passed on the X3800H on
+2026-10-08 and is in the
+[record](../archive/v4/phase-1-live-validation-record.md), whose device fields
+(firmware, region, raw responses) are still to be filled from the owner's run
+notes. This is milestone 1 of the [roadmap](roadmap.md). It is a refactoring: it adds no user-visible behavior
 except that the CLI reads and writes the receiver configuration in the new
 multi-receiver schema, prints `set` results as `Outcome`, `Dispatch`, and
 `Confirmed`, and stops discarding sound mode favorites when it remembers the
@@ -50,14 +51,14 @@ Work goes one numbered step at a time: `make check`, `make clippy`, and
 
 ## Exit status
 
-All exit criteria except the last are met by deterministic tests that
+All exit criteria are met. All but the last are met by deterministic tests that
 `make check` runs. The last, live read-only validation and the armed,
-state-restoring controls, needs the receiver and the owner's explicit safety
+state-restoring controls, needed the receiver and the owner's explicit safety
 controls (`ALLOW_RECEIVER_WRITES=1`, `DENON_X3800H_HOST`, a safe volume). It was
-run on 2026-10-08 and reported as passing; it is recorded in the
-[archive](../archive/v4/phase-1-live-validation-record.md), whose fields marked
-**To fill** come from the owner's run notes. The phase is complete when the
-record is complete. Merge to main waits for that.
+run on 2026-10-08 and passed; it is recorded in the
+[archive](../archive/v4/phase-1-live-validation-record.md), where the fields
+marked **To fill** are the owner's to complete from the run notes. The phase is
+complete, and its branch is ready to merge to main.
 
 ## Known limits until milestone 2
 
