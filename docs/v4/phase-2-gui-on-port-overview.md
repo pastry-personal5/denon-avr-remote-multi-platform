@@ -77,12 +77,13 @@ From the roadmap, with the Diagnostics exception that decision D4 proposes:
   that are in effect. D4 removes rows from the Diagnostics screen, so
   `diagnostics-100pct.png` and `diagnostics-200pct.png` differ only in those
   rows. The owner also moved the volume slider and its label to end at +18.0 dB,
-  the receiver's maximum, so the screens that show the volume row differ in that
-  row: `connected`, `source-picker`, and `messages`, at both scales. That is eight
-  baselines in all; the other six (`unavailable`, `settings`, `receivers`) are
-  byte-identical. Both exceptions are the owner's to confirm when the captures are
-  reviewed. Without them the roadmap's wording, no pixel change at all, could not
-  be met.
+  the receiver's maximum, so every capture that renders the dashboard's volume row
+  (with or without the waiting overlay) differs in that row. `settings` and
+  `receivers` are byte-identical. The committed baselines predate the layout on
+  main, so they are first refreshed on main (the record says how); the
+  comparison above is against those. Both exceptions are the owner's to confirm
+  when the captures are reviewed. Without them the roadmap's wording, no pixel
+  change at all, could not be met.
 - A live GUI session, including a forced receiver reconnect, behaves as in 3.0.0,
   except for the differences the owner accepted in D5.
 - `make check` and `make clippy` pass.
@@ -101,10 +102,10 @@ Two criteria are open and need the owner, recorded in the
 [validation record](../archive/v4/phase-2-live-validation-record.md), where every
 result is still **To fill**:
 
-- `make visual-baselines` on macOS: six baselines byte-identical (`unavailable`,
-  `settings`, `receivers`), and the eight that differ recaptured on purpose: the
-  two Diagnostics baselines (decision D4) and the six that show the volume row,
-  which now ends at +18.0 dB.
+- `make visual-baselines` on macOS: the baselines refreshed on main first, then
+  only the intended differences, recaptured on purpose: the two Diagnostics
+  baselines (decision D4) and the captures that show the volume row, which now
+  ends at +18.0 dB. `settings` and `receivers` byte-identical.
 - A live GUI session on the X3800H, including a forced reconnect, with the
   differences the owner accepted in D5.
 

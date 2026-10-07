@@ -17,8 +17,11 @@ first column; the exit criteria are in the
 Run from the repository root on the Mac, outside a sandbox. Each capture opens a
 window per scenario, fourteen in all.
 
-1. **Before the phase, on main.** This tells whether the committed baselines are
-   current, so a later difference is attributable.
+1. **Before the phase, on main.** The committed baselines were last captured on
+   2026-09-09, and nine commits have changed the layout since (the committed
+   `connected` baseline has no AUDIO or VIDEO cards and no SOUND MODE panel, which
+   main renders). Expect this run to **fail** on several captures, whatever this
+   phase did. It exists to separate that drift from the phase's own differences.
 
    ```text
    git switch main
@@ -31,7 +34,10 @@ window per scenario, fourteen in all.
    and the comparison reads that folder, so the two directories differ by
    `macos`.
 
-   If this fails, refresh the baselines in a commit of their own on main first.
+   When it fails, review the differing captures, which should show only layout
+   that main already has, and refresh the baselines in a commit of their own on
+   main. Merge or cherry-pick that commit into this branch before step 2, so step
+   2 compares against baselines that are true for main.
 
 2. **After the phase.**
 
@@ -40,26 +46,32 @@ window per scenario, fourteen in all.
    make visual-baselines PLATFORM=macos CAPTURES=target/visual-captures/after/macos
    ```
 
-   Expected: the comparison reports eight captures as different and six as
-   matching.
+   Expected, against baselines refreshed on main in step 1, which makes every
+   difference this phase's:
 
    - `diagnostics-100pct.png` and `diagnostics-200pct.png` differ only in the
      Diagnostics rows decision D4 removes: the EQ lines and "Snapshot authority".
-   - `connected`, `source-picker`, and `messages`, at both scales, differ only in
-     the volume row, which now ends at +18.0 dB (label and thumb position).
-   - `unavailable`, `settings`, and `receivers` match byte for byte.
+   - Every capture that renders the dashboard's volume row differs only in that
+     row, which now ends at +18.0 dB (the label and the thumb position). That is
+     `connected` and `messages`, and also `unavailable`, which on the current code
+     shows the dashboard under the waiting overlay and not the unavailable screen,
+     and `source-picker` if the picker leaves the row on screen. Which of the last
+     two it is, the captures will say; either is fine.
+   - `settings` and `receivers` match byte for byte.
 
-   Open the eight differing captures and confirm that before replacing the
-   baselines with them (copy them from `target/visual-captures/after/macos` to
-   `tests/visual-baselines/macos`).
+   A difference anywhere else is a regression: stop and look. Once the differences
+   are only those, replace the baselines with the new captures (copy them from
+   `target/visual-captures/after/macos` to `tests/visual-baselines/macos`).
 
 | Check | Expected | Result |
 | --- | --- | --- |
-| Before: all fourteen match the committed baselines | pass | To fill |
-| After: `unavailable`, `settings`, and `receivers` match byte for byte | pass | To fill |
+| Before: how many of the fourteen differ from the committed baselines | Several, from layout older than main. Record which | To fill |
+| Before: baselines refreshed on main and committed | done | To fill |
+| After: `settings` and `receivers` match byte for byte | pass | To fill |
 | After: the two Diagnostics captures differ only in the removed rows | pass | To fill |
-| After: `connected`, `source-picker`, and `messages` differ only in the volume row | pass | To fill |
-| The eight baselines recaptured and committed | done | To fill |
+| After: each capture that shows the volume row differs only in that row | pass | To fill |
+| After: nothing else differs | pass | To fill |
+| The differing baselines recaptured and committed | done | To fill |
 
 ## Transport and CLI
 
@@ -90,6 +102,7 @@ they change; follow the repository's write-safety controls.
 | R1 | Change the input, the sound mode, and power; watch the audio, video, and Audyssey panels | Each refreshes within a second or two; they also refresh by themselves about every fifteen seconds | To fill |
 | G2 | With a hand-edited two-receiver file, use "Save and connect" for a new receiver | Both original receivers and the sound mode favorites are still in the file afterwards | To fill |
 | G7 | With the GUI connected, edit the saved host to a second address that reaches the same receiver, and save it through Receivers | The window moves to the new address without a restart, and the receiver never shows two control connections | To fill |
+| Quit | With the GUI connected, quit with Cmd-Q (or Quit from the Dock), then at once run `make run ARGS="get status"` | Note whether the CLI connected immediately. Cmd-Q may end the application without a close request, so the connection could be dropped by the operating system as in 3.0.0; no code handles it unless the owner asks | To fill |
 | Window close | With the GUI connected, close the window (its button, then again with Cmd-W), and at once run `make run ARGS="get status"` from a terminal | The CLI connects immediately: the receiver's control connection was freed before the window went. Closing while a volume change is in flight still closes within about three seconds | To fill |
 | Volume | Press "+" and "-" (half-dB steps), drag the slider to the bottom, then to the top | Each half step moves the volume by half a dB and is confirmed. At the bottom the receiver shows its minimum and the slider stays at -80.0 dB. At the top the receiver reads +18.0 dB and the label says the same | To fill |
 | Launch failure | Start the GUI with the receiver switched off at the network | "RECEIVER UNAVAILABLE" with "Retry Status", not an endless launch screen; retrying after switching it on connects | To fill |

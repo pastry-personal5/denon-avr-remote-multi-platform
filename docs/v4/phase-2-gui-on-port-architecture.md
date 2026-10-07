@@ -403,8 +403,8 @@ Further:
 - **`ZMON` pause.** The transport pauses after a main-zone power-on as it does
   after `PWON`, now, without waiting for the live check (C4).
 - **Slider range.** The volume slider and its label run to +18.0 dB, the
-  receiver's maximum. Every baseline that shows the volume row changes: connected,
-  source-picker, and messages, at both scales.
+  receiver's maximum. Every baseline that renders the volume row changes; the
+  validation record says how to tell which, against baselines refreshed on main.
 - **Launch delay (L3).** Measure live first; both synchronization passes stay.
 - **Display model.** `MainZoneSnapshot` stays; the roadmap records it as debt.
 - **`config/` backups** are ignored by Git.
@@ -435,8 +435,9 @@ the EQ lines, and "Snapshot authority" has no canonical source. Recommended:
 remove the EQ lines and the authority row, keep the Quick Select names freshness
 row, recapture those two baselines, and amend the exit criterion to read: the
 other baselines are byte-identical, and the two Diagnostics baselines differ only
-in the rows named here. (The owner's later slider change adds the six baselines
-that show the volume row to the ones that differ; the overview lists them.)
+in the rows named here. (The owner's later slider change adds the captures that
+show the volume row to the ones that differ, and the committed baselines are older
+than main's layout, so they are refreshed first; the record has the procedure.)
 
 **D5. Accepted differences.** Confirm or veto each:
 
