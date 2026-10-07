@@ -186,7 +186,12 @@ A control carries the value its target field showed, and the bridge refuses it
 if the subscription now shows another, except a power control, which states an
 absolute target. Saving a receiver reads the stored configuration, changes one
 entry, and writes it back, so other receivers and sound mode favorites survive.
-The GUI keeps `MainZoneSnapshot` as its display model; replacing it is a separate
+Closing the window closes the receiver connection first, through a hook the
+composition root supplies, within a short grace period so a receiver that never
+answers cannot keep the window open; a second request closes at once. The desktop
+turns off the automatic exit on a close request to allow this. What the closing
+connection reports meanwhile is ignored. The GUI keeps `MainZoneSnapshot` as its
+display model; replacing it is a separate
 refactor with its own visual risk.
 
 ## Receiver-correctness invariants

@@ -41,6 +41,8 @@ fn main() -> iced::Result {
         denon_avr_gui_lib::update,
         denon_avr_gui_lib::view,
     )
+    // The GUI closes the receiver connection before it lets the window go.
+    .exit_on_close_request(false)
     .subscription(denon_avr_gui_lib::subscription)
     .theme(denon_avr_gui_lib::app_theme)
     .scale_factor(denon_avr_gui_lib::app_scale)

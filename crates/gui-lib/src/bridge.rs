@@ -111,7 +111,6 @@ pub(crate) enum BridgeCommand {
     ReadSourceCatalog(u64, u64),
     ReadQuickSelectNames(u64, u64),
     ReadHttpInformation(u64, u64),
-    Shutdown,
 }
 
 /// A single serialized owner of the port handle.
@@ -122,10 +121,10 @@ pub struct PortBridge {
 }
 
 impl PortBridge {
-    pub fn new(services: GuiServices) -> Self {
+    pub fn new(control: SharedOperatorControl) -> Self {
         let (commands, command_rx) = mpsc::channel(16);
         let (event_sender, event_rx) = mpsc::channel(32);
-        tokio::spawn(run_bridge(services, command_rx, event_sender));
+        tokio::spawn(run_bridge(control, command_rx, event_sender));
         Self {
             commands,
             events: Arc::new(Mutex::new(event_rx)),
@@ -215,7 +214,7 @@ async fn next_state(
 }
 
 async fn run_bridge(
-    services: GuiServices,
+    control: SharedOperatorControl,
     mut commands: mpsc::Receiver<BridgeCommand>,
     events: mpsc::Sender<BridgeEvent>,
 ) {
@@ -233,9 +232,8 @@ async fn run_bridge(
             Step::Command(None) => break,
             Step::Command(Some(command)) => {
                 tracing::debug!(command = command_name(&command), "processing GUI command");
-                let stop = matches!(command, BridgeCommand::Shutdown);
                 let mut context = Context {
-                    services: &services,
+                    control: &control,
                     selected: &mut selected,
                     active: &mut active,
                     forwarded: &mut forwarded,
@@ -243,10 +241,6 @@ async fn run_bridge(
                     done: &done,
                 };
                 handle(command, &mut context).await;
-                if stop {
-                    tracing::info!("receiver bridge stopped");
-                    break;
-                }
             }
             Step::State(Ok(state)) => {
                 if let Some(chosen) = &selected {
@@ -268,7 +262,7 @@ async fn run_bridge(
                         PortEvent::SessionEnded,
                     )
                     .await;
-                    active = subscribe(&services, &chosen, &events, &mut forwarded).await;
+                    active = subscribe(&control, &chosen, &events, &mut forwarded).await;
                 }
             }
             Step::Done(event) => {
@@ -289,7 +283,7 @@ async fn run_bridge(
 
 /// Everything a command may need to read or change.
 struct Context<'a> {
-    services: &'a GuiServices,
+    control: &'a SharedOperatorControl,
     selected: &'a mut Option<Selected>,
     active: &'a mut Option<StateSubscription>,
     forwarded: &'a mut Forwarded,
@@ -318,7 +312,7 @@ async fn forward_state(
 }
 
 async fn handle(command: BridgeCommand, context: &mut Context<'_>) {
-    let services = context.services;
+    let control = context.control;
     match command {
         BridgeCommand::Select(id, receiver) => {
             // Dropping the old subscription lets the service release the old
@@ -330,7 +324,7 @@ async fn handle(command: BridgeCommand, context: &mut Context<'_>) {
                 subscription: id,
             };
             *context.selected = Some(chosen.clone());
-            *context.active = subscribe(services, &chosen, context.events, context.forwarded).await;
+            *context.active = subscribe(control, &chosen, context.events, context.forwarded).await;
         }
         BridgeCommand::Refresh(id) => {
             let Some(chosen) = context.selected.clone() else {
@@ -346,10 +340,10 @@ async fn handle(command: BridgeCommand, context: &mut Context<'_>) {
             if context.active.is_none() {
                 // The connection failed or ended: retrying is connecting again.
                 *context.active =
-                    subscribe(services, &chosen, context.events, context.forwarded).await;
+                    subscribe(control, &chosen, context.events, context.forwarded).await;
                 return;
             }
-            let control = Arc::clone(&services.control);
+            let control = Arc::clone(control);
             let done = context.done.clone();
             tokio::spawn(async move {
                 let event = match control.refresh(&chosen.receiver).await {
@@ -377,7 +371,7 @@ async fn handle(command: BridgeCommand, context: &mut Context<'_>) {
                     return;
                 }
             }
-            let control = Arc::clone(&services.control);
+            let control = Arc::clone(control);
             let done = context.done.clone();
             tokio::spawn(async move {
                 let report = run_control(&control, &chosen.receiver, intent).await;
@@ -420,10 +414,6 @@ async fn handle(command: BridgeCommand, context: &mut Context<'_>) {
                 })
             })
         }
-        BridgeCommand::Shutdown => {
-            *context.active = None;
-            (services.shutdown)().await;
-        }
     }
 }
 
@@ -446,7 +436,7 @@ fn spawn_read(
     let Some(chosen) = context.selected.clone() else {
         return;
     };
-    let control = Arc::clone(&context.services.control);
+    let control = Arc::clone(context.control);
     let done = context.done.clone();
     tokio::spawn(async move {
         let event = read(control, chosen.receiver).await;
@@ -456,12 +446,12 @@ fn spawn_read(
 
 /// Subscribe to the chosen receiver, which connects and synchronizes it first.
 async fn subscribe(
-    services: &GuiServices,
+    control: &SharedOperatorControl,
     chosen: &Selected,
     events: &mpsc::Sender<BridgeEvent>,
     forwarded: &mut Forwarded,
 ) -> Option<StateSubscription> {
-    match services.control.state(&chosen.receiver).await {
+    match control.state(&chosen.receiver).await {
         Ok(subscription) => {
             *forwarded = None;
             forward_state(events, chosen, forwarded, subscription.latest()).await;
@@ -543,7 +533,6 @@ fn command_name(command: &BridgeCommand) -> &'static str {
         BridgeCommand::ReadSourceCatalog(..) => "read_source_catalog",
         BridgeCommand::ReadQuickSelectNames(..) => "read_quick_select_names",
         BridgeCommand::ReadHttpInformation(..) => "read_http_information",
-        BridgeCommand::Shutdown => "shutdown",
     }
 }
 
@@ -692,12 +681,9 @@ mod tests {
         let receiver = ReceiverId::new("living-room").unwrap();
         let mut initial = ReceiverState::new(receiver);
         initial.establish_epoch(Epoch(1));
-        PortBridge::new(GuiServices {
-            control: Arc::new(FastPort {
-                states: watch::channel(initial).0,
-            }),
-            shutdown: Arc::new(|| Box::pin(async {})),
-        })
+        PortBridge::new(Arc::new(FastPort {
+            states: watch::channel(initial).0,
+        }))
     }
 
     fn mute_of(state: &ReceiverState) -> Option<MuteState> {

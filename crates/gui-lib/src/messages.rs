@@ -45,7 +45,13 @@ pub enum Message {
     CloseSourcePicker,
     SelectInput(String),
     RefreshSourceCatalog,
+    /// Close the receiver connection, leaving the window open.
     Shutdown,
+    /// The user asked for a window to close (its button, or the keyboard).
+    CloseRequested(iced::window::Id),
+    /// The receiver connection is closed, or the grace period ended. Close the
+    /// window, when there is one.
+    ShutdownFinished(Option<iced::window::Id>),
     ToggleMessages,
     ClearMessages,
     SetTextScale(u8),

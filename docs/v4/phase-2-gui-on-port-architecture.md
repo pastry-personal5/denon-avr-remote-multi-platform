@@ -62,7 +62,7 @@ of:
 | L5 | The `Reconnecting` lifecycle is visible to the GUI | Visible through the port as state: `epoch` is `None` while disconnected and a higher epoch afterwards. `watch` coalesces, so a disconnect and reconnect can arrive as one epoch-to-epoch step; the projection treats any epoch increase as a reconnect, as the adapter did (`previous_epoch != current_epoch`) | Moves. No port change; the projection rule and a test are required |
 | L6 | The generation (connection counter) tags events and supplemental reads, and the GUI drops events older than the one it holds (bridge, `lib.rs` `Message::Bridge`) | `Epoch` on state and `epoch - 1` on inspection reads (`X3800hSession::generation`). `DesktopProjection::accept_state` already refuses an older epoch or a revision that is not newer | Replaced. The bridge's request-id and generation tagging goes; GUI request ids stay for UI timers only |
 | L7 | Terminal `Disconnected` after a failed connect or session error, and a `Retry Status` button that re-runs `Refresh`, which reconnects (controller `refresh` connects when there is no session) | A failed `state` call is the disconnected condition. Retry calls `state` again when there is no subscription, and `refresh` ([P1](#port-changes)) when there is one | Moves, with P1 |
-| L8 | `Connect`, `Disconnect`, and `Shutdown` messages exist | None has a production emitter: only the update handler and tests name them. The desktop never sends `Shutdown`; exit closes the socket through the operating system | Dropped as dead code. A test-only shutdown hook is injected by the composition root ([GUI services](#gui-services)) |
+| L8 | `Connect`, `Disconnect`, and `Shutdown` messages exist | `Connect` and `Disconnect` have no emitter and are gone. `Shutdown` had none either (the desktop never sent it; exit closed the socket through the operating system). On the owner's instruction closing the window now closes the receiver connection first: the window's close request starts the shutdown hook the composition root supplies, bounded by a three-second grace period, then closes the window. A second request closes at once, and Cmd-W takes the same path | Dropped for `Connect` and `Disconnect`. Changed for `Shutdown` (owner's decision): the receiver's single control connection is free the moment the window closes |
 | L9 | `Stopping` and `Stopped` lifecycle states | Rendered as "waiting" by `lifecycle_label`'s catch-all | Dropped |
 | L10 | Close deadline 1 s (`ControllerConfig::close_timeout`) | `X3800hSession::close` bounds the close at 250 ms and then aborts the actor; the service logs a failed close | Replaced |
 
@@ -466,6 +466,8 @@ that show the volume row to the ones that differ; the overview lists them.)
     where 3.0.0 offered +18.5 dB and sent +18.0 (C10).
 13. A main-zone power-on is followed by the same one-second pause as `PWON`
     (C4), where 3.0.0 paused in the controller after the confirmation.
+14. Closing the window closes the receiver connection first, so it is free for
+    other tools at once (L8).
 
 ## Live checks
 

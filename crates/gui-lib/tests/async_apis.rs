@@ -677,3 +677,35 @@ async fn a_control_report_never_overtakes_the_state_it_produced() {
         );
     }
 }
+
+#[tokio::test]
+async fn closing_the_window_closes_the_receiver_connection_and_shows_no_failure() {
+    let world = World::new(saved(&[("living-room", "192.0.2.20")], "living-room"));
+    let (mut gui, load) = boot_with_services(world.services());
+    for message in outputs(load).await {
+        drive(&mut gui, message).await;
+    }
+    until(&mut gui, "the connection", connected).await;
+    assert_eq!(world.calls.closes.load(Ordering::SeqCst), 0);
+
+    // The user closes the window. The connection closes before it does.
+    drive(
+        &mut gui,
+        Message::CloseRequested(iced::window::Id::unique()),
+    )
+    .await;
+    assert_eq!(
+        world.calls.closes.load(Ordering::SeqCst),
+        1,
+        "the receiver's control connection is free before the window goes"
+    );
+
+    // What the closing connection reports afterwards changes nothing on screen.
+    while let Ok(Some(event)) =
+        tokio::time::timeout(Duration::from_millis(100), gui.bridge().recv()).await
+    {
+        drive(&mut gui, Message::Bridge(Box::new(event))).await;
+    }
+    assert!(matches!(gui.lifecycle, Lifecycle::Connected { .. }));
+    assert!(gui.snapshot.power.value().is_some());
+}

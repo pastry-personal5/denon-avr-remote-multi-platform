@@ -210,12 +210,30 @@ pub struct Gui {
     catalog_auto_generation: Option<u64>,
     bridge: PortBridge,
     control: SharedOperatorControl,
+    /// Closes the receiver connection. Supplied by whoever composed the service.
+    shutdown: ShutdownHook,
+    /// The window is closing: the receiver connection is being closed first, and
+    /// what the closing connection reports is not news.
+    closing: bool,
+}
+
+/// How long closing the window waits for the receiver connection to close. An
+/// operation in flight is waited for, and a receiver that never answers must not
+/// keep the window open.
+const SHUTDOWN_GRACE: Duration = Duration::from_secs(3);
+
+/// Run the shutdown hook, giving up after `grace`.
+async fn shut_down_within(grace: Duration, hook: ShutdownHook) {
+    if tokio::time::timeout(grace, hook()).await.is_err() {
+        tracing::warn!(?grace, "closing the receiver connection took too long");
+    }
 }
 
 impl Gui {
     pub fn new(services: GuiServices) -> Self {
         let control = std::sync::Arc::clone(&services.control);
-        let bridge = PortBridge::new(services);
+        let shutdown = std::sync::Arc::clone(&services.shutdown);
+        let bridge = PortBridge::new(std::sync::Arc::clone(&services.control));
         Self {
             route: Route::Dashboard,
             window_class: WindowClass::Wide,
@@ -267,6 +285,8 @@ impl Gui {
             catalog_auto_generation: None,
             bridge,
             control,
+            shutdown,
+            closing: false,
         }
     }
 
@@ -544,7 +564,7 @@ impl Gui {
             Message::Keyboard(event) => {
                 #[cfg(target_os = "macos")]
                 if is_close_window_shortcut(&event) {
-                    return close_latest_window();
+                    return request_close_latest_window();
                 }
                 match tab_direction(&event) {
                     Some(TabDirection::Forward) => iced::widget::operation::focus_next(),
@@ -870,7 +890,19 @@ impl Gui {
                 self.announce(format!("Could not save receiver: {error}"));
                 Task::none()
             }
-            Message::Shutdown => self.command(BridgeCommand::Shutdown),
+            Message::Shutdown => self.shut_down(None),
+            Message::CloseRequested(window) => {
+                if self.closing {
+                    // The receiver connection is already closing; a second
+                    // request means the user does not want to wait.
+                    return iced::window::close(window);
+                }
+                self.closing = true;
+                self.announce("Closing the receiver connection…");
+                self.shut_down(Some(window))
+            }
+            Message::ShutdownFinished(Some(window)) => iced::window::close(window),
+            Message::ShutdownFinished(None) => Task::none(),
         }
     }
 
@@ -1028,6 +1060,19 @@ impl Gui {
         self.command(BridgeCommand::Select(id, receiver))
     }
 
+    /// Close the receiver connection, then tell the window to close when one is
+    /// given.
+    fn shut_down(&self, window: Option<iced::window::Id>) -> Task<Message> {
+        let hook = std::sync::Arc::clone(&self.shutdown);
+        Task::perform(
+            async move {
+                shut_down_within(SHUTDOWN_GRACE, hook).await;
+                window
+            },
+            Message::ShutdownFinished,
+        )
+    }
+
     fn reset_pending_controls(&mut self) {
         self.volume_command_pending = false;
         self.volume_command_request_id = None;
@@ -1141,8 +1186,9 @@ impl Gui {
     }
 
     fn on_bridge(&mut self, event: BridgeEvent) -> Task<Message> {
-        // A receiver the user has since left no longer speaks for this window.
-        if event.subscription != self.subscription {
+        // A receiver the user has since left no longer speaks for this window,
+        // and neither does one whose connection the window is closing.
+        if event.subscription != self.subscription || self.closing {
             return Task::none();
         }
         let request_id = event.request_id;
@@ -1545,6 +1591,15 @@ fn capture_window() -> Task<Message> {
     })
 }
 
+/// Ask for the newest window to close, which closes the receiver connection
+/// first.
+fn request_close_latest_window() -> Task<Message> {
+    iced::window::latest().then(|id| match id {
+        Some(id) => Task::done(Message::CloseRequested(id)),
+        None => Task::none(),
+    })
+}
+
 fn close_latest_window() -> Task<Message> {
     iced::window::latest().then(|id| match id {
         Some(id) => iced::window::close(id),
@@ -1587,6 +1642,7 @@ pub fn subscription(gui: &Gui) -> Subscription<Message> {
             .subscription()
             .map(|event| Message::Bridge(Box::new(event))),
         iced::keyboard::listen().map(Message::Keyboard),
+        iced::window::close_requests().map(Message::CloseRequested),
         if gui.launch_ready && !gui.status_waiting() && gui.sound_mode_request_id.is_none() {
             Subscription::none()
         } else {
@@ -1702,6 +1758,10 @@ mod tests {
     }
 
     fn gui() -> Gui {
+        gui_with_shutdown(Arc::new(|| Box::pin(async {})))
+    }
+
+    fn gui_with_shutdown(shutdown: ShutdownHook) -> Gui {
         let service = Arc::new(ControlService::new(
             Arc::new(Unreachable),
             Arc::new(Empty(Mutex::new(ConfiguredReceivers::default()))),
@@ -1710,8 +1770,38 @@ mod tests {
         ));
         Gui::new(GuiServices {
             control: service.operator(),
-            shutdown: Arc::new(|| Box::pin(async {})),
+            shutdown,
         })
+    }
+
+    /// Every message a task produces, run to its end.
+    async fn outputs(task: Task<Message>) -> Vec<Message> {
+        use iced::futures::StreamExt;
+        let Some(mut actions) = iced_runtime::task::into_stream(task) else {
+            return Vec::new();
+        };
+        let mut messages = Vec::new();
+        while let Some(action) = actions.next().await {
+            if let iced_runtime::Action::Output(message) = action {
+                messages.push(message);
+            }
+        }
+        messages
+    }
+
+    /// A shutdown hook that counts how often it ran.
+    fn counting_hook() -> (ShutdownHook, Arc<std::sync::atomic::AtomicUsize>) {
+        let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let hook: ShutdownHook = {
+            let count = Arc::clone(&count);
+            Arc::new(move || {
+                let count = Arc::clone(&count);
+                Box::pin(async move {
+                    count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                })
+            })
+        };
+        (hook, count)
     }
 
     fn living_room() -> Selection {
@@ -1782,6 +1872,73 @@ mod tests {
 
     fn state_message(gui: &Gui, state: ReceiverState) -> Message {
         event(gui, gui.subscription, PortEvent::State(Box::new(state)))
+    }
+
+    #[tokio::test]
+    async fn closing_the_window_closes_the_receiver_connection_first_and_once() {
+        let (hook, count) = counting_hook();
+        let mut gui = gui_with_shutdown(hook);
+        let window = iced::window::Id::unique();
+
+        let task = gui.update(Message::CloseRequested(window));
+        assert!(gui.closing);
+        assert_eq!(gui.announcement, "Closing the receiver connection…");
+        // The window is only told to close once the connection has closed.
+        let produced = outputs(task).await;
+        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(
+            matches!(produced.as_slice(), [Message::ShutdownFinished(Some(id))] if *id == window),
+            "{produced:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_second_close_request_does_not_wait_for_the_connection_again() {
+        let (hook, count) = counting_hook();
+        let mut gui = gui_with_shutdown(hook);
+        let window = iced::window::Id::unique();
+        let _first = gui.update(Message::CloseRequested(window));
+
+        let second = gui.update(Message::CloseRequested(window));
+        let produced = outputs(second).await;
+        assert!(
+            produced.is_empty(),
+            "it closes the window and waits for nothing"
+        );
+        assert_eq!(
+            count.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "the first request's task has not run here, and the second adds none"
+        );
+    }
+
+    #[tokio::test]
+    async fn closing_gives_up_waiting_for_a_connection_that_never_closes() {
+        let hook: ShutdownHook = Arc::new(|| Box::pin(std::future::pending()));
+        let started = std::time::Instant::now();
+        shut_down_within(Duration::from_millis(50), hook).await;
+        let waited = started.elapsed();
+        assert!(waited >= Duration::from_millis(50), "{waited:?}");
+        assert!(waited < Duration::from_secs(2), "{waited:?}");
+    }
+
+    #[tokio::test]
+    async fn a_closing_window_ignores_what_the_closing_connection_reports() {
+        let mut gui = selected_gui();
+        let _ = gui.update(state_message(&gui, state_at(Some(1), powered_on())));
+        let _ = gui.update(Message::CloseRequested(iced::window::Id::unique()));
+
+        // Closing the connection ends the subscription, and subscribing again
+        // fails; neither is news for a window that is going away.
+        let _ = gui.update(event(&gui, 1, PortEvent::SessionEnded));
+        let _ = gui.update(event(
+            &gui,
+            1,
+            PortEvent::ConnectFailed("service shut down".into()),
+        ));
+
+        assert_eq!(gui.lifecycle, Lifecycle::Connected { generation: 1 });
+        assert_eq!(gui.snapshot.power.value(), Some(&PowerState::On));
     }
 
     #[tokio::test]
