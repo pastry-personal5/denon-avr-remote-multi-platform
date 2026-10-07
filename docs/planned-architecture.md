@@ -215,11 +215,12 @@ answers.
 
 `application` defines the control-service port as three traits that one handle
 implements. **Receiver reads** cover receiver listing, state subscription, and
-inspection reads. **Operation control** covers operation submission, status, and
-cancellation of the caller's own operations. **Operator administration** covers
-discovery, receiver configuration, token management, read-only views of
-approvals, audit, and effective policy, and the policy reload. A surface takes
-only the traits it needs, so one that is not handed a trait cannot name its
+the source catalog. **Operation control** covers operation submission, status,
+and cancellation of the caller's own operations. **Operator administration**
+covers discovery, receiver configuration, the inspection reads that no agent
+tool uses (Quick Select names and HTTP information), token management,
+read-only views of approvals, audit, and effective policy, and the policy
+reload. A surface takes only the traits it needs, so one that is not handed a trait cannot name its
 methods: a read-only agent takes the first, a writing agent the first two, and
 the GUI and CLI all three. The Control API server implements the port in
 process, behind the gate. `api-client` implements it over the Control API. GUI,

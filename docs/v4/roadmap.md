@@ -234,13 +234,16 @@ numbered step at a time: run `make check`, review the diff, then continue.
 2. **Control-service port** in `application`, as the design's
    [control service port](../planned-architecture.md#control-service-port)
    defines it, in three traits: receiver reads (receiver listing, state
-   subscription, inspection reads), operation control (submit, status, and
-   cancel of the caller's own operations), and operator administration
-   (discovery, configuration, and later tokens and the approval, audit, and
-   policy views). The handle is bound to a principal. `mcp-tools` takes only the
-   first two, so it cannot name an Operator method. The Agent principal exists
-   as a type but nothing can construct one until milestone 3. This step proposes
-   the signatures for review before any implementation sits behind them.
+   subscription, the source catalog), operation control (submit, status, and
+   cancel of the caller's own operations, and operation events), and operator
+   administration (discovery, configuration, Quick Select names and HTTP
+   information, and later tokens and the approval, audit, and policy views). The
+   handle is bound to a principal. `mcp-tools` takes only the first two, so it
+   cannot name an Operator method. The Agent principal exists as a type, and the
+   in-process service will refuse to hand an Agent a handle until milestone 3.
+   This step defines the signatures and nothing behind them, for review. Policy
+   dry runs and an agent justification join `OperationSubmission` in milestones
+   3 and 7.
 3. **Receiver connector port.** It replaces the legacy `SessionFactory` and
    returns a `SharedReceiverSession`. Infrastructure implements it with
    `X3800hSession`.
@@ -470,7 +473,7 @@ The first milestone that changes what users run.
 4. **Boundary rules:** `cargo tree -p` on `mcp-stdio` alone contains no TLS
    library and no HTTP server framework, with the list held in the script;
    `mcp-stdio` and `mcp-tools` write nothing to standard output outside the
-   transport.
+   transport; `mcp-tools` names neither `OperatorAdmin` nor `OperatorControl`.
 5. **Setup guide for the dedicated macOS account** that runs Claude Code,
    covering the Agent endpoint permissions from S2, where the token file lives,
    and the result of S4 for the `pf` user rule. The guide states that this path
