@@ -378,8 +378,10 @@ because there is nothing to report on. An agent is refused a handle altogether.
 
 What an agent is told is fixed text: "policy unavailable", "the budget history is
 not available", "audit log unavailable", "the receiver could not be reached", and
-the sentences of the limits that fired. Rule ids, file paths, audit error text, and
-the receiver's address stay in the audit log and the Operator's views.
+the sentences of the limits that fired. Rule ids appear in the audit log, in a dry
+run's result, an agent's own included, and in the Operator's views; file paths,
+audit error text, and the receiver's address stay in the audit log and the
+Operator's views.
 
 `OperationSnapshot` is unchanged. Its `reason` is text built from the `Reason`
 values, which names the limit that fired; rule ids appear in the audit log, in

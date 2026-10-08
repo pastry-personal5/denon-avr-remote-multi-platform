@@ -271,8 +271,10 @@ Agent write tries again, so it recovers by itself.
 | Any other session outcome | as the table above | as reported |
 
 An agent is told the sentences of the limits that fired and fixed text for the
-faults. Rule ids, file paths, error text, and the receiver's address stay in the
-audit log and the Operator's views.
+faults. Rule ids appear in the audit log, in the result of a dry run (an agent's
+own included, so it can see which rule held a request), and in the Operator's
+views. File paths, error text, and the receiver's address stay in the audit log
+and the Operator's views.
 
 ## Desktop GUI
 
