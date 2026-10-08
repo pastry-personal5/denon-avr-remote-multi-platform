@@ -321,6 +321,13 @@ Invariants:
 
 ## Policy Engine
 
+Implemented in process in milestone 3: the engine, the policy file and its
+loading, the ledger, and the Agent path through the gate are described in
+[Policy and audit](../ARCHITECTURE.md#policy-and-audit). The design below remains
+the owner of the rules until the release milestone removes it, and of what is not
+built yet: the approval broker, the tokens and the Control API that carry an
+agent's label, and the MCP tool surface.
+
 The Policy Engine is a pure library that depends only on `domain`. It performs
 no I/O, reads no clock, and holds no state. The gate keeps the ledger of recent
 volume changes on each receiver and passes it in: the agents' operations
@@ -502,6 +509,11 @@ means in a given room; its limits complement any receiver-side limits and do not
 replace them.
 
 ## Audit
+
+Implemented in process in milestone 3 as `AuditLog`, the JSON Lines adapter, and
+the ledger rebuild: see [Policy and audit](../ARCHITECTURE.md#policy-and-audit).
+The Operator's CLI and GUI are unaudited until milestone 5, because only a
+service built by `start` has an audit log.
 
 The audit log is a port in `application` with an append-only JSON Lines adapter.
 Each record is one event and carries a schema version, the server run (its start

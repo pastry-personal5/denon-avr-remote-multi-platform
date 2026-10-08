@@ -13,8 +13,9 @@ workspace edges are enforced by `make boundary`.
 | --- | --- |
 | `crates/domain` | Receiver identity, configuration, capabilities, state, intents, and evidence/validity types. |
 | `crates/protocol` | AVR, HEOS, and AppCommand framing, wire values, and parsing. |
-| `crates/application` | Use-case policy, ports, status/control policy, the control-service port, and the in-process control service with its Operation Gate. |
-| `crates/infrastructure` | SSDP discovery, YAML persistence, TCP/HTTP adapters, and concrete receiver sessions. |
+| `crates/policy` | The policy engine: a pure function from a request, the receiver's state, and the recent volume changes to a decision. Depends on `domain` alone. |
+| `crates/application` | Use-case policy, ports, status/control policy, the control-service port, and the in-process control service with its Operation Gate, Agent path, audit records, and budget ledger. |
+| `crates/infrastructure` | SSDP discovery, YAML persistence, TCP/HTTP adapters, concrete receiver sessions, the JSON Lines audit log, the policy file loader, and the system clock. |
 | `crates/gui-lib` | Iced presentation state, reducers, views, the projection of receiver state into them, and the bridge to the control-service port. |
 | `apps/cli` | Short-lived CLI composition over the in-process control service. |
 | `apps/desktop` | Native GUI composition of the control service, and logging. |
@@ -22,17 +23,18 @@ workspace edges are enforced by `make boundary`.
 
 ```text
 protocol       → domain
-application    → domain
-infrastructure → application, domain, protocol
+policy         → domain
+application    → domain, policy
+infrastructure → application, domain, policy, protocol
 gui-lib        → application, domain
 cli            → application, domain, infrastructure
 desktop        → gui-lib, application, domain, infrastructure
 diagnostics    → domain, infrastructure, protocol
 ```
 
-`domain` imports no workspace package. `protocol` and `application` depend only
-on `domain`; infrastructure may compose all three core crates. `gui-lib` uses
-application and domain only. Delivery packages compose the dependencies their
+`domain` imports no workspace package. `protocol` and `policy` depend only on
+`domain`, and `application` on `domain` and `policy`; infrastructure may compose
+all four core crates. `gui-lib` uses application and domain only. Delivery packages compose the dependencies their
 delivery role requires, but do not create competing architectural contracts.
 
 ## Session boundary
@@ -62,21 +64,28 @@ The control-service port in `crates/application/src/control.rs` is how a
 surface observes and controls receivers. It is three traits split by
 authority, and a surface takes only the traits it needs:
 
-- `ReceiverReads`: the saved-receiver listing, a state subscription, and the
-  source catalog.
+- `ReceiverReads`: the saved-receiver listing, a state subscription, the
+  source catalog, and `health`, which reports coarse states (policy, audit log,
+  ledger, approval) with no paths or error text.
 - `OperationControl`: submitting an operation, reading its status, cancelling
-  it, and the operation event stream, for the caller's own operations.
+  it, and the operation event stream, for the caller's own operations, and
+  `dry_run`, which reports what the policy would decide without making an
+  operation or a record.
 - `OperatorAdmin`: discovery, receiver configuration, ad hoc receivers, the
   inspection reads no agent tool uses (Quick Select names and HTTP information),
   and `refresh`, which reads every core field again. `refresh` is a read: it
   connects if the receiver is released, dispatches nothing, and does not use the
-  gate.
+  gate. It also holds `dry_run_as` (a dry run as a named agent label, which does
+  not spend that agent's allowance), `policy` and `reload_policy`, and `audit`.
 
 `AgentControl` is the first two and `OperatorControl` all three. A handle is
 bound to one `Principal` when it is created and the principal is never a request
 parameter. `ControlService` (`crates/application/src/service.rs`) implements the
-port in process. It serves the Operator principal; an Agent handle is refused
-until the policy path exists.
+port in process. `ControlService::new` serves the Operator alone, makes no audit
+call, and refuses an Agent handle; the CLI and the GUI use it. `ControlService::start`
+also builds the Agent path described under [Policy and audit](#policy-and-audit),
+and serves an Agent handle. Nothing exposes an Agent handle outside tests and the
+armed live test until the Control API exists.
 
 **Receiver identity.** A receiver's id is the name of its saved configuration
 entry and does not change when its address does. A receiver chosen only by
@@ -162,6 +171,109 @@ empty, and reserved names and unknown versions are refused.
 3.0.0 cannot read the new file. Nothing adds a second receiver through the GUI
 or CLI.
 
+## Policy and audit
+
+An Agent's request is decided by the policy engine and recorded in the audit log
+before it reaches a receiver. The path is built by `ControlService::start` from a
+`PolicySource`, an `AuditLog`, a `Clock`, and caps (`AgentPath`). It is built to
+fail closed: whatever it cannot judge, record, or count, it does not send.
+
+**Policy engine.** `denon_avr_policy::evaluate` is a pure function of a
+`PolicyInput` (the agent label, the receiver id, the intent, the receiver's
+`ReceiverState`, the recent volume changes, and the time) and a validated
+`PolicyConfig`. It reads no clock and does no I/O; `make boundary` checks that
+`crates/policy/src` has no async, serialization, file, network, or clock type and
+that its resolved dependency graph reaches `domain` and nothing else.
+
+- A rule *applies* when its agent and receiver lists match exactly and case
+  sensitively. The decision is the most restrictive matched effect, `Deny` then
+  `RequireApproval`. With none, an intent that some applicable rule names (its
+  kind, and its value when the rule gives one) is `Allow`, and any other is
+  `RequireApproval` as unclassified. An `allow` rule carries no condition and only
+  classifies; a rule that names no intent restricts but never classifies.
+- Limits are strict and on the 0.5 dB grid, and `Minimum` is -80.0 dB. A volume
+  that is stale, unknown, or unavailable matches every condition that needs it,
+  so what cannot be checked counts as dangerous. A decrease is exempt from the
+  step and budget conditions but not from the target limits.
+- The budget is the rise above the lowest level in a window: the observed level
+  and the `before` and `target` of every counted change inside it. An entry dated
+  after now is inside the window.
+- `Allow` and `RequireApproval` carry a *baseline*: every state field read by
+  any applicable rule that covers the intent, whether or not it matched. The gate
+  turns it into the write's precondition, so an unmute allowed because the
+  loud-volume rule did not match is still refused if the volume changed.
+
+**Policy file.** `policy.yaml` sits beside the configuration and is read by
+`YamlPolicySource`: unknown keys (a time-of-day key among them) are refused, the
+file is at most 256 KiB, its digest is the SHA-256 of the bytes read, and errors
+name the rule or key and never quote the file. An empty file is a policy with no
+rules, which requires approval for everything. `docs/examples/policy.yaml` is the
+owner's configuration, not a default. The service holds the policy in force or
+none: a load that fails, at start or on `reload_policy`, replaces the policy in
+force with none, and while there is none every Agent write ends `rejected`.
+Reads and the Operator's controls are unaffected.
+
+**Budget ledger.** `application::ledger` holds the volume changes per receiver,
+keyed by the run (the service's start time) and the operation id, because ids
+restart at 1. An agent's change counts from the moment it is allowed, so it is
+reserved under the same lock as the evaluation, and stays counted unless the
+session says nothing was dispatched. The Operator's volume writes count too and
+are never limited. Entries last 24 hours. After a restart the ledger is rebuilt
+from the audit log: every volume `Dispatching` record of the last day counts
+except those whose `Finished` record says `not_dispatched`, so a write the process
+died during still counts. Until the log has been read, the ledger is not ready and
+Agent writes are refused.
+
+**Audit log.** `AuditLog` appends records and reads them back; `JsonlAuditLog`
+keeps one JSON object per line in `audit.jsonl` and rotated files by size (20 MiB)
+and count (10), in a directory created 0700 with files 0600. A directory or file
+that already exists with wider permissions is an error, not a repair. Reading skips
+a line cut short, one that is not JSON, and a record of a kind or schema it does
+not know, and numbering continues past them. A record is one of `Decided`,
+`Dispatching`, `Finished`, `PolicyLoaded`, and `PolicyLoadFailed`, and the text in
+it is bounded whatever it is handed. Only `Dispatching` is synced to disk. The log
+is not tamper-proof against a process running as the same user.
+
+**The Agent path.** `submit` counts a new write against the label's caps (30 a
+minute and 8 unfinished; a retry of an operation that exists is not a new write,
+and a dry run counts because it opens the receiver) and returns `RateLimited`
+without creating an operation or a record. Otherwise the operation starts
+`submitted` and its task:
+
+1. Refuses as `rejected` when there is no policy or the ledger cannot be rebuilt.
+2. Takes a lease on the receiver.
+3. In one step under the ledger lock, with nothing awaited: reads the state and
+   the ledger, evaluates, captures the precondition from the baseline, and
+   reserves a volume change.
+4. Ends `denied` or `approval_unavailable` for a refusal, with `Decided` recorded.
+   There is no approval path yet, so what needs approval is not sent.
+5. For an allow: moves to `allowed` (cancellable), appends `Decided`, then appends
+   `Dispatching` synced. Each append is bounded to five seconds. If either fails
+   or times out, or a cancel won, the reservation is released and nothing is sent.
+6. Calls `operate` once with the precondition. A mismatch comes back `rejected` and
+   is never retried.
+7. Settles the ledger by the reported `dispatch`, ends the operation, and appends
+   `Finished`.
+
+Every agent operation ends with a `Finished` record. On a service built by `start`
+the Operator's writes get `Decided`, `Dispatching`, and `Finished` records and a
+ledger entry for a volume change; a failing log does not stop them, and `health`
+reports it as failing. Audit health is the result of the last append, and every
+Agent write tries again, so it recovers by itself.
+
+| Condition | Status | `dispatch` |
+| --- | --- | --- |
+| A rule denies | `denied` | `not_dispatched` |
+| A rule requires approval | `approval_unavailable` | `not_dispatched` |
+| No policy, ledger not rebuilt, receiver unreachable, no established state, audit append failed or timed out | `rejected`, with fixed text | `not_dispatched` |
+| The receiver changed since the decision | `rejected`, the session's reason | `not_dispatched` |
+| Cancelled before the session | `cancelled` | `not_dispatched` |
+| Any other session outcome | as the table above | as reported |
+
+An agent is told the sentences of the limits that fired and fixed text for the
+faults. Rule ids, file paths, error text, and the receiver's address stay in the
+audit log and the Operator's views.
+
 ## Desktop GUI
 
 The GUI is a client of the operator port. `PortBridge` is the one task that owns
@@ -222,7 +334,8 @@ Diagnostics are
 deliberately independent of normal delivery behavior and never issue writes.
 
 `make boundary` checks source imports, prohibits the retired root `src/` tree,
-validates the resolved Cargo workspace edges, ensures the receiver-session
+validates the resolved Cargo workspace edges, keeps `crates/policy` pure and its
+resolved graph to `domain`, ensures the receiver-session
 contract has exactly one definition and that the retired controller names do not
 return, requires that only the Operation Gate and the session implementation
 call a session's `operate`, and keeps the CLI from naming a session type. Run it whenever a package dependency or boundary

@@ -28,7 +28,9 @@ make package-macos  # build the unsigned Apple Silicon .app and .dmg
 Additional read-only diagnostics and visual-regression commands are documented
 in the [Makefile](../Makefile). Do not run live validation in ordinary unit-test
 work. `make test-live-x3800h` is opt-in; state-restoring live controls also
-require `ALLOW_RECEIVER_WRITES=1`, `DENON_X3800H_HOST`, and a safe-volume value.
+require `ALLOW_RECEIVER_WRITES=1`, `DENON_X3800H_HOST`, and a safe-volume value,
+as does `make test-live-x3800h-agent`, which changes the volume through the
+Agent path and restores it.
 
 On an Apple Silicon Mac, `make package-macos` writes the unsigned app and DMG
 under `target/release/macos/`. Gatekeeper may require right-clicking the app

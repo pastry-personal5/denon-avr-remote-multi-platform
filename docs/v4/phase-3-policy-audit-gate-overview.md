@@ -1,9 +1,9 @@
 # Version 4, Phase 3 — Policy, audit, and the Agent path
 
-**Planned and reviewed, 2026-10-08; in progress on the branch
-`v4/phase-3-policy-audit-gate`.** Steps 0 to 6b are
-done; the [steps](#steps) table has the state of each. This is milestone 3 of the
-[roadmap](roadmap.md). It adds the `policy`
+**Implemented, 2026-10-08, on the branch `v4/phase-3-policy-audit-gate`; the owner's
+live checks are open.** Every step is done and `make check`, `make clippy`, and
+`git diff --check` pass, but nothing has been run against a receiver: see the
+[exit status](#exit-status). This is milestone 3 of the [roadmap](roadmap.md). It adds the `policy`
 crate, the audit log, and the Agent path through the Operation Gate, all in
 process: nothing is exposed until milestone 4, and no Operator-visible behavior
 changes. It is the first code that lets anything but the Operator write to the
@@ -37,7 +37,7 @@ the script fails if either half lands alone.
 | 5 | Ledger | Done |
 | 6a | Gate: Agent path, evaluation, and fail-closed outcomes | Done |
 | 6b | Gate: dispatch with the precondition, audit order, live test | Done |
-| 7 | Promote to `ARCHITECTURE.md`; exit | Planned |
+| 7 | Promote to `ARCHITECTURE.md`; exit | Done, live checks open |
 
 The roadmap's milestone 3 summarizes the same steps; this phase splits step 6
 into 6a and 6b, where a reviewer could reject one and approve its neighbor.
@@ -313,7 +313,18 @@ the inputs most likely to bite, most likely first. Each has a named test above.
 
 ## Exit status
 
-In progress: steps 0 to 6b are done; step 7 and the owner's live checks remain.
+**Implemented; the live exit criteria are open.** Steps 0 to 7 are done. Every exit
+criterion below that a test can show is shown by a test in this branch, and
+`make check`, `make clippy`, and `git diff --check` pass. The last criterion, the
+armed live run, has **not** been run: it writes to a receiver, and the session that
+built the phase had none. The same goes for the Operator regression and the audit
+permissions on the Mac. The [validation record](../archive/v4/phase-3-live-validation-record.md)
+lists each with its result **To fill**, and the branch is not to be merged until
+the owner has filled it.
+
+Two things were checked in place of the live run: the live test compiles under
+`--all-targets`, and `make test-live-x3800h-agent` refuses when `ALLOW_RECEIVER_WRITES`
+is not `1`.
 
 ## Known limits
 
