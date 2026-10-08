@@ -241,7 +241,8 @@ Tests:
   `an_operator_token_is_not_an_agent_credential_and_the_reverse`.
 - `an_unknown_or_unprefixed_string_is_unknown_and_is_not_hashed`.
 - `a_second_active_token_for_a_label_is_refused_and_a_revoked_one_does_not_count`.
-- `a_corrupt_file_fails_to_open_and_is_not_replaced`.
+- `a_damaged_agent_file_degrades_the_store_and_is_not_replaced`: the store opens with a
+  fault, the Operator's token still works, and issuing and revoking are refused.
 - `credentials_are_0600_in_a_0700_directory` and `wider_existing_permissions_are_an_error`.
 - `a_crash_between_the_temporary_file_and_the_rename_keeps_the_old_file`.
 - `changes_bump_on_revoke_and_on_nothing_else`.

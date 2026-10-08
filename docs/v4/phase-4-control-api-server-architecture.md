@@ -333,11 +333,15 @@ it as it skips an unknown kind. Token events are `Flushed`.
   without hashing.
 - **Label rule (D32).** `issue` refuses a label that fails the rule above or that
   already has an active token. Revoke and issue rotates a token.
-- A file that cannot be parsed, or holds a label outside the rule or two active tokens
-  for one label, makes `FileTokenStore::open` fail. The server then
-  starts without a token store: the service has its policy and audit but no tokens,
-  the three token methods answer `Unavailable`, no Agent endpoint is created, the
-  Operator endpoint serves, and the log says why.
+- A damaged `agent-tokens.json` (one that cannot be parsed, holds a label outside the
+  rule or two active tokens for one label, or has wider permissions than 0600) is a
+  fault, not an error: `FileTokenStore::open` still succeeds, because the Operator's
+  token does not live in that file and the owner must not be locked out of their own
+  server. The store holds no Agent tokens, refuses to issue or revoke, does not replace
+  the file, and reports why through `TokenStore::fault`. The server then creates no
+  Agent endpoint, reports the token store as unavailable in the Operator's health, and
+  the three token methods answer `Unavailable`. A damaged `operator.token`, or a
+  `credentials/` directory with wider permissions, is an error: nobody could be served.
 - A directory or file that exists with wider permissions than 0700 or 0600 is an
   error, as in the audit adapter. The store creates `credentials/` at 0700.
 - Revocation bumps `changes()`. An event stream or a wait compares its token against

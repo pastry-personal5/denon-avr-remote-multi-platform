@@ -1,6 +1,8 @@
 //! The file-backed token store: what it issues, what it writes, what it refuses,
 //! and how it survives a crash.
 
+#![cfg(unix)]
+
 use denon_avr_application::{AgentLabel, Credential, TokenError, TokenId, TokenStore};
 use denon_avr_domain::WallTime;
 use denon_avr_infrastructure::FileTokenStore;
@@ -235,9 +237,10 @@ async fn a_second_active_token_for_a_label_is_refused_and_a_revoked_one_does_not
 }
 
 #[tokio::test]
-async fn a_corrupt_file_fails_to_open_and_is_not_replaced() {
+async fn a_damaged_agent_file_degrades_the_store_and_is_not_replaced() {
     let scratch = Scratch::new("corrupt");
     drop(scratch.open());
+    let operator = operator_token(&scratch);
     let path = scratch.credentials().join("agent-tokens.json");
     for junk in [
         "not json",
@@ -255,18 +258,34 @@ async fn a_corrupt_file_fails_to_open_and_is_not_replaced() {
         ),
     ] {
         std::fs::write(&path, junk).unwrap();
-        let error = FileTokenStore::open(&scratch.credentials()).err().expect(junk);
-        assert!(error.to_string().contains("agent-tokens.json"), "{error}");
+        // The store opens, because the Operator's token does not live in that file.
+        let store = FileTokenStore::open(&scratch.credentials()).expect(junk);
+        let fault = store.fault().expect("a fault is reported");
+        assert!(fault.contains("agent-tokens.json"), "{fault}");
+        assert_eq!(store.authenticate(&operator), Credential::OperatorToken);
+        assert!(store.list().is_empty());
+        // It refuses to issue or revoke, and does not replace the file.
+        assert!(matches!(
+            store.issue(label("openclaw"), WallTime(1)).await,
+            Err(TokenError::Storage(_))
+        ));
+        assert!(matches!(
+            store
+                .revoke(&TokenId::new("t-00000001").unwrap(), WallTime(1))
+                .await,
+            Err(TokenError::Storage(_))
+        ));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), junk, "not replaced");
     }
 
-    // A file in the Operator's place that is not a token is not replaced either.
+    // A file in the Operator's place that is not a token is an error: nobody could
+    // be served without it. It is not replaced either.
     std::fs::remove_file(&path).unwrap();
-    let operator = scratch.credentials().join("operator.token");
-    std::fs::write(&operator, "hello\n").unwrap();
+    let operator_file = scratch.credentials().join("operator.token");
+    std::fs::write(&operator_file, "hello\n").unwrap();
     let error = FileTokenStore::open(&scratch.credentials()).err().unwrap();
     assert!(error.to_string().contains("operator.token"), "{error}");
-    assert_eq!(std::fs::read_to_string(&operator).unwrap(), "hello\n");
+    assert_eq!(std::fs::read_to_string(&operator_file).unwrap(), "hello\n");
 }
 
 #[tokio::test]
@@ -319,9 +338,11 @@ async fn wider_existing_permissions_are_an_error() {
 
     let store = scratch.open();
     store.issue(label("openclaw"), WallTime(1)).await.unwrap();
+    // The agent file is a fault the Operator can fix; it does not lock them out.
     let agents = scratch.credentials().join("agent-tokens.json");
     set(&agents, 0o640);
-    assert!(FileTokenStore::open(&scratch.credentials()).is_err());
+    let degraded = FileTokenStore::open(&scratch.credentials()).unwrap();
+    assert!(degraded.fault().unwrap().contains("640"));
 }
 
 #[tokio::test]

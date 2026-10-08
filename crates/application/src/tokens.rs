@@ -165,6 +165,13 @@ pub trait TokenStore: Send + Sync {
     /// A counter that rises on every revocation, so a stream or a wait holding a
     /// token can look again whether it is still valid.
     fn changes(&self) -> watch::Receiver<u64>;
+
+    /// Why the store cannot issue or revoke tokens, when it cannot: its file could
+    /// not be read. The Operator's own token does not depend on that file, so the
+    /// Operator is still served. The text names a path and is for the log.
+    fn fault(&self) -> Option<String> {
+        None
+    }
 }
 
 pub type SharedTokenStore = Arc<dyn TokenStore>;

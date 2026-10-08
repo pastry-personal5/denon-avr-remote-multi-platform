@@ -81,6 +81,10 @@ struct Entry {
 
 struct Shared {
     agent_file: PathBuf,
+    /// Why the agent file could not be read, when it could not. The store then
+    /// holds no Agent tokens and refuses to issue or revoke, and does not replace
+    /// the file.
+    fault: Option<String>,
     operator_digest: [u8; 32],
     entries: Mutex<Vec<Entry>>,
     /// One issue or revocation at a time, from the change to the file.
@@ -105,10 +109,17 @@ impl FileTokenStore {
         ensure_directory(credentials)?;
         let operator_digest = operator_digest(&credentials.join(OPERATOR_FILE))?;
         let agent_file = credentials.join(AGENT_FILE);
-        let entries = read_entries(&agent_file)?;
+        // The Operator's token is needed to serve anyone, so a file it cannot read
+        // is an error. A damaged agent file is a fault the Operator can fix: the
+        // store runs without Agent tokens and says why.
+        let (entries, fault) = match read_entries(&agent_file) {
+            Ok(entries) => (entries, None),
+            Err(error) => (Vec::new(), Some(error.to_string())),
+        };
         Ok(Self {
             shared: Arc::new(Shared {
                 agent_file,
+                fault,
                 operator_digest,
                 entries: Mutex::new(entries),
                 writing: tokio::sync::Mutex::new(()),
@@ -127,6 +138,9 @@ impl TokenStore for FileTokenStore {
         Box::pin(async move {
             if !label_is_well_formed(label.as_str()) {
                 return Err(TokenError::InvalidLabel);
+            }
+            if let Some(fault) = &self.shared.fault {
+                return Err(TokenError::Storage(fault.clone()));
             }
             let _one_at_a_time = self.shared.writing.lock().await;
             let mut next: Vec<Stored> = {
@@ -180,6 +194,9 @@ impl TokenStore for FileTokenStore {
         now: WallTime,
     ) -> BoxFuture<'a, Result<TokenRecord, TokenError>> {
         Box::pin(async move {
+            if let Some(fault) = &self.shared.fault {
+                return Err(TokenError::Storage(fault.clone()));
+            }
             let _one_at_a_time = self.shared.writing.lock().await;
             let mut next: Vec<Stored> = {
                 let entries = locked(&self.shared.entries);
@@ -251,6 +268,10 @@ impl TokenStore for FileTokenStore {
     fn changes(&self) -> watch::Receiver<u64> {
         self.shared.revocations.subscribe()
     }
+
+    fn fault(&self) -> Option<String> {
+        self.shared.fault.clone()
+    }
 }
 
 impl FileTokenStore {
@@ -283,38 +304,8 @@ fn storage(why: &str) -> TokenError {
 
 // ---- Files ----
 
-#[cfg(unix)]
 fn ensure_directory(path: &Path) -> Result<(), TokenStoreError> {
-    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
-    match std::fs::metadata(path) {
-        Ok(metadata) => {
-            if !metadata.is_dir() {
-                return Err(TokenStoreError::new(format!(
-                    "{} is not a directory",
-                    path.display()
-                )));
-            }
-            let mode = metadata.permissions().mode() & 0o777;
-            if mode & 0o077 != 0 {
-                return Err(TokenStoreError::new(format!(
-                    "{} has permissions {mode:o}, wider than owner-only; fix them first",
-                    path.display()
-                )));
-            }
-            Ok(())
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            let mut builder = std::fs::DirBuilder::new();
-            builder.recursive(true).mode(0o700);
-            builder.create(path).map_err(|error| {
-                TokenStoreError::new(format!("cannot create {}: {error}", path.display()))
-            })
-        }
-        Err(error) => Err(TokenStoreError::new(format!(
-            "cannot read {}: {error}",
-            path.display()
-        ))),
-    }
+    crate::data_directory::ensure_private_directory(path).map_err(TokenStoreError::new)
 }
 
 #[cfg(unix)]

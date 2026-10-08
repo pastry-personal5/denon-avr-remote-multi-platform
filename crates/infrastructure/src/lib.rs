@@ -15,6 +15,7 @@ pub mod quick_select_names;
 mod receiver_connector;
 pub mod source_catalog;
 pub mod system_clock;
+#[cfg(unix)]
 pub mod token_store;
 pub mod x3800h_reducer;
 pub mod x3800h_session;
@@ -23,6 +24,8 @@ pub use app_command_http::{AppCommandExchange, AppCommandHttpClient, RawHttpResp
 pub use audit_jsonl::{AuditLimits, JsonlAuditLog};
 pub use avr_session::AvrSessionConfig;
 pub use config_yaml::YamlConfigRepository;
+#[cfg(unix)]
+pub use data_directory::ensure_private_directory;
 pub use data_directory::{audit_directory, data_directory, policy_path};
 pub use discovery_ssdp::SsdpDiscoveryAdapter;
 pub use http_information::{HttpInformationHttpClient, X3800H_HTTP_PORT};
@@ -31,5 +34,6 @@ pub use quick_select_names::QuickSelectNamesHttpClient;
 pub use receiver_connector::X3800hConnector;
 pub use source_catalog::SourceCatalogHttpClient;
 pub use system_clock::SystemClock;
+#[cfg(unix)]
 pub use token_store::{FileTokenStore, TokenStoreError};
 pub use x3800h_session::X3800hSession;
