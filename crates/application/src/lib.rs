@@ -1,6 +1,7 @@
 //! Application use cases and ports.
 
 pub mod audit;
+pub mod clock;
 pub mod control;
 pub mod http_information;
 pub mod policy_source;
@@ -12,8 +13,10 @@ pub mod session_v3;
 pub mod source_catalog;
 
 pub use audit::{
-    AuditCursor, AuditDecision, AuditEntry, AuditEvent, AuditPage, AuditQuery, AuditRecord,
+    AuditCursor, AuditDecision, AuditEntry, AuditError, AuditEvent, AuditLog, AuditPage,
+    AuditQuery, AuditRecord, Durability, SharedAuditLog,
 };
+pub use clock::{Clock, SharedClock};
 pub use control::{
     AgentControl, AgentLabel, ApprovalHealth, AuditHealth, ConnectionStatus, ControlError, DryRun,
     DryRunDecision, IdempotencyKey, OperationControl, OperationEvent, OperationEventSource,

@@ -34,26 +34,8 @@ impl Default for YamlConfigRepository {
     }
 }
 
-#[cfg(target_os = "macos")]
-fn default_config_path() -> PathBuf {
-    env_path("HOME")
-        .unwrap_or_else(|| PathBuf::from("~"))
-        .join("Library")
-        .join("Application Support")
-        .join("Denon AVR Remote")
-        .join("denon-avr-remote.yaml")
-}
-
-#[cfg(not(target_os = "macos"))]
-fn default_config_path() -> PathBuf {
-    PathBuf::from("config/denon-avr-remote.yaml")
-}
-
-#[cfg(target_os = "macos")]
-fn env_path(variable: &str) -> Option<PathBuf> {
-    std::env::var_os(variable)
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
+pub(crate) fn default_config_path() -> PathBuf {
+    crate::data_directory::data_directory().join("denon-avr-remote.yaml")
 }
 
 /// The schema version this release writes.

@@ -1,7 +1,7 @@
 # Version 4, Phase 3 — Policy, audit, and the Agent path
 
 **Planned and reviewed, 2026-10-08; in progress on the branch
-`v4/phase-3-policy-audit-gate`.** Steps 0 to 2 are
+`v4/phase-3-policy-audit-gate`.** Steps 0 to 3 are
 done; the [steps](#steps) table has the state of each. This is milestone 3 of the
 [roadmap](roadmap.md). It adds the `policy`
 crate, the audit log, and the Agent path through the Operation Gate, all in
@@ -32,7 +32,7 @@ the script fails if either half lands alone.
 | 0 | Amend the design | Done |
 | 1 | `policy` crate, `WallTime`, boundary rules | Done |
 | 2 | Port additions: dry run, health, policy and audit views | Done |
-| 3 | `Clock` and audit ports; JSON Lines adapter | Planned |
+| 3 | `Clock` and audit ports; JSON Lines adapter | Done |
 | 4 | Policy loading, digest, sample file | Planned |
 | 5 | Ledger | Planned |
 | 6a | Gate: Agent path, evaluation, and fail-closed outcomes | Planned |
@@ -124,7 +124,11 @@ whatever the service can answer).
 with a newline, a quote, and 10,000 characters stays one valid line of at most
 128 characters of intent text,
 `files_are_0600_in_a_0700_directory`, `wider_existing_permissions_are_an_error`,
-`seq_continues_after_reopening`, `a_synced_append_returns_after_writing`.
+`seq_continues_after_reopening`, `a_synced_append_returns_after_writing`,
+`a_log_that_does_not_exist_yet_reads_as_empty_and_is_not_created`, and
+`concurrent_appends_never_interleave_lines`. `SystemClock` and `data_directory`
+have unit tests. What a test cannot observe is that `sync_data` runs; that is
+read from the code.
 
 ### Step 4 — Policy loading
 
@@ -259,7 +263,7 @@ the inputs most likely to bite, most likely first. Each has a named test above.
 
 ## Exit status
 
-In progress: steps 0 to 2 are done.
+In progress: steps 0 to 3 are done.
 
 ## Known limits
 

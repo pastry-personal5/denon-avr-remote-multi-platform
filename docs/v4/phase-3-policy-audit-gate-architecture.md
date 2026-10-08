@@ -267,8 +267,18 @@ of at most 500 with an opaque `AuditCursor`.
   directory that already exists with wider permissions is an error on first use,
   not a silent repair.
 - `since` and `query` read across every retained file and skip a truncated last
-  line, a line that is not JSON, and a record or field of a kind they do not know.
-  `seq` continues from the newest record after a restart.
+  line, a line that is not JSON, and a record of a kind or schema they do not
+  know; a field name they do not know inside a list is dropped. A skipped record
+  with a readable `seq` still counts, so `seq` continues from the highest one
+  readable after a restart. A file that ends without a newline (a write cut
+  short) is ended before anything is appended. A log that does not exist yet
+  reads as empty and is not created by reading.
+- The adapter bounds the text it writes whatever it is handed: an intent to 128
+  characters, a reason or error to 512, and a rule id to 128, so a mistake
+  upstream cannot make a line long. `application::audit::intent_text` builds the
+  intent text from the typed intent, in the words the policy uses
+  (`volume -35.0 dB`, `sound_mode pure_direct`), with control characters
+  replaced.
 - The directory is `<support directory>/audit/`. A new `data_directory()`
   function in infrastructure returns the directory `default_config_path` already
   builds its path in, and both use it: `~/Library/Application Support/Denon AVR
