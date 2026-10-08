@@ -8,6 +8,7 @@
 pub mod config;
 pub mod evaluate;
 pub mod intent;
+pub mod label;
 pub mod level;
 
 pub use config::{
@@ -17,4 +18,5 @@ pub use evaluate::{
     evaluate, observed_volume, Baseline, Decision, PolicyInput, Reason, RecentChange,
 };
 pub use intent::{IntentKind, IntentValue};
+pub use label::{label_is_well_formed, MAX_LABEL_LEN, RESERVED_LABEL};
 pub use level::{Level, LevelError, Span};

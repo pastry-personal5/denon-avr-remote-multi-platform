@@ -308,15 +308,40 @@ async fn what_a_rule_names_must_make_sense() {
 #[tokio::test]
 async fn a_rule_can_be_narrowed_to_agents_and_receivers() {
     let loaded = load_text(
-        "agent:\n  rules:\n    - id: read-only\n      when: { agents: [claude-code, Other], receivers: [living-room] }\n      then: deny\n",
+        "agent:\n  rules:\n    - id: read-only\n      when: { agents: [claude-code, other], receivers: [living-room] }\n      then: deny\n",
     )
     .await
     .unwrap();
     let rule = &loaded.config.rules()[0];
     assert!(rule.scope.matches("claude-code", "living-room"));
-    assert!(rule.scope.matches("Other", "living-room"));
-    assert!(!rule.scope.matches("other", "living-room"), "exact match");
+    assert!(rule.scope.matches("other", "living-room"));
+    assert!(!rule.scope.matches("Other", "living-room"), "exact match");
     assert!(!rule.scope.matches("claude-code", "kitchen"));
+}
+
+#[tokio::test]
+async fn an_uppercase_label_in_a_policy_file_is_refused() {
+    // A token label is lowercase, so a rule naming `Claude-Code` would apply to
+    // nobody and read as though it restricted somebody.
+    for labels in [
+        "[Claude-Code]",
+        "[claude-code, Other]",
+        "[unauthenticated]",
+        "[\"a b\"]",
+    ] {
+        let why = refusal(&format!(
+            "agent:\n  rules:\n    - id: read-only\n      when: {{ agents: {labels} }}\n      then: deny\n"
+        ))
+        .await;
+        assert!(
+            why.contains("read-only") && why.contains("label"),
+            "{labels}: {why}"
+        );
+        assert!(
+            !why.contains("Claude-Code") && !why.contains("Other"),
+            "{why}"
+        );
+    }
 }
 
 #[tokio::test]

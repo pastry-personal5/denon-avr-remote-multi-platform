@@ -204,8 +204,9 @@ that its resolved dependency graph reaches `domain` and nothing else.
   loud-volume rule did not match is still refused if the volume changed.
 
 **Policy file.** `policy.yaml` sits beside the configuration and is read by
-`YamlPolicySource`: unknown keys (a time-of-day key among them) are refused, the
-file is at most 256 KiB, its digest is the SHA-256 of the bytes read, and errors
+`YamlPolicySource`: unknown keys (a time-of-day key among them) are refused, so is an
+`agents` entry that no token label could equal (labels are lowercase letters, digits,
+`.`, `_`, and `-`, per `policy::label_is_well_formed`), the file is at most 256 KiB, its digest is the SHA-256 of the bytes read, and errors
 name the rule or key and never quote the file. An empty file is a policy with no
 rules, which requires approval for everything. `docs/examples/policy.yaml` is the
 owner's configuration, not a default. The service holds the policy in force or

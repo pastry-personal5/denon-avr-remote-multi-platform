@@ -35,7 +35,7 @@ is the owner's; it gates step 9 only.
 | --- | --- | --- |
 | 0 | Amend the design | Done |
 | 0b | S2: the Agent endpoint's directory and admission, by hand | Open, the owner's |
-| 1a | The label rule in `policy` and the policy loader | Not started |
+| 1a | The label rule in `policy` and the policy loader | Done |
 | 1b | Port additions, token and refusal types, the audit adapter | Not started |
 | 2 | `api-contract`: conventions, reads, state views, errors, routes | Not started |
 | 3 | `api-contract`: operations, configuration, events, Operator resources | Not started |

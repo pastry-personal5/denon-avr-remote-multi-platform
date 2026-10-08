@@ -9,8 +9,8 @@ use denon_avr_domain::{
     ZonePower,
 };
 use denon_avr_policy::{
-    Decision, Effect, IntentKind, IntentValue, PolicyConfig, PolicyError, Reason, RecentChange,
-    Rule,
+    label_is_well_formed, Decision, Effect, IntentKind, IntentValue, PolicyConfig, PolicyError,
+    Reason, RecentChange, Rule,
 };
 use std::time::Duration;
 
@@ -659,4 +659,67 @@ fn every_intent() -> Vec<ReceiverIntent> {
         ReceiverIntent::Mute(MuteState::Off),
         ReceiverIntent::SoundMode(SoundModeIntent::Direct),
     ]
+}
+
+#[test]
+fn the_label_rule_accepts_lowercase_and_refuses_the_rest() {
+    for good in [
+        "claude-code",
+        "a.b_c-1",
+        "a",
+        "0",
+        "openclaw",
+        &"x".repeat(64),
+    ] {
+        assert!(label_is_well_formed(good), "{good:?}");
+    }
+    for bad in [
+        "Claude-Code",
+        "a b",
+        "-x",
+        ".x",
+        "_x",
+        "",
+        " ",
+        "a/b",
+        "caf\u{e9}",
+        "new\nline",
+        "unauthenticated",
+        &"x".repeat(65),
+    ] {
+        assert!(!label_is_well_formed(bad), "{bad:?}");
+    }
+}
+
+#[test]
+fn a_rule_naming_a_label_no_token_could_hold_is_refused_by_rule_id() {
+    let rule = |labels: &[&str]| Rule::new("tier", Effect::Deny).agents(labels);
+    let build = |labels: &[&str]| PolicyConfig::new(vec![rule(labels)], Duration::from_secs(60));
+    assert_eq!(
+        build(&["claude-code", "Other"]).unwrap_err(),
+        PolicyError::AgentLabelNotWellFormed("tier".into())
+    );
+    assert_eq!(
+        build(&["unauthenticated"]).unwrap_err(),
+        PolicyError::AgentLabelNotWellFormed("tier".into())
+    );
+    assert!(build(&["claude-code", "openclaw"]).is_ok());
+    // The error names the rule and never the label, which is the file's text.
+    let message = build(&["Other"]).unwrap_err().to_string();
+    assert!(
+        message.contains("tier") && !message.contains("Other"),
+        "{message}"
+    );
+}
+
+#[test]
+fn labels_still_match_exactly_and_case_sensitively_in_a_scope() {
+    let config = PolicyConfig::new(
+        vec![Rule::new("tier", Effect::Deny).agents(&["other"])],
+        Duration::from_secs(60),
+    )
+    .unwrap();
+    let scope = &config.rules()[0].scope;
+    assert!(scope.matches("other", "living-room"));
+    assert!(!scope.matches("Other", "living-room"));
 }

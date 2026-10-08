@@ -2,6 +2,7 @@
 //! exception while doing nothing.
 
 use crate::intent::{IntentKind, IntentValue};
+use crate::label::label_is_well_formed;
 use crate::level::{Level, Span};
 use std::collections::BTreeSet;
 use std::fmt;
@@ -208,6 +209,10 @@ pub enum PolicyError {
     VolumeConditionOnOtherIntent(String),
     /// A budget window outside 1 to 1,440 minutes.
     WindowOutOfRange(String),
+    /// A rule's `agents` list names a label that no token could hold, so the rule
+    /// would apply to nobody. The error names the rule and not the label, which is
+    /// the file's own text.
+    AgentLabelNotWellFormed(String),
 }
 
 impl fmt::Display for PolicyError {
@@ -247,6 +252,11 @@ impl fmt::Display for PolicyError {
                     "rule {id:?} has a budget window outside 1 to 1440 minutes"
                 )
             }
+            Self::AgentLabelNotWellFormed(id) => write!(
+                f,
+                "rule {id:?} names an agent label that no token could hold; labels are \
+                 lowercase letters, digits, '.', '_' and '-', starting with a letter or digit"
+            ),
         }
     }
 }
@@ -305,6 +315,11 @@ fn validate(rule: &Rule) -> Result<(), PolicyError> {
     let empty = |list: &Option<BTreeSet<String>>| list.as_ref().is_some_and(BTreeSet::is_empty);
     if empty(&rule.scope.agents) || empty(&rule.scope.receivers) {
         return Err(PolicyError::EmptyScopeList(id.clone()));
+    }
+    if let Some(agents) = &rule.scope.agents {
+        if !agents.iter().all(|label| label_is_well_formed(label)) {
+            return Err(PolicyError::AgentLabelNotWellFormed(id.clone()));
+        }
     }
     for alternative in &rule.filter.alternatives {
         if let Some(value) = alternative.value {
