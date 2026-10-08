@@ -720,6 +720,11 @@ mod tests {
         ) -> BoxFuture<'a, Result<SourceCatalogObservation, ControlError>> {
             unexpected("source_catalog")
         }
+        fn health(
+            &self,
+        ) -> BoxFuture<'_, Result<denon_avr_application::ServiceHealth, ControlError>> {
+            unexpected("health")
+        }
     }
 
     impl OperationControl for Fake {
@@ -763,6 +768,13 @@ mod tests {
         }
         fn operation_events(&self) -> BoxFuture<'_, Result<OperationEvents, ControlError>> {
             unexpected("operation_events")
+        }
+        fn dry_run<'a>(
+            &'a self,
+            _: &'a ReceiverId,
+            _: ReceiverIntent,
+        ) -> BoxFuture<'a, Result<denon_avr_application::DryRun, ControlError>> {
+            unexpected("dry_run")
         }
     }
 
@@ -836,6 +848,28 @@ mod tests {
             _: &'a ReceiverId,
         ) -> BoxFuture<'a, Result<denon_avr_application::Readiness, ControlError>> {
             unexpected("refresh")
+        }
+        fn dry_run_as<'a>(
+            &'a self,
+            _: denon_avr_application::AgentLabel,
+            _: &'a ReceiverId,
+            _: ReceiverIntent,
+        ) -> BoxFuture<'a, Result<denon_avr_application::DryRun, ControlError>> {
+            unexpected("dry_run_as")
+        }
+        fn policy(&self) -> BoxFuture<'_, Result<denon_avr_application::PolicyView, ControlError>> {
+            unexpected("policy")
+        }
+        fn reload_policy(
+            &self,
+        ) -> BoxFuture<'_, Result<denon_avr_application::PolicyView, ControlError>> {
+            unexpected("reload_policy")
+        }
+        fn audit(
+            &self,
+            _: denon_avr_application::AuditQuery,
+        ) -> BoxFuture<'_, Result<denon_avr_application::AuditPage, ControlError>> {
+            unexpected("audit")
         }
     }
 

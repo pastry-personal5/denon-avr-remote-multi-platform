@@ -10,11 +10,12 @@
 //! This milestone serves the Operator principal only. An Agent handle is
 //! refused until the policy path exists.
 
+use crate::audit::{AuditPage, AuditQuery};
 use crate::control::{
-    ConnectionStatus, ControlError, IdempotencyKey, OperationControl, OperationEvent,
-    OperationEventSource, OperationEvents, OperationSnapshot, OperationStatus, OperationSubmission,
-    OperatorAdmin, Principal, ReceiverCapabilities, ReceiverReads, ReceiverSummary,
-    SharedOperatorControl,
+    AgentLabel, ConnectionStatus, ControlError, DryRun, IdempotencyKey, OperationControl,
+    OperationEvent, OperationEventSource, OperationEvents, OperationSnapshot, OperationStatus,
+    OperationSubmission, OperatorAdmin, PolicyView, Principal, ReceiverCapabilities, ReceiverReads,
+    ReceiverSummary, ServiceHealth, SharedOperatorControl,
 };
 use crate::ports::{
     AsyncConfigRepository, AsyncReceiverDiscovery, BoxFuture, OperationError, ReceiverConnector,
@@ -68,6 +69,12 @@ fn locked<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 fn unavailable(error: OperationError) -> ControlError {
     ControlError::Unavailable(error.to_string())
+}
+
+/// What the views for policy, audit, and health answer until the service has an
+/// Agent path to report on. It is a refusal, which fails closed.
+fn no_agent_path() -> ControlError {
+    ControlError::Unavailable("this service has no policy, audit log, or agent path".into())
 }
 
 /// The in-process implementation of the control-service port.
@@ -910,6 +917,10 @@ impl ReceiverReads for ServiceHandle {
                 .map_err(ControlError::Receiver)
         })
     }
+
+    fn health(&self) -> BoxFuture<'_, Result<ServiceHealth, ControlError>> {
+        Box::pin(async move { Err(no_agent_path()) })
+    }
 }
 
 impl OperationControl for ServiceHandle {
@@ -974,6 +985,14 @@ impl OperationControl for ServiceHandle {
                 viewer: self.principal.clone(),
             }) as OperationEvents)
         })
+    }
+
+    fn dry_run<'a>(
+        &'a self,
+        _receiver: &'a ReceiverId,
+        _intent: ReceiverIntent,
+    ) -> BoxFuture<'a, Result<DryRun, ControlError>> {
+        Box::pin(async move { Err(no_agent_path()) })
     }
 }
 
@@ -1107,6 +1126,39 @@ impl OperatorAdmin for ServiceHandle {
                 .synchronize()
                 .await
                 .map_err(ControlError::Receiver)
+        })
+    }
+
+    fn dry_run_as<'a>(
+        &'a self,
+        _agent: AgentLabel,
+        _receiver: &'a ReceiverId,
+        _intent: ReceiverIntent,
+    ) -> BoxFuture<'a, Result<DryRun, ControlError>> {
+        Box::pin(async move {
+            self.require_operator()?;
+            Err(no_agent_path())
+        })
+    }
+
+    fn policy(&self) -> BoxFuture<'_, Result<PolicyView, ControlError>> {
+        Box::pin(async move {
+            self.require_operator()?;
+            Err(no_agent_path())
+        })
+    }
+
+    fn reload_policy(&self) -> BoxFuture<'_, Result<PolicyView, ControlError>> {
+        Box::pin(async move {
+            self.require_operator()?;
+            Err(no_agent_path())
+        })
+    }
+
+    fn audit(&self, _query: AuditQuery) -> BoxFuture<'_, Result<AuditPage, ControlError>> {
+        Box::pin(async move {
+            self.require_operator()?;
+            Err(no_agent_path())
         })
     }
 }

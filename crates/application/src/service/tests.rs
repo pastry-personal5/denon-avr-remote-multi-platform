@@ -899,6 +899,65 @@ async fn an_agent_is_not_handed_a_handle_until_the_policy_path_exists() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn the_health_dry_run_policy_and_audit_views_fail_closed_until_the_agent_path_exists() {
+    let h = harness();
+    let intent = ReceiverIntent::Mute(MuteState::On);
+    let agent_label = AgentLabel::new("openclaw").unwrap();
+    let is_unavailable = |error: ControlError| matches!(error, ControlError::Unavailable(_));
+
+    assert!(is_unavailable(h.operator.health().await.unwrap_err()));
+    assert!(is_unavailable(
+        h.operator
+            .dry_run(&living_room(), intent.clone())
+            .await
+            .unwrap_err()
+    ));
+    assert!(is_unavailable(
+        h.operator
+            .dry_run_as(agent_label.clone(), &living_room(), intent.clone())
+            .await
+            .unwrap_err()
+    ));
+    assert!(is_unavailable(h.operator.policy().await.unwrap_err()));
+    assert!(is_unavailable(
+        h.operator.reload_policy().await.unwrap_err()
+    ));
+    assert!(is_unavailable(
+        h.operator
+            .audit(crate::audit::AuditQuery::new(10))
+            .await
+            .unwrap_err()
+    ));
+
+    // The administration views are the Operator's alone, whatever the service
+    // can answer.
+    let agent = ServiceHandle {
+        inner: Arc::clone(&h.service.inner),
+        principal: Principal::Agent(agent_label.clone()),
+    };
+    assert_eq!(
+        agent
+            .dry_run_as(agent_label, &living_room(), intent)
+            .await
+            .unwrap_err(),
+        ControlError::Forbidden
+    );
+    assert_eq!(agent.policy().await.unwrap_err(), ControlError::Forbidden);
+    assert_eq!(
+        agent.reload_policy().await.unwrap_err(),
+        ControlError::Forbidden
+    );
+    assert_eq!(
+        agent
+            .audit(crate::audit::AuditQuery::new(10))
+            .await
+            .unwrap_err(),
+        ControlError::Forbidden
+    );
+    assert_eq!(h.connector.attempts(), 0);
+}
+
+#[tokio::test(start_paused = true)]
 async fn the_agent_view_carries_no_address_and_ad_hoc_receivers_are_not_listed() {
     let h = harness();
     let ad_hoc = h

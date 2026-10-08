@@ -1,7 +1,7 @@
 # Version 4, Phase 3 — Policy, audit, and the Agent path
 
 **Planned and reviewed, 2026-10-08; in progress on the branch
-`v4/phase-3-policy-audit-gate`.** Step 0 (the design amendment) and step 1 are
+`v4/phase-3-policy-audit-gate`.** Steps 0 to 2 are
 done; the [steps](#steps) table has the state of each. This is milestone 3 of the
 [roadmap](roadmap.md). It adds the `policy`
 crate, the audit log, and the Agent path through the Operation Gate, all in
@@ -31,7 +31,7 @@ the script fails if either half lands alone.
 | --- | --- | --- |
 | 0 | Amend the design | Done |
 | 1 | `policy` crate, `WallTime`, boundary rules | Done |
-| 2 | Port additions: dry run, health, policy and audit views | Planned |
+| 2 | Port additions: dry run, health, policy and audit views | Done |
 | 3 | `Clock` and audit ports; JSON Lines adapter | Planned |
 | 4 | Policy loading, digest, sample file | Planned |
 | 5 | Ledger | Planned |
@@ -105,7 +105,13 @@ fill them in, which fails closed. Add a one-line stub to `Stub` in `control.rs`,
 `Fake` in `apps/cli/src/main.rs`, and to `FastPort` in `crates/gui-lib/src/bridge.rs`.
 Extend `the_stub_fails_every_call_with_a_typed_error` to the new methods; the
 object-safety test (`one_handle_narrows_to_each_surface_without_new_objects`)
-must still compile.
+must still compile. The types the views name come with them: the audit data
+types in `application::audit` and `PolicyDigest` in `application::policy_source`
+(tests `a_page_is_at_least_one_record_and_never_more_than_the_cap`,
+`a_digest_prints_as_64_lowercase_hex_digits_and_reads_back`, and
+`the_health_dry_run_policy_and_audit_views_fail_closed_until_the_agent_path_exists`,
+which also pins that the Operator-only views are `Forbidden` to an agent,
+whatever the service can answer).
 
 ### Step 3 — Clock and audit
 
@@ -253,7 +259,7 @@ the inputs most likely to bite, most likely first. Each has a named test above.
 
 ## Exit status
 
-In progress: steps 0 and 1 are done.
+In progress: steps 0 to 2 are done.
 
 ## Known limits
 

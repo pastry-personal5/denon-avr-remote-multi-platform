@@ -594,6 +594,11 @@ mod tests {
         ) -> BoxFuture<'a, Result<SourceCatalogObservation, ControlError>> {
             unavailable()
         }
+        fn health(
+            &self,
+        ) -> BoxFuture<'_, Result<denon_avr_application::ServiceHealth, ControlError>> {
+            unavailable()
+        }
     }
 
     impl OperationControl for FastPort {
@@ -631,6 +636,13 @@ mod tests {
             unavailable()
         }
         fn operation_events(&self) -> BoxFuture<'_, Result<OperationEvents, ControlError>> {
+            unavailable()
+        }
+        fn dry_run<'a>(
+            &'a self,
+            _: &'a ReceiverId,
+            _: ReceiverIntent,
+        ) -> BoxFuture<'a, Result<denon_avr_application::DryRun, ControlError>> {
             unavailable()
         }
     }
@@ -673,6 +685,28 @@ mod tests {
             &'a self,
             _: &'a ReceiverId,
         ) -> BoxFuture<'a, Result<denon_avr_application::Readiness, ControlError>> {
+            unavailable()
+        }
+        fn dry_run_as<'a>(
+            &'a self,
+            _: denon_avr_application::AgentLabel,
+            _: &'a ReceiverId,
+            _: ReceiverIntent,
+        ) -> BoxFuture<'a, Result<denon_avr_application::DryRun, ControlError>> {
+            unavailable()
+        }
+        fn policy(&self) -> BoxFuture<'_, Result<denon_avr_application::PolicyView, ControlError>> {
+            unavailable()
+        }
+        fn reload_policy(
+            &self,
+        ) -> BoxFuture<'_, Result<denon_avr_application::PolicyView, ControlError>> {
+            unavailable()
+        }
+        fn audit(
+            &self,
+            _: denon_avr_application::AuditQuery,
+        ) -> BoxFuture<'_, Result<denon_avr_application::AuditPage, ControlError>> {
             unavailable()
         }
     }

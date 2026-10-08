@@ -329,9 +329,18 @@ OperatorAdmin::dry_run_as(agent: AgentLabel, receiver, intent) -> DryRun
 OperatorAdmin::policy() -> PolicyView { digest, loaded_at, text, error }
 OperatorAdmin::reload_policy() -> PolicyView
 OperatorAdmin::audit(AuditQuery) -> AuditPage
-DryRun            Allow | RequireApproval { reasons, rules } | Deny { reasons, rules }
-                  | Unavailable { reason }, with the policy digest
+DryRun            { decision: DryRunDecision, policy: Option<PolicyDigest> }
+DryRunDecision    Allow | RequireApproval { reasons, rules } | Deny { reasons, rules }
+                  | Unavailable { reason }; reasons are the sentences the Operator
+                  would read, not the policy crate's types
 ```
+
+The port types are in `application::control`. The audit data types
+(`AuditRecord`, `AuditEvent`, `AuditEntry`, `AuditQuery`, `AuditPage`,
+`AuditCursor`) and `PolicyDigest` landed in step 2 with the port, because the
+views name them; the `AuditLog` and `PolicySource` ports and the adapters
+follow in steps 3 and 4. An `AuditQuery` holds a limit of 1 to 500 and an
+optional cursor, and a cursor continues a newest-first listing.
 
 `health` is on `ReceiverReads` because the design serves `GET /v1/health` to both
 endpoints; it carries coarse states and no paths or error text. `DryRun` for the

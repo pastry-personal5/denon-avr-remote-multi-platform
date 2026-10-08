@@ -11,12 +11,14 @@
 //! One handle implements all three. The caller's [`Principal`] is fixed when the
 //! handle is created from a credential and is never a request parameter.
 
+use crate::audit::{AuditPage, AuditQuery};
+use crate::policy_source::PolicyDigest;
 use crate::ports::{BoxFuture, OperationError};
 use crate::session_v3::{Readiness, StateSubscription};
 use denon_avr_domain::{
     ConfiguredReceivers, DiscoveredReceiver, DispatchCertainty, HttpInformationSnapshot,
     ModelCapabilities, OperationId, QuickSelectNameObservation, ReceiverId, ReceiverIdentity,
-    ReceiverIntent, SourceCatalogObservation,
+    ReceiverIntent, SourceCatalogObservation, WallTime,
 };
 use std::fmt;
 use std::sync::Arc;
@@ -299,6 +301,86 @@ pub struct ReceiverSummary {
     pub connection: ConnectionStatus,
 }
 
+/// Whether the policy file is in force.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PolicyHealth {
+    /// This service has no Agent path, so no policy.
+    NotConfigured,
+    Active,
+    /// The file is missing, invalid, or failed its last reload. Agent writes
+    /// are refused until a good load.
+    Unavailable,
+}
+
+/// Whether the audit log took its last record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuditHealth {
+    /// This service has no audit log.
+    NotConfigured,
+    Ok,
+    /// The last append failed. Agent writes are refused until one succeeds.
+    Failing,
+}
+
+/// Whether a human can approve a held request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ApprovalHealth {
+    /// There is no approval path, so a request that needs approval ends
+    /// `approval_unavailable`.
+    Unavailable,
+}
+
+/// Coarse service state, safe for an agent to read: it carries no paths and no
+/// error text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ServiceHealth {
+    pub policy: PolicyHealth,
+    pub audit: AuditHealth,
+    /// Whether the budget ledger has been rebuilt from the audit log. Until it
+    /// has, Agent writes are refused.
+    pub ledger_ready: bool,
+    pub approval: ApprovalHealth,
+}
+
+/// What the policy would decide for a request, without making one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DryRunDecision {
+    Allow,
+    RequireApproval {
+        reasons: Vec<String>,
+        rules: Vec<String>,
+    },
+    Deny {
+        reasons: Vec<String>,
+        rules: Vec<String>,
+    },
+    /// No decision can be made, so a real request would be refused.
+    Unavailable {
+        reason: String,
+    },
+}
+
+/// The result of a dry run. It creates no operation and no record.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DryRun {
+    pub decision: DryRunDecision,
+    /// The policy the decision rests on, when there is one.
+    pub policy: Option<PolicyDigest>,
+}
+
+/// The policy as the Operator sees it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PolicyView {
+    /// The digest of the file in force, or `None` when none is.
+    pub digest: Option<PolicyDigest>,
+    pub loaded_at: Option<WallTime>,
+    /// The file's text, as read.
+    pub text: Option<String>,
+    /// Why the last load failed, when it did.
+    pub error: Option<String>,
+}
+
 /// What an agent may observe.
 pub trait ReceiverReads: Send + Sync {
     /// Saved receivers only. A receiver chosen by address is never listed.
@@ -319,6 +401,10 @@ pub trait ReceiverReads: Send + Sync {
         &'a self,
         receiver: &'a ReceiverId,
     ) -> BoxFuture<'a, Result<SourceCatalogObservation, ControlError>>;
+
+    /// Whether the policy, the audit log, and the budget ledger are working.
+    /// Served to agents and the Operator alike.
+    fn health(&self) -> BoxFuture<'_, Result<ServiceHealth, ControlError>>;
 }
 
 /// Submitting operations and managing the caller's own. The Operator sees every
@@ -347,10 +433,20 @@ pub trait OperationControl: Send + Sync {
     fn cancel(&self, id: OperationId) -> BoxFuture<'_, Result<OperationSnapshot, ControlError>>;
 
     fn operation_events(&self) -> BoxFuture<'_, Result<OperationEvents, ControlError>>;
+
+    /// What the policy would decide for the caller's own request. It makes no
+    /// operation and writes no record, but it connects the receiver, so it
+    /// counts against an agent's write cap. For the Operator, which skips
+    /// policy, the answer is `Allow`.
+    fn dry_run<'a>(
+        &'a self,
+        receiver: &'a ReceiverId,
+        intent: ReceiverIntent,
+    ) -> BoxFuture<'a, Result<DryRun, ControlError>>;
 }
 
-/// Operator-only administration. Token, approval, audit, and policy views join
-/// this trait with the components that provide them.
+/// Operator-only administration. Token and approval views join this trait with
+/// the components that provide them.
 pub trait OperatorAdmin: Send + Sync {
     fn discover(
         &self,
@@ -389,6 +485,25 @@ pub trait OperatorAdmin: Send + Sync {
         &'a self,
         receiver: &'a ReceiverId,
     ) -> BoxFuture<'a, Result<Readiness, ControlError>>;
+
+    /// What the policy would decide if `agent` made this request. It lets the
+    /// owner test a policy, and an agent's tier, before an agent meets it.
+    fn dry_run_as<'a>(
+        &'a self,
+        agent: AgentLabel,
+        receiver: &'a ReceiverId,
+        intent: ReceiverIntent,
+    ) -> BoxFuture<'a, Result<DryRun, ControlError>>;
+
+    /// The policy in force and when it was loaded.
+    fn policy(&self) -> BoxFuture<'_, Result<PolicyView, ControlError>>;
+
+    /// Read the policy file again. A load that fails leaves the service without
+    /// a policy, so Agent writes are refused until a good one.
+    fn reload_policy(&self) -> BoxFuture<'_, Result<PolicyView, ControlError>>;
+
+    /// A page of the audit log, newest first.
+    fn audit(&self, query: AuditQuery) -> BoxFuture<'_, Result<AuditPage, ControlError>>;
 }
 
 /// What a writing agent is handed: observation and operations, no administration.
@@ -405,6 +520,7 @@ pub type SharedOperatorControl = Arc<dyn OperatorControl>;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::audit::{AuditPage, AuditQuery};
     use denon_avr_domain::{MuteState, ZonePower};
 
     fn unavailable<T: Send + 'static>() -> BoxFuture<'static, Result<T, ControlError>> {
@@ -430,6 +546,9 @@ mod tests {
         ) -> BoxFuture<'a, Result<SourceCatalogObservation, ControlError>> {
             unavailable()
         }
+        fn health(&self) -> BoxFuture<'_, Result<ServiceHealth, ControlError>> {
+            unavailable()
+        }
     }
 
     impl OperationControl for Stub {
@@ -451,6 +570,13 @@ mod tests {
             unavailable()
         }
         fn operation_events(&self) -> BoxFuture<'_, Result<OperationEvents, ControlError>> {
+            unavailable()
+        }
+        fn dry_run<'a>(
+            &'a self,
+            _: &'a ReceiverId,
+            _: ReceiverIntent,
+        ) -> BoxFuture<'a, Result<DryRun, ControlError>> {
             unavailable()
         }
     }
@@ -495,6 +621,23 @@ mod tests {
         ) -> BoxFuture<'a, Result<Readiness, ControlError>> {
             unavailable()
         }
+        fn dry_run_as<'a>(
+            &'a self,
+            _: AgentLabel,
+            _: &'a ReceiverId,
+            _: ReceiverIntent,
+        ) -> BoxFuture<'a, Result<DryRun, ControlError>> {
+            unavailable()
+        }
+        fn policy(&self) -> BoxFuture<'_, Result<PolicyView, ControlError>> {
+            unavailable()
+        }
+        fn reload_policy(&self) -> BoxFuture<'_, Result<PolicyView, ControlError>> {
+            unavailable()
+        }
+        fn audit(&self, _: AuditQuery) -> BoxFuture<'_, Result<AuditPage, ControlError>> {
+            unavailable()
+        }
     }
 
     #[test]
@@ -516,6 +659,26 @@ mod tests {
         assert_eq!(error, ControlError::Unavailable("stub".into()));
         assert_eq!(error.to_string(), "service unavailable: stub");
         assert!(Stub.state(&id).await.is_err());
+
+        // The views added for policy, audit, and health fail the same way.
+        let intent = ReceiverIntent::Mute(MuteState::On);
+        let agent = AgentLabel::new("openclaw").unwrap();
+        let unavailable = ControlError::Unavailable("stub".into());
+        assert_eq!(Stub.health().await.unwrap_err(), unavailable);
+        assert_eq!(
+            Stub.dry_run(&id, intent.clone()).await.unwrap_err(),
+            unavailable
+        );
+        assert_eq!(
+            Stub.dry_run_as(agent, &id, intent).await.unwrap_err(),
+            unavailable
+        );
+        assert_eq!(Stub.policy().await.unwrap_err(), unavailable);
+        assert_eq!(Stub.reload_policy().await.unwrap_err(), unavailable);
+        assert_eq!(
+            Stub.audit(AuditQuery::new(10)).await.unwrap_err(),
+            unavailable
+        );
     }
 
     #[test]
