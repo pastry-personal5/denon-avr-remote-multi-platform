@@ -6,8 +6,11 @@ Milestone 1 is complete (2026-10-08), tracked in its
 (started 2026-10-08) and waits on the owner's visual and live checks, tracked in
 its [phase overview](phase-2-gui-on-port-overview.md). Milestone 3 is implemented
 (2026-10-08) and waits on the owner's live checks, tracked in its
-[phase overview](phase-3-policy-audit-gate-overview.md). No
-version change is made until the release milestone.**
+[phase overview](phase-3-policy-audit-gate-overview.md). Milestone 4 is planned
+(2026-10-08) and not started, tracked in its
+[phase overview](phase-4-control-api-server-overview.md); S2 has not been run and
+gates its Agent endpoint. No version change is made until the release
+milestone.**
 
 This roadmap sequences the work needed to implement the target design in
 [Planned architecture](../planned-architecture.md). It does not restate that
@@ -429,45 +432,57 @@ the architecture lists each correction.
 
 ## Milestone 4 — Control API server, contract, and client
 
-Additive: new packages that no shipped delivery package uses yet.
+Additive: new packages that no shipped delivery package uses yet. The steps,
+types, and decisions are in the paired
+[overview](phase-4-control-api-server-overview.md) and
+[architecture](phase-4-control-api-server-architecture.md); this is the summary.
+The review that produced them corrected the first draft of this section, and the
+architecture lists each correction.
 
-1. **`api-contract`**: the versioned `/v1` schema. Amend the design's API table
-   first to add the inspection resources (source catalog, Quick Select names,
-   HTTP information), an Operator `refresh` resource (added to the port by
-   [milestone 2](phase-2-gui-on-port-overview.md)), an Agent-visible sources
-   resource for `list_sources`, and the resources for the policy, audit, health,
-   and dry-run port methods that
-   [milestone 3](phase-3-policy-audit-gate-architecture.md#port-additions) adds.
-2. **`api-client`**: implements the control-service port over local transports
-   only, with no TLS dependency.
-3. **`apps/api-server`**: hosts the in-process service from milestone 1. It is
-   the composition root for infrastructure and the only place besides
-   diagnostics that constructs receiver sessions.
-4. **Endpoints.** Operator endpoint in the owner-only data directory; Agent
-   endpoint in a separate location, not created if its permissions cannot be
-   applied. Unix domain sockets with peer-credential checks (S2). The Windows
-   named-pipe transport is out of scope. Linux shares the Unix-socket code but
-   is not supported or tested in 4.0.0.
-5. **Credentials and processes.** First-start Operator token file; hashed,
-   labelled static Agent tokens with the `/v1/tokens` routes; header-only
-   bearer authentication; one server per user with an exclusive bind; a
-   parent-pipe exit mode for the GUI-owned child; the health route.
-6. **Boundary rules from the resolved graph:** only `infrastructure`,
-   `api-server`, and `diagnostics` reach `protocol`; only `api-server` and
-   `diagnostics` reach `infrastructure`; receiver sessions are constructed only
-   in `api-server` and `diagnostics`; `api-client` has no TLS dependency.
+0. **Amend the design before coding** (done 2026-10-08): the API table (a dry run
+   is its own resource, ad hoc registration, the inspection reads, `ETag` on
+   configuration), separate Agent state and source views, admission by directory
+   and peer uid, the refused-caller audit event, the one-server lock, and the
+   `run/` and `credentials/` directories.
+0b. **S2**, by hand on the Mac with the dedicated account, before the Agent
+   endpoint is enabled from settings.
+1. **Port work the first draft assumed was done:** owned capability lists, token
+   methods on `OperatorAdmin` and a `TokenStore` port, an audit event and an
+   optional principal for a refused caller, and the audit adapter's side of it.
+2. **`api-contract`**: the `/v1` types, the conversions, the error mapping, the
+   route table, and golden fixtures. Serde only.
+3. **Token store** in infrastructure: the Operator token file and hashed, labelled
+   Agent tokens.
+4. **`apps/api-server`**: hosts the in-process service. It is the composition root
+   for infrastructure and the only place besides diagnostics that constructs
+   receiver sessions. Two Unix-socket endpoints with peer-credential checks; a
+   lock for one server per user; the request pipeline, routes, event streams, and
+   waits; a parent-pipe exit mode for the GUI-owned child.
+5. **`api-client`**: implements the control-service port over local transports
+   only, with no TLS dependency, and a conformance run that holds it to the
+   in-process service's results.
+6. **Boundary rules from the resolved graph, for the packages this milestone adds.**
+   `cli` and `desktop` keep their `infrastructure` edge until milestone 5, so the
+   rule that only `api-server` and `diagnostics` reach `infrastructure` and
+   `protocol` names them as exceptions until then. `api-client` has no TLS crate,
+   no server framework, and no `hyper` server feature.
 
 **Exit.**
 
-- Contract tests against the schema and an in-process server.
-- The Agent endpoint refuses every Operator resource, with and without an
-  Operator token, and audits the attempt. The Agent view carries no receiver
-  addresses.
-- State snapshots coalesce for a slow client, and operation events reach only
-  their owner.
+- Contract tests against the schema and an in-process server, and the port
+  conformance run in process and over the socket.
+- The Agent endpoint refuses every Operator resource of the route table, with an
+  Agent token, with the Operator token, and with none, and audits each attempt at
+  a bounded rate. No receiver address, path, raw frame, or error text reaches an
+  agent.
+- State snapshots coalesce for a slow client, a stalled or departed client releases
+  its lease, and operation events reach only their owner.
+- A mistyped request field submits nothing, and a dry run never calls `operate`.
 - Endpoint permissions are checked by hand on macOS: the dedicated agent account
   reaches the Agent endpoint and cannot reach the Operator endpoint or the data
   directory.
+- Live, armed: the Operator and an agent token operate the receiver through the
+  server within the limits, and the volume is restored.
 
 ## Milestone 5 — Operator clients cut over
 
@@ -650,6 +665,12 @@ Gaps found by the review and the milestone that closes each:
 | The cumulative budget had no exact definition, wall-clock source, or concurrency rule | 3 |
 | Classification was global, so one agent's rule could classify an intent for all | 3 |
 | Boundary script sees direct edges only | 3, 4 |
+| The Agent's state and source views carried free text, addresses among it | 4 |
+| A dry run was a flag, so a mistyped one could write | 4 |
+| One server per user had no mechanism, and a killed server left a socket that blocked the next | 4 |
+| A refused caller had no audit event, and auditing it could rotate the ledger's records away | 4 |
+| Agent labels were free text, so a mistyped case left a rule unapplied | 4 |
+| `api-client` could not rebuild three port types from the wire | 4 |
 | Phase 5 ledger depends on the legacy GUI test | 2 |
 
 ## Open items

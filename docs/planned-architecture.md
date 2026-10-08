@@ -451,7 +451,9 @@ narrowed to some agents by an `agents` list of labels, or to some receivers by a
 `receivers` list of ids, in its `when`. The loader rejects `unclassified: allow`,
 an `or_unknown` that is not `true` (an unknown or stale volume always matches),
 limits off the 0.5 dB grid, an `allow` rule with a condition beyond scope, intent,
-and value, and unknown keys, including any time-of-day key:
+and value, an `agents` entry that no token label could equal (labels are lowercase
+letters, digits, `.`, `_`, and `-`, so `Claude-Code` is refused rather than left to
+apply to nobody), and unknown keys, including any time-of-day key:
 
 ```yaml
 unclassified: require_approval
@@ -527,6 +529,8 @@ to its operation by run and id. Agent-supplied text is bounded and escaped.
 | `dispatching` | Before the session's `operate` is called | The requested level and the level the receiver showed, for a volume change, and the precondition's fields |
 | `finished` | When the operation ends | Status, `dispatch`, `confirmed`, and the reason |
 | `policy_loaded`, `policy_load_failed` | Each load attempt | The digest, or the error |
+| `access_refused` | A caller was refused at an endpoint, at most once a minute per caller and reason, with a count of those not written | The endpoint, the reason, the peer's uid, and the principal when the credential was valid. It has no operation and does not affect the budget ledger |
+| `token_issued`, `token_revoked` | An Agent token was issued or revoked | The token id and label, never the token |
 
 Approval events join these with the broker. The write order is part of the
 contract. The `dispatching` record is written and synced to disk before the
@@ -607,12 +611,18 @@ grow compatibly.
 | --- | --- | --- |
 | `GET /v1/receivers` | Configured receivers. The Agent view carries identity, model, and capabilities, never network addresses | Both endpoints |
 | `POST /v1/receivers/discover` | Discover receivers on the LAN | Operator endpoint |
-| `GET /v1/config`, `PUT /v1/config` | Receiver configuration and per-receiver preferences | Operator endpoint |
-| `GET /v1/receivers/{id}/state` | Complete receiver state with per-field validity | Both endpoints |
-| `GET /v1/receivers/{id}/events` | Event stream of coalesced state snapshots and operation events. An Agent sees only its own principal's operation events | Both endpoints |
-| `POST /v1/receivers/{id}/operations` | Submit an operation; `dry_run` returns the policy decision for the caller's own principal without dispatching, and the Operator may name an agent label to see that agent's decision. A dry run creates no operation and writes no audit record | Both endpoints |
+| `POST /v1/receivers/ad-hoc` | Use a receiver chosen only by address. It gets an `adhoc:` id that no Agent view lists | Operator endpoint |
+| `GET /v1/config`, `PUT /v1/config` | Receiver configuration and per-receiver preferences. `GET` returns an `ETag`; `PUT` requires `If-Match` and fails with 412 when the file has changed since, so two clients cannot overwrite each other | Operator endpoint |
+| `GET /v1/receivers/{id}/state` | Complete receiver state with per-field validity. The Agent view carries the validity class and a reason code and no free text: no error message, raw frame, or receiver status text, any of which can name an address | Both endpoints, as different views |
+| `GET /v1/receivers/{id}/sources` | The source catalog. The Agent view omits the receiver's raw reply and the error text | Both endpoints, as different views |
+| `GET /v1/receivers/{id}/quick-select-names`, `GET /v1/receivers/{id}/http-information` | Inspection reads that no agent tool uses | Operator endpoint |
+| `POST /v1/receivers/{id}/refresh` | Read every core field again; dispatches nothing | Operator endpoint |
+| `GET /v1/receivers/{id}/events` | Event stream of coalesced state snapshots. No replay: a client that reconnects reads the state again | Both endpoints, as different views |
+| `GET /v1/operations/events` | Event stream of operation events, which the control-service port offers without a receiver. An Agent sees only its own principal's | Both endpoints |
+| `POST /v1/receivers/{id}/operations` | Submit an operation | Both endpoints |
+| `POST /v1/receivers/{id}/operations/dry-run` | The policy decision for the caller's own principal, without dispatching; the Operator may name an agent label (`as_agent`) to see that agent's decision, and an Agent's request type has no such field. A dry run creates no operation and writes no audit record. It is its own resource, not a flag on submit, so a request that mistypes it can never become a write | Both endpoints |
 | `GET /v1/operations/{id}`, `POST /v1/operations/{id}/cancel` | Status and cancellation | Both; the owner only, and the Operator sees all |
-| `GET /v1/approvals` | Pending and decided approvals | Operator endpoint |
+| `GET /v1/approvals` | Pending and decided approvals. Added with the approval broker | Operator endpoint |
 | `GET /v1/audit` | Query the audit log | Operator endpoint |
 | `GET /v1/policy`, `POST /v1/policy/reload` | Effective policy and its digest; validate the file and make it active | Operator endpoint |
 | `POST /v1/tokens`, `GET /v1/tokens`, `DELETE /v1/tokens/{id}` | Issue a static Agent token (the value is shown once), register an OAuth client under an agent label, list labels, revoke either | Operator endpoint |
@@ -620,7 +630,15 @@ grow compatibly.
 
 State snapshots are coalesced so that a slow client sees the newest complete
 state, the same semantics as the session's state subscription. Operation events
-are not coalesced; a client that missed one reads `GET /v1/operations/{id}`.
+are not coalesced; a client that missed one reads `GET /v1/operations/{id}`. A held
+event stream keeps the receiver connected, so the server writes a keep-alive, drops
+a stream whose client stops reading, and caps the streams per principal.
+
+Request bodies are strict: a field the server does not know is a 400 that names it,
+so a mistyped field is never silently ignored. Responses are lenient: a client
+ignores fields it does not know. Wire values carry a field's validity class and
+reason but not its age, because the session's timestamps are relative to its own
+start and mean nothing to a client.
 
 Transport and identity:
 
@@ -638,7 +656,24 @@ Transport and identity:
   an Operator resource is a not-found there, and an Operator token presented
   there is rejected and audited. Its location is separate and its permissions
   can admit a dedicated agent or MCP service account. If the server cannot apply
-  the configured permissions to the Agent endpoint, it does not create it.
+  the configured permissions to the Agent endpoint, it does not create it, and
+  with no configuration it does not exist.
+- Access to an endpoint is decided by its directory and by the peer's uid, which
+  the server reads from the connection, and never by the socket file's mode alone.
+  The Operator endpoint admits the server's own uid. The Agent endpoint admits the
+  configured uids, lives in a directory that is a real directory (not a link)
+  owned by the server's uid and not group- or world-writable, and is checked again
+  after the socket is bound. A connection from another uid is closed unread. The
+  user's data directory is not a possible location: its parents are 0700, so the
+  agent account could not reach it.
+- Authentication comes first. A request with no credential, an unknown one, or one
+  of the other endpoint's kind receives the same 401, and only then is the path
+  looked up, so an unauthenticated caller learns nothing about which resources
+  exist. Every refusal is audited as `access_refused` with its reason, at a bounded
+  rate per caller so that probing cannot rotate away the records the budget is
+  rebuilt from.
+- There is one server per user: it holds a lock file in a 0700 directory, and a
+  socket left by a killed server is removed only while the lock is held.
 - Two principal classes exist. **Agent** is always subject to the Policy
   Engine. **Operator** requests still pass through the Operation Gate for
   server-side ids, coalescing, audit, and at-most-once dispatch, but skip policy
@@ -1001,7 +1036,9 @@ diagnostics    → domain, infrastructure, protocol
 
 `api-contract` also defines the access-token claims, the client-registration
 schema, and the registry export that `auth-server`, `api-server`, and `mcp-http`
-share.
+share; those arrive with the OAuth milestone and are not in the first release. The
+transitive rules below hold for the packages that milestone 4 adds; `cli` and
+`desktop` keep their `infrastructure` edge until milestone 5 removes it.
 
 `make boundary` must enforce, in addition to today's rules:
 
@@ -1031,8 +1068,8 @@ share.
 | Receiver configuration | YAML, owned by the Control API server and reached by clients through the API. The schema holds several receivers by name. An earlier single-receiver file is read, then rewritten in the new schema with a one-time backup |
 | Policy | `policy.yaml`, a separate YAML file beside the receiver configuration in the per-user data directory, edited as a file and loaded on start or Operator reload |
 | Audit log | Append-only JSON Lines in an `audit` directory beside the configuration (directory mode 0700, files 0600); one record per operation event, as described under [Audit](#audit). Rotated by size, with a configurable size limit and file count (defaults 20 MiB and 10 files); the oldest file is deleted beyond the count, and the audit view reads across the retained files |
-| Endpoints | The Operator endpoint in the owner-only data directory; the Agent endpoint in a separate location whose permissions are configured and applied at start |
-| Credentials and keys | Owner-only files in the per-user data directory: hashes of issued tokens, the Operator token file read by the GUI and CLI, and the External Approval Service's public keys with their key ids |
+| Endpoints | The Operator endpoint and the server's lock in `run/`, a 0700 subdirectory of the data directory; the Agent endpoint in a separate location whose permissions are configured and applied at start, and which exists only when `server.yaml` configures it |
+| Credentials and keys | Owner-only files in `credentials/`, a 0700 subdirectory of the data directory: hashes of issued tokens, the Operator token file read by the GUI and CLI, and the External Approval Service's public keys with their key ids |
 | Agent tokens | Held by the agent side only: in the agent host's MCP configuration as a request header for `mcp-http`, or in an owner-only file named by the environment for `mcp-stdio` |
 | TLS certificate and key | `mcp-http` only; readable by the account that runs it and no other |
 | OAuth client registrations | Held by the Control API server: agent label, client id, and revocation state, managed through the token routes. The server also writes a read-only export of the registered clients that the authorization server's account can read |
