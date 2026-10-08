@@ -1,0 +1,17 @@
+{
+  "entries": [
+    {
+      "id": "GAME",
+      "display_name": "Console",
+      "visibility": "shown"
+    },
+    {
+      "id": "AUX2",
+      "visibility": "hidden"
+    }
+  ],
+  "freshness": "partial",
+  "generation": 4,
+  "observed_at_ms": 1700000000123,
+  "response": "partial"
+}

@@ -1,0 +1,19 @@
+{
+  "entries": [
+    {
+      "id": "GAME",
+      "display_name": "Console",
+      "visibility": "shown"
+    },
+    {
+      "id": "AUX2",
+      "visibility": "hidden"
+    }
+  ],
+  "freshness": "partial",
+  "generation": 4,
+  "observed_at_ms": 1700000000123,
+  "response": "partial",
+  "raw_response": "<list>MVMAX 98\r</list>",
+  "error": "connecting to 192.168.1.20:23"
+}

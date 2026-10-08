@@ -1,0 +1,18 @@
+{
+  "error": {
+    "code": "too_late",
+    "message": "too late to cancel: operation is in_session",
+    "operation": {
+      "id": 7,
+      "receiver": "living-room",
+      "intent": {
+        "kind": "mute",
+        "value": "on"
+      },
+      "status": "in_session",
+      "dispatch": "complete_write",
+      "confirmed": false,
+      "observation": "mute on"
+    }
+  }
+}

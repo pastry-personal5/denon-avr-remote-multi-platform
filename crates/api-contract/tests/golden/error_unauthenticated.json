@@ -1,0 +1,6 @@
+{
+  "error": {
+    "code": "unauthenticated",
+    "message": "a valid credential is required"
+  }
+}

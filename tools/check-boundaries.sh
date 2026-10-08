@@ -75,6 +75,8 @@ while IFS=: read -r from to; do
         denon-avr-policy:denon-avr-domain | \
         denon-avr-application:denon-avr-domain | \
         denon-avr-application:denon-avr-policy | \
+        denon-avr-api-contract:denon-avr-application | \
+        denon-avr-api-contract:denon-avr-domain | \
         denon-avr-infrastructure:denon-avr-application | \
         denon-avr-infrastructure:denon-avr-domain | \
         denon-avr-infrastructure:denon-avr-policy | \
@@ -107,6 +109,19 @@ fi
 # nothing else.
 policy_graph=$(cargo tree -p denon-avr-policy --edges normal --prefix none --format '{p}' | awk '{print $1}' | sort -u | tr '\n' ' ')
 [ "$policy_graph" = "denon-avr-domain denon-avr-policy " ] || fail "policy must resolve to the domain only, found: $policy_graph"
+
+# The wire contract is data and conversions: no HTTP, no async runtime, no
+# filesystem. The transport is the server's and the client's.
+if contains '\b(axum|hyper|tower|tokio)\b|\bhttp::|std::fs' crates/api-contract/src; then
+    fail "api-contract must not name an HTTP stack, an async runtime, or the filesystem"
+fi
+
+# Neither the receiver adapters nor the wire protocols may be reached from the
+# contract, directly or through another package.
+contract_graph=$(cargo tree -p denon-avr-api-contract --edges normal --prefix none --format '{p}' | awk '{print $1}' | sort -u | tr '\n' ' ')
+case "$contract_graph" in
+    *denon-avr-infrastructure* | *denon-avr-protocol*) fail "api-contract must not reach infrastructure or protocol, found: $contract_graph" ;;
+esac
 
 # The canonical receiver-session contract has one definition, in the
 # application crate's session module, and nothing else defines a receiver

@@ -1,0 +1,18 @@
+{
+  "id": "living-room",
+  "model": "AVR-X3800H",
+  "capabilities": {
+    "writable": true,
+    "zone2_power": true,
+    "source_catalog_read": true,
+    "inputs": [
+      "BD",
+      "GAME"
+    ],
+    "surround_modes": [
+      "DIRECT",
+      "STEREO"
+    ]
+  },
+  "connection": "connected"
+}

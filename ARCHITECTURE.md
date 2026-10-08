@@ -15,6 +15,7 @@ workspace edges are enforced by `make boundary`.
 | `crates/protocol` | AVR, HEOS, and AppCommand framing, wire values, and parsing. |
 | `crates/policy` | The policy engine: a pure function from a request, the receiver's state, and the recent volume changes to a decision. Depends on `domain` alone. |
 | `crates/application` | Use-case policy, ports, status/control policy, the control-service port, and the in-process control service with its Operation Gate, Agent path, audit records, and budget ledger. |
+| `crates/api-contract` | The Control API's wire types, version 1: the views of state and sources (separate types for an agent and for the Operator), the error mapping, intents and operations, the route table, and the paths a client builds. Depends on `application` and `domain` and on `serde`; it names no HTTP stack, runtime, or filesystem. |
 | `crates/infrastructure` | SSDP discovery, YAML persistence, TCP/HTTP adapters, concrete receiver sessions, the JSON Lines audit log, the policy file loader, and the system clock. |
 | `crates/gui-lib` | Iced presentation state, reducers, views, the projection of receiver state into them, and the bridge to the control-service port. |
 | `apps/cli` | Short-lived CLI composition over the in-process control service. |
@@ -25,6 +26,7 @@ workspace edges are enforced by `make boundary`.
 protocol       → domain
 policy         → domain
 application    → domain, policy
+api-contract   → application, domain
 infrastructure → application, domain, policy, protocol
 gui-lib        → application, domain
 cli            → application, domain, infrastructure

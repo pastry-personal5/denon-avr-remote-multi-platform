@@ -177,7 +177,7 @@ StateView (Agent)    receiver, revision, epoch, and per field:
 OperatorStateView    StateView plus per field { issue: text, evidence: text }
                      and the bounded diagnostics
 SourcesView (Agent)  entries { id, display_name?, visibility }, freshness, generation,
-                     evidence class (complete | partial | unsupported | malformed |
+                     response (complete | partial | unsupported | malformed |
                      timeout | disconnected); no raw reply, no error text
 OperatorSourcesView  SourcesView plus the raw reply and the error text
 ```
@@ -196,8 +196,8 @@ a field expires, so a client sees `stale` without a clock.
 ### Operations and errors
 
 - `SubmitRequest { intent, idempotency_key? }`. `intent` is one tagged variant per
-  `ReceiverIntent`, with volume as `{"kind":"volume","half_steps":-71}` or
-  `{"kind":"volume","minimum":true}`. The response is the operation's snapshot:
+  `ReceiverIntent`, with volume as `{"kind":"volume","level":{"half_steps":-71}}` or
+  `{"kind":"volume","level":"minimum"}`, which cannot be both or neither. The response is the operation's snapshot:
   `id`, `receiver`, `intent`, `status`, `dispatch`, `confirmed`, `reason`,
   `observation`, with `by` on a superseded status.
 - `DryRunRequest { intent }` for an agent; the Operator's adds `as_agent`. The

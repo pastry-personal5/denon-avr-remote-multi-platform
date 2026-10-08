@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "policy": "active",
+  "audit": "ok",
+  "ledger_ready": true,
+  "approval": "unavailable",
+  "server": {
+    "agent_endpoint": {
+      "state": "off",
+      "reason": "no agent endpoint is configured"
+    },
+    "token_store": "ok"
+  }
+}

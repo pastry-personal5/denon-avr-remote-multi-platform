@@ -1,0 +1,7 @@
+{
+  "contract": 1,
+  "policy": "active",
+  "audit": "ok",
+  "ledger_ready": true,
+  "approval": "unavailable"
+}

@@ -1,0 +1,39 @@
+{
+  "receiver": "living-room",
+  "revision": 42,
+  "epoch": 3,
+  "system_power": {
+    "value": "on",
+    "validity": "current"
+  },
+  "main_zone": {
+    "power": {
+      "value": "on",
+      "validity": "current"
+    },
+    "source": {
+      "value": "BD",
+      "validity": "current"
+    },
+    "volume": {
+      "value": {
+        "half_steps": -70
+      },
+      "validity": "current"
+    },
+    "mute": {
+      "value": "on",
+      "validity": "stale",
+      "reason": "disconnected"
+    },
+    "sound_mode": {
+      "value": {
+        "id": "DIRECT"
+      },
+      "validity": "current"
+    }
+  },
+  "zone2_power": {
+    "validity": "unavailable"
+  }
+}

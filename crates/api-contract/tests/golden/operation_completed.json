@@ -1,0 +1,12 @@
+{
+  "id": 7,
+  "receiver": "living-room",
+  "intent": {
+    "kind": "mute",
+    "value": "on"
+  },
+  "status": "completed",
+  "dispatch": "complete_write",
+  "confirmed": true,
+  "observation": "mute on"
+}

@@ -37,7 +37,7 @@ is the owner's; it gates step 9 only.
 | 0b | S2: the Agent endpoint's directory and admission, by hand | Open, the owner's |
 | 1a | The label rule in `policy` and the policy loader | Done |
 | 1b | Port additions, token and refusal types, the audit adapter | Done |
-| 2 | `api-contract`: conventions, reads, state views, errors, routes | Not started |
+| 2 | `api-contract`: conventions, reads, state views, errors, routes | Done |
 | 3 | `api-contract`: operations, configuration, events, Operator resources | Not started |
 | 4 | Token store | Not started |
 | 5 | `api-server`: start, lock, both endpoints, request pipeline | Not started |
@@ -198,9 +198,11 @@ Tests:
 
 ### Step 3 — `api-contract`: operations, configuration, events, Operator resources
 
-Files: `crates/api-contract/src/{operations,config,events,tokens,admin}.rs` and tests.
+Files: `crates/api-contract/src/{requests,config,events,admin}.rs` and tests. The
+intent and operation types (`IntentDto`, `OperationDto`) and their tests landed in
+step 2, because the `too_late` error carries an operation.
 Produces: `SubmitRequest`, `DryRunRequest` (agent) and `OperatorDryRunRequest`
-(with `as_agent`), `OperationDto`, `DryRunDto` (agent, no rule ids) and
+(with `as_agent`), `DryRunDto` (agent, no rule ids) and
 `OperatorDryRunDto`, `ConfigDto`, `DiscoveredDto`, `AdHocRequest`,
 `PolicyDto`, `AuditPageDto`, `TokenIssueRequest`, `IssuedTokenDto`, `TokenDto`,
 `events::{EventName, StatePayload, OperationPayload, EndReason, Parser}`. The server
@@ -209,12 +211,6 @@ the parser the client reads them with, and no encoder.
 
 Tests:
 
-- `every_receiver_intent_has_a_wire_form_and_back`: an exhaustive `match` in the test,
-  so a new variant fails to compile here as well.
-- `volume_wire_forms_cover_both_ends_and_refuse_off_scale_values`: -79.5, +18.0,
-  `minimum`, -80.0 and +18.5 refused.
-- `an_operation_snapshot_round_trips_for_every_status` (the fifteen, `superseded` with
-  its `by`), and `dispatch_and_confirmed_round_trip`.
 - `a_dry_run_for_an_agent_has_no_as_agent_and_no_rule_ids`.
 - `config_round_trips_with_favorites_and_current`.
 - `audit_pages_round_trip_with_cursors_and_every_event_kind`, and

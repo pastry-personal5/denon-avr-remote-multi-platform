@@ -1,0 +1,47 @@
+{
+  "receiver": "living-room",
+  "revision": 42,
+  "epoch": 3,
+  "system_power": {
+    "value": "on",
+    "validity": "current"
+  },
+  "main_zone": {
+    "power": {
+      "value": "on",
+      "validity": "current"
+    },
+    "source": {
+      "value": "BD",
+      "validity": "current"
+    },
+    "volume": {
+      "value": {
+        "half_steps": -70
+      },
+      "validity": "current"
+    },
+    "mute": {
+      "value": "on",
+      "validity": "stale",
+      "reason": "disconnected",
+      "issue": "connecting to 192.168.1.20:23"
+    },
+    "sound_mode": {
+      "value": {
+        "id": "DIRECT"
+      },
+      "validity": "current",
+      "raw": "DIRECT connecting to 192.168.1.20:23"
+    }
+  },
+  "zone2_power": {
+    "validity": "unavailable",
+    "issue": "connecting to 192.168.1.20:23",
+    "evidence": "MVMAX 98\r"
+  },
+  "diagnostics": [
+    "malformed: MVMAX 98\r",
+    "connecting to 192.168.1.20:23"
+  ]
+}
