@@ -791,6 +791,14 @@ impl Inner {
         });
     }
 
+    /// Where an operation is now, or `None` when it is gone.
+    fn status_of(&self, id: OperationId) -> Option<OperationStatus> {
+        locked(&self.operations)
+            .entries
+            .get(&id)
+            .map(|entry| entry.snapshot.borrow().status.clone())
+    }
+
     /// The operation as `viewer` may see it. The Operator sees every operation;
     /// anyone else sees only their own, and cannot tell a hidden one from a
     /// missing one.
@@ -893,10 +901,10 @@ async fn run_operation(
         _ => None,
     };
     let policy = match agent {
-        Some((label, state)) => match state.precheck().await {
+        Some((_, state)) => match state.precheck().await {
             Ok(policy) => Some(policy),
             Err(reason) => {
-                finish_agent(&inner, state, id, label, &receiver, agent::refusal(reason)).await;
+                finish_agent(&inner, state, id, &owner, &receiver, agent::refusal(reason)).await;
                 return;
             }
         },
@@ -905,49 +913,97 @@ async fn run_operation(
     let lease = match inner.lease_as(&receiver, true).await {
         Ok(lease) => lease,
         Err(error) => {
-            // An agent is not told where the receiver is, only that it is out of reach.
-            let resolution = match agent {
-                Some(_) => agent::refusal(agent::RECEIVER_UNREACHABLE),
-                None => Resolution::not_dispatched(OperationStatus::Rejected, error.to_string()),
-            };
             match agent {
-                Some((label, state)) => {
-                    finish_agent(&inner, state, id, label, &receiver, resolution).await
+                // An agent is not told where the receiver is, only that it is out of reach.
+                Some((_, state)) => {
+                    let resolution = agent::refusal(agent::RECEIVER_UNREACHABLE);
+                    finish_agent(&inner, state, id, &owner, &receiver, resolution).await;
                 }
-                None => inner.finish(id, resolution),
+                None => inner.finish(
+                    id,
+                    Resolution::not_dispatched(OperationStatus::Rejected, error.to_string()),
+                ),
             }
             return;
         }
     };
+
+    let mut precondition = None;
+    let mut settlement = None;
     if let (Some((label, state)), Some(policy)) = (agent, policy) {
-        let resolution = agent::decide(state, &lease, id, &receiver, &intent, label, &policy).await;
-        finish_agent(&inner, state, id, label, &receiver, resolution).await;
+        let request = agent::Request {
+            id,
+            receiver: &receiver,
+            intent: &intent,
+            label,
+        };
+        match agent::decide(&inner, state, &lease, &request, &policy).await {
+            agent::Gate::Stop(resolution) => {
+                finish_agent(&inner, state, id, &owner, &receiver, resolution).await;
+                return;
+            }
+            agent::Gate::Dispatch {
+                precondition: bound,
+                settlement: reserved,
+            } => {
+                precondition = Some(bound);
+                settlement = Some(reserved);
+            }
+        }
+    } else if let Some(state) = inner.agent.as_ref() {
+        // The Operator on a service with an audit log: recorded and counted,
+        // never limited.
+        settlement = Some(
+            state
+                .begin_operator_write(&lease, id, &receiver, &intent)
+                .await,
+        );
+    }
+
+    if !inner.begin_session(id) {
+        // Withdrawn while the receiver was connecting or the record was being
+        // written. Nothing was dispatched, so nothing stays counted.
+        if let (Some(state), Some(settlement)) = (inner.agent.as_ref(), &settlement) {
+            state.settle(settlement, false);
+            state
+                .record_finished(id, &owner, &receiver, &agent::cancelled())
+                .await;
+        }
         return;
     }
-    if !inner.begin_session(id) {
-        // Withdrawn while the receiver was connecting. Nothing was dispatched.
-        return;
+    let mut request = OperationRequest::new(id, intent);
+    if let Some(bound) = precondition {
+        request = request.with_precondition(bound);
     }
     // The only call that can write to the receiver, made exactly once.
-    let outcome = lease
-        .session
-        .operate(OperationRequest::new(id, intent))
-        .await;
-    inner.finish(id, resolve(outcome));
+    let outcome = lease.session.operate(request).await;
+    let resolution = resolve(outcome);
+    match (inner.agent.as_ref(), &settlement) {
+        (Some(state), Some(settlement)) => {
+            // Settle before the operation reads as finished, so whoever asks
+            // next sees the ledger as this write left it.
+            state.settle(
+                settlement,
+                resolution.dispatch != DispatchCertainty::NotDispatched,
+            );
+            finish_agent(&inner, state, id, &owner, &receiver, resolution).await;
+        }
+        _ => inner.finish(id, resolution),
+    }
 }
 
-/// End an agent's operation and record how it ended.
+/// End an operation on a service with an audit log, and record how it ended.
 async fn finish_agent(
     inner: &Inner,
-    agent: &AgentState,
+    state: &AgentState,
     id: OperationId,
-    label: &AgentLabel,
+    owner: &Principal,
     receiver: &ReceiverId,
     resolution: Resolution,
 ) {
     inner.finish(id, resolution.clone());
-    agent
-        .record_finished(id, label, receiver, &resolution)
+    state
+        .record_finished(id, owner, receiver, &resolution)
         .await;
 }
 

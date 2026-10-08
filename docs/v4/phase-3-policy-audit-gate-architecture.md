@@ -443,6 +443,23 @@ logic is in `service/agent.rs`, which returns either `Stop(resolution)` or
    `Flushed`. A failed append marks audit failing and changes nothing the caller
    sees.
 
+Details the build settled:
+
+- An allow whose receiver has no established state has nothing to bind a
+  precondition to, and ends `rejected` with `Decided` recorded and no
+  `Dispatching`.
+- The status moves from `submitted` to `allowed` only if it is still `submitted`,
+  so a cancel that won is never overwritten. The status is checked again after
+  `Decided` is written, so a cancel during that append stops the request before
+  `Dispatching` is written; one that wins during the `Dispatching` append leaves a
+  `Dispatching` and a `Finished` of `cancelled` with `not_dispatched`, which the
+  rebuild drops.
+- The ledger entry settles before the operation reads as finished, so a client
+  that acts on the result sees the ledger as the write left it.
+- On a service built by `start`, an Operator write is recorded as `Decided`
+  (allowed, no rules, no policy digest), `Dispatching` (synced), and `Finished`,
+  and a volume write is reserved in the ledger. A failing log does not stop it.
+
 Every agent operation ends with a `Finished` record, a refusal included, so the log
 shows each request's outcome; the rebuild ignores a `Finished` with no
 `Dispatching`. A request refused by a cap creates no operation and no record.

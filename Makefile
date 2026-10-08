@@ -2,7 +2,7 @@
 
 CARGO ?= cargo
 
-.PHONY: help format format-check check test build run run-gui run-release run-diagnostics run-diagnostics-http package-macos capture-visual-baselines visual-baselines clippy boundary phase5-ledger clean test-core-smoke test-core-scenarios test-core-properties test-trace-replay test-desktop-model test-live-x3800h test-live-x3800h-controls
+.PHONY: help format format-check check test build run run-gui run-release run-diagnostics run-diagnostics-http package-macos capture-visual-baselines visual-baselines clippy boundary phase5-ledger clean test-core-smoke test-core-scenarios test-core-properties test-trace-replay test-desktop-model test-live-x3800h test-live-x3800h-controls test-live-x3800h-agent
 
 help: ## Show available developer commands
 	@echo "Available targets:"
@@ -52,6 +52,12 @@ test-live-x3800h-controls: ## Run explicitly armed, state-restoring live validat
 	@test -n "$(DENON_X3800H_HOST)" || (echo "set DENON_X3800H_HOST to run live validation" >&2; exit 2)
 	@test -n "$${DENON_X3800H_SAFE_VOLUME_HALF_STEPS}" || (echo "set DENON_X3800H_SAFE_VOLUME_HALF_STEPS before live validation" >&2; exit 2)
 	$(CARGO) test -p denon-avr-infrastructure --test live_x3800h_controls -- --ignored
+
+test-live-x3800h-agent: ## Run explicitly armed live validation of the Agent path (changes the volume, then restores it)
+	@test "$${ALLOW_RECEIVER_WRITES}" = "1" || (echo "set ALLOW_RECEIVER_WRITES=1 to arm receiver writes" >&2; exit 2)
+	@test -n "$(DENON_X3800H_HOST)" || (echo "set DENON_X3800H_HOST to run live validation" >&2; exit 2)
+	@test -n "$${DENON_X3800H_SAFE_VOLUME_HALF_STEPS}" || (echo "set DENON_X3800H_SAFE_VOLUME_HALF_STEPS before live validation" >&2; exit 2)
+	$(CARGO) test -p denon-avr-infrastructure --test live_x3800h_agent_gate -- --ignored --nocapture
 
 build: ## Build the project
 	$(CARGO) build

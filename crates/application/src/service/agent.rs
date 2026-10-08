@@ -21,10 +21,13 @@ use crate::control::{
     AgentLabel, ApprovalHealth, AuditHealth, ControlError, DryRun, DryRunDecision, OperationStatus,
     PolicyHealth, PolicyView, Principal, ServiceHealth,
 };
-use crate::ledger::{Ledger, RETENTION};
+use crate::ledger::{Ledger, OpKey, RETENTION};
 use crate::policy_source::{LoadedPolicy, PolicyDigest, SharedPolicySource};
-use denon_avr_domain::{OperationId, ReceiverId, ReceiverIntent, ReceiverState, WallTime};
-use denon_avr_policy::{Decision, Effect as Verdict, PolicyInput};
+use denon_avr_domain::{
+    CoreField, DispatchCertainty, FieldBaseline, FieldValue, OperationId, Precondition, ReceiverId,
+    ReceiverIntent, ReceiverState, WallTime,
+};
+use denon_avr_policy::{Decision, Effect as Verdict, Level, PolicyInput, RecentChange};
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -41,6 +44,8 @@ const WRITE_WINDOW: Duration = Duration::from_secs(60);
 
 const POLICY_UNAVAILABLE: &str = "policy unavailable";
 const LEDGER_UNAVAILABLE: &str = "the budget history is not available";
+const AUDIT_UNAVAILABLE: &str = "audit log unavailable";
+const NO_EPOCH: &str = "the receiver's state is not established";
 
 /// The caps on one agent label.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,7 +87,7 @@ enum PolicyState {
 }
 
 #[derive(Default)]
-struct Gate {
+struct Books {
     ledger: Ledger,
     /// Whether the ledger has been rebuilt from the audit log.
     ready: bool,
@@ -96,7 +101,7 @@ pub(super) struct AgentState {
     /// When this service started: the run its operation ids belong to.
     run: WallTime,
     policy: Mutex<PolicyState>,
-    gate: Mutex<Gate>,
+    books: Mutex<Books>,
     /// Whether the last audit append succeeded.
     audit_ok: AtomicBool,
     /// One rebuild of the ledger at a time.
@@ -119,7 +124,7 @@ impl AgentState {
             policy: Mutex::new(PolicyState::Unavailable(
                 "the policy has not been loaded".into(),
             )),
-            gate: Mutex::new(Gate::default()),
+            books: Mutex::new(Books::default()),
             audit_ok: AtomicBool::new(true),
             rebuilding: tokio::sync::Mutex::new(()),
             writes: Mutex::new(HashMap::new()),
@@ -204,7 +209,7 @@ impl AgentState {
             } else {
                 AuditHealth::Failing
             },
-            ledger_ready: locked(&self.gate).ready,
+            ledger_ready: locked(&self.books).ready,
             approval: ApprovalHealth::Unavailable,
         }
     }
@@ -275,17 +280,17 @@ impl AgentState {
         }
     }
 
-    /// Record how an agent's operation ended.
+    /// Record how an operation ended.
     pub(super) async fn record_finished(
         &self,
         id: OperationId,
-        label: &AgentLabel,
+        owner: &Principal,
         receiver: &ReceiverId,
         resolution: &Resolution,
     ) {
         let record = self.record(
             Some(id),
-            Principal::Agent(label.clone()),
+            owner.clone(),
             Some(receiver.clone()),
             AuditEvent::Finished {
                 status: resolution.status.as_str().into(),
@@ -302,11 +307,11 @@ impl AgentState {
     /// Make sure the ledger has been rebuilt from the audit log, trying again if
     /// an earlier attempt failed. What was counted while it was not ready is kept.
     async fn ensure_ledger(&self) -> bool {
-        if locked(&self.gate).ready {
+        if locked(&self.books).ready {
             return true;
         }
         let _one_at_a_time = self.rebuilding.lock().await;
-        if locked(&self.gate).ready {
+        if locked(&self.books).ready {
             return true;
         }
         let now = self.clock.now();
@@ -318,7 +323,7 @@ impl AgentState {
         match read {
             Ok(Ok(records)) => {
                 let mut rebuilt = Ledger::rebuild(&records, now);
-                let mut gate = locked(&self.gate);
+                let mut gate = locked(&self.books);
                 rebuilt.merge(std::mem::take(&mut gate.ledger));
                 gate.ledger = rebuilt;
                 gate.ready = true;
@@ -380,6 +385,16 @@ impl AgentState {
         Ok(())
     }
 
+    /// How many volume changes the ledger counts for `receiver`.
+    #[cfg(test)]
+    pub(super) fn counted(&self, receiver: &ReceiverId) -> usize {
+        let now = self.clock.now();
+        locked(&self.books)
+            .ledger
+            .recent(receiver, now, RETENTION)
+            .len()
+    }
+
     // ---- Evaluation ----
 
     /// Judge `intent` for `agent` against the receiver's state and the ledger.
@@ -392,7 +407,19 @@ impl AgentState {
         state: &ReceiverState,
     ) -> Decision {
         let now = self.clock.now();
-        let gate = locked(&self.gate);
+        let gate = locked(&self.books);
+        Self::evaluate_in(&gate, now, policy, agent, receiver, intent, state)
+    }
+
+    fn evaluate_in(
+        gate: &Books,
+        now: WallTime,
+        policy: &ActivePolicy,
+        agent: &str,
+        receiver: &ReceiverId,
+        intent: &ReceiverIntent,
+        state: &ReceiverState,
+    ) -> Decision {
         let recent = gate
             .ledger
             .recent(receiver, now, policy.loaded.config.longest_window());
@@ -408,6 +435,194 @@ impl AgentState {
             &policy.loaded.config,
         )
     }
+
+    /// The atomic step. Under the ledger lock, with nothing awaited, it reads
+    /// the ledger, evaluates, binds an allow to the state it read, and reserves
+    /// the volume change in the ledger. Another request can only see the ledger
+    /// before this one or after it, so two agents each within the budget cannot
+    /// together exceed it.
+    fn judge(
+        &self,
+        policy: &ActivePolicy,
+        label: &AgentLabel,
+        receiver: &ReceiverId,
+        intent: &ReceiverIntent,
+        state: &ReceiverState,
+        id: OperationId,
+    ) -> Judged {
+        let now = self.clock.now();
+        let mut gate = locked(&self.books);
+        let decision =
+            Self::evaluate_in(&gate, now, policy, label.as_str(), receiver, intent, state);
+        let Some(baseline) = (match &decision {
+            Decision::Allow { baseline } => Some(baseline),
+            _ => None,
+        }) else {
+            return Judged::Refused(decision);
+        };
+        // The baseline names every field the decision read, matched or not, so
+        // a change in any of them before the write voids it.
+        let Some(precondition) = Precondition::capture(state, baseline.fields()) else {
+            return Judged::NoEpoch(decision);
+        };
+        let settlement = self.reserve(&mut gate, now, receiver, intent, state, id);
+        Judged::Allowed {
+            decision,
+            precondition,
+            settlement,
+        }
+    }
+
+    /// Count a volume change from now on, if `intent` is one.
+    fn reserve(
+        &self,
+        gate: &mut Books,
+        now: WallTime,
+        receiver: &ReceiverId,
+        intent: &ReceiverIntent,
+        state: &ReceiverState,
+        id: OperationId,
+    ) -> Settlement {
+        let key = match intent {
+            ReceiverIntent::Volume(target) => {
+                let key = OpKey::new(self.run, id);
+                gate.ledger.reserve(
+                    receiver,
+                    key,
+                    RecentChange {
+                        at: now,
+                        before: observed_level(state),
+                        target: Level::of(*target),
+                    },
+                );
+                Some(key)
+            }
+            _ => None,
+        };
+        Settlement {
+            receiver: receiver.clone(),
+            key,
+        }
+    }
+
+    /// The operation ended. What may have been written stays counted; the rest
+    /// is released.
+    pub(super) fn settle(&self, settlement: &Settlement, dispatched: bool) {
+        if let Some(key) = settlement.key {
+            locked(&self.books)
+                .ledger
+                .settle(&settlement.receiver, key, dispatched);
+        }
+    }
+
+    /// An Operator write on a service with an audit log: counted in the ledger
+    /// and recorded, never limited, and never held up by a failing log.
+    pub(super) async fn begin_operator_write(
+        &self,
+        lease: &Lease,
+        id: OperationId,
+        receiver: &ReceiverId,
+        intent: &ReceiverIntent,
+    ) -> Settlement {
+        let state = lease.session.state().latest();
+        let settlement = {
+            let now = self.clock.now();
+            let mut gate = locked(&self.books);
+            self.reserve(&mut gate, now, receiver, intent, &state, id)
+        };
+        let decided = AuditEvent::Decided {
+            intent: intent_text(intent),
+            decision: AuditDecision::Allow,
+            reasons: Vec::new(),
+            rules: Vec::new(),
+            baseline: Vec::new(),
+            policy: None,
+        };
+        let record = self.record(
+            Some(id),
+            Principal::Operator,
+            Some(receiver.clone()),
+            decided,
+        );
+        let _ = self.append(record, Durability::Flushed).await;
+        let record = self.record(
+            Some(id),
+            Principal::Operator,
+            Some(receiver.clone()),
+            self.dispatching(intent, &state, Vec::new()),
+        );
+        let _ = self.append(record, Durability::Synced).await;
+        settlement
+    }
+
+    fn dispatching(
+        &self,
+        intent: &ReceiverIntent,
+        state: &ReceiverState,
+        precondition_fields: Vec<CoreField>,
+    ) -> AuditEvent {
+        let (before, target) = match intent {
+            ReceiverIntent::Volume(target) => (
+                observed_level(state).map(Level::half_steps),
+                Some(Level::of(*target).half_steps()),
+            ),
+            _ => (None, None),
+        };
+        AuditEvent::Dispatching {
+            intent: intent_text(intent),
+            before,
+            target,
+            precondition_fields,
+        }
+    }
+}
+
+/// The volume the receiver shows, or `None` when it is stale, unknown, or
+/// unavailable.
+fn observed_level(state: &ReceiverState) -> Option<Level> {
+    match FieldBaseline::capture(state, CoreField::Volume) {
+        FieldBaseline::Value(FieldValue::Volume(volume)) => Some(Level::of(volume)),
+        _ => None,
+    }
+}
+
+/// What the atomic step found.
+enum Judged {
+    /// The policy denies the request or holds it for approval.
+    Refused(Decision),
+    /// Allowed, but the receiver has no established state to bind the write to.
+    NoEpoch(Decision),
+    Allowed {
+        decision: Decision,
+        precondition: Precondition,
+        settlement: Settlement,
+    },
+}
+
+/// A place reserved in the ledger for a write, to settle when it ends.
+pub(super) struct Settlement {
+    receiver: ReceiverId,
+    key: Option<OpKey>,
+}
+
+/// An agent's request, as the gate holds it.
+#[derive(Clone, Copy)]
+pub(super) struct Request<'a> {
+    pub(super) id: OperationId,
+    pub(super) receiver: &'a ReceiverId,
+    pub(super) intent: &'a ReceiverIntent,
+    pub(super) label: &'a AgentLabel,
+}
+
+/// What the gate does with an agent's request after the policy has seen it.
+pub(super) enum Gate {
+    /// It ends here, with this resolution.
+    Stop(Resolution),
+    /// Call the session with this precondition, and settle when it answers.
+    Dispatch {
+        precondition: Precondition,
+        settlement: Settlement,
+    },
 }
 
 /// The record of a decision.
@@ -443,36 +658,102 @@ fn reason_text(decision: &Decision) -> String {
     }
 }
 
-/// Decide an agent's request and end it. A request the policy refuses or holds
-/// ends here as `denied` or `approval_unavailable`. One it allows ends
-/// `rejected` until the gate dispatches.
+/// Decide an agent's request. A request the policy refuses or holds ends here
+/// as `denied` or `approval_unavailable`. One it allows is recorded, twice, and
+/// handed back to the gate to dispatch with the precondition it was judged under.
+/// If the records cannot be written, it ends `rejected` and nothing is sent: a
+/// write with no record of it is worse than no write.
 pub(super) async fn decide(
+    inner: &Inner,
     agent: &AgentState,
     lease: &Lease,
-    id: OperationId,
-    receiver: &ReceiverId,
-    intent: &ReceiverIntent,
-    label: &AgentLabel,
+    request: &Request<'_>,
     policy: &ActivePolicy,
-) -> Resolution {
+) -> Gate {
+    let Request {
+        id,
+        receiver,
+        intent,
+        label,
+    } = *request;
     let state = lease.session.state().latest();
-    let decision = agent.evaluate(policy, label.as_str(), receiver, intent, &state);
-    let record = agent.record(
-        Some(id),
-        Principal::Agent(label.clone()),
-        Some(receiver.clone()),
-        decided(intent, &decision, policy.loaded.digest),
-    );
-    let _ = agent.append(record, Durability::Flushed).await;
-    match decision.effect() {
-        Verdict::Deny => {
-            Resolution::not_dispatched(OperationStatus::Denied, reason_text(&decision))
+    let principal = Principal::Agent(label.clone());
+    let decided_record = |decision: &Decision| {
+        agent.record(
+            Some(id),
+            principal.clone(),
+            Some(receiver.clone()),
+            decided(intent, decision, policy.loaded.digest),
+        )
+    };
+
+    match agent.judge(policy, label, receiver, intent, &state, id) {
+        Judged::Refused(decision) => {
+            let _ = agent
+                .append(decided_record(&decision), Durability::Flushed)
+                .await;
+            let status = match decision.effect() {
+                Verdict::Deny => OperationStatus::Denied,
+                _ => OperationStatus::ApprovalUnavailable,
+            };
+            Gate::Stop(Resolution::not_dispatched(status, reason_text(&decision)))
         }
-        Verdict::RequireApproval => {
-            Resolution::not_dispatched(OperationStatus::ApprovalUnavailable, reason_text(&decision))
+        Judged::NoEpoch(decision) => {
+            let _ = agent
+                .append(decided_record(&decision), Durability::Flushed)
+                .await;
+            Gate::Stop(refusal(NO_EPOCH))
         }
-        Verdict::Allow => {
-            Resolution::not_dispatched(OperationStatus::Rejected, "agent dispatch is not enabled")
+        Judged::Allowed {
+            decision,
+            precondition,
+            settlement,
+        } => {
+            // From here the request can be withdrawn. If a cancel already won,
+            // nothing was sent and nothing stays counted.
+            let moved = inner
+                .transition(id, |snapshot| {
+                    if snapshot.status == OperationStatus::Submitted {
+                        snapshot.status = OperationStatus::Allowed;
+                        true
+                    } else {
+                        false
+                    }
+                })
+                .is_some();
+            if !moved {
+                agent.settle(&settlement, false);
+                return Gate::Stop(cancelled());
+            }
+
+            if agent
+                .append(decided_record(&decision), Durability::Flushed)
+                .await
+                .is_err()
+            {
+                agent.settle(&settlement, false);
+                return Gate::Stop(refusal(AUDIT_UNAVAILABLE));
+            }
+            if inner.status_of(id) != Some(OperationStatus::Allowed) {
+                agent.settle(&settlement, false);
+                return Gate::Stop(cancelled());
+            }
+
+            // The record that the write may happen, on disk before it does.
+            let dispatching = agent.record(
+                Some(id),
+                principal.clone(),
+                Some(receiver.clone()),
+                agent.dispatching(intent, &state, precondition.fields().collect()),
+            );
+            if agent.append(dispatching, Durability::Synced).await.is_err() {
+                agent.settle(&settlement, false);
+                return Gate::Stop(refusal(AUDIT_UNAVAILABLE));
+            }
+            Gate::Dispatch {
+                precondition,
+                settlement,
+            }
         }
     }
 }
@@ -522,4 +803,15 @@ pub(super) const RECEIVER_UNREACHABLE: &str = "the receiver could not be reached
 /// The gate's refusals, as the service ends the operation with.
 pub(super) fn refusal(reason: &'static str) -> Resolution {
     Resolution::not_dispatched(OperationStatus::Rejected, reason)
+}
+
+/// An operation withdrawn before the session was called.
+pub(super) fn cancelled() -> Resolution {
+    Resolution {
+        status: OperationStatus::Cancelled,
+        dispatch: DispatchCertainty::NotDispatched,
+        confirmed: false,
+        reason: None,
+        observation: None,
+    }
 }

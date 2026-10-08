@@ -1,7 +1,7 @@
 # Version 4, Phase 3 — Policy, audit, and the Agent path
 
 **Planned and reviewed, 2026-10-08; in progress on the branch
-`v4/phase-3-policy-audit-gate`.** Steps 0 to 6a are
+`v4/phase-3-policy-audit-gate`.** Steps 0 to 6b are
 done; the [steps](#steps) table has the state of each. This is milestone 3 of the
 [roadmap](roadmap.md). It adds the `policy`
 crate, the audit log, and the Agent path through the Operation Gate, all in
@@ -36,7 +36,7 @@ the script fails if either half lands alone.
 | 4 | Policy loading, digest, sample file | Done |
 | 5 | Ledger | Done |
 | 6a | Gate: Agent path, evaluation, and fail-closed outcomes | Done |
-| 6b | Gate: dispatch with the precondition, audit order, live test | Planned |
+| 6b | Gate: dispatch with the precondition, audit order, live test | Done |
 | 7 | Promote to `ARCHITECTURE.md`; exit | Planned |
 
 The roadmap's milestone 3 summarizes the same steps; this phase splits step 6
@@ -222,15 +222,35 @@ that records the order of its calls against the session's:
   `an_audit_append_that_never_returns_is_a_failure_after_five_seconds` on the
   paused clock, with `shutdown` still completing.
 - `an_operator_continues_when_audit_fails_and_health_says_failing`.
-- `two_agents_each_within_the_budget_cannot_together_exceed_it`: two concurrent
-  submits released together by a barrier; the second needs approval.
-- `a_cancel_before_the_session_releases_the_reservation`.
+- `two_agents_each_within_the_budget_cannot_together_exceed_it`: the first
+  agent's rise is held inside the session and the receiver has applied it; the
+  second agent's rise, within every limit alone, needs approval because of the
+  first agent's reservation and only that. A test that built the two requests from
+  absolute targets against one unchanged level would pass with no reservation at
+  all.
+- `a_cancel_before_the_session_releases_the_reservation`, and the two other
+  places a withdrawal can win: `a_cancel_while_the_receiver_connects_dispatches_nothing`
+  and `a_cancel_while_the_dispatching_record_is_written_sends_nothing`.
 - `a_restart_rebuilds_the_ledger_from_audit`: a second `start` over the same
   audit log; includes a `Dispatching` with no `Finished`.
 - `every_session_outcome_settles_the_ledger_by_dispatch`: all six outcomes.
 - `an_operator_volume_write_enters_the_ledger`.
 - `a_superseded_agent_operation_releases_its_reservation`.
 - `an_idempotent_retry_dispatches_once`.
+- `an_allow_that_read_nothing_still_carries_the_epoch`,
+  `only_the_record_made_before_a_write_is_synced_to_disk`,
+  `the_budget_forgets_changes_older_than_its_window`, and
+  `what_the_operator_did_while_the_log_was_unreadable_survives_the_late_rebuild`.
+
+`a_restart_rebuilds_the_ledger_from_audit` covers a log of a finished run, a
+`Dispatching` with no `Finished`, and an Operator write. Each test that moves the
+volume uses a fake session that applies the write to its own state and refuses a
+write whose precondition no longer holds, so the harness cannot pass for want of
+an established epoch or a usable volume.
+
+The live test is `#[ignore]` and refuses to run unless armed. It was compiled and
+its Makefile target checked to refuse when unarmed; it was **not run**, because
+running it writes to a receiver.
 
 ### Step 7 — Promote and exit
 
@@ -293,7 +313,7 @@ the inputs most likely to bite, most likely first. Each has a named test above.
 
 ## Exit status
 
-In progress: steps 0 to 6a are done.
+In progress: steps 0 to 6b are done; step 7 and the owner's live checks remain.
 
 ## Known limits
 
