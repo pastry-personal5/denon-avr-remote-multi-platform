@@ -231,8 +231,12 @@ that already exists with wider permissions is an error, not a repair. Reading sk
 a line cut short, one that is not JSON, and a record of a kind or schema it does
 not know, and numbering continues past them. A record is one of `Decided`,
 `Dispatching`, `Finished`, `PolicyLoaded`, and `PolicyLoadFailed`, and the text in
-it is bounded whatever it is handed. Only `Dispatching` is synced to disk. The log
-is not tamper-proof against a process running as the same user.
+it is bounded whatever it is handed. Only `Dispatching` is synced to disk. An
+append runs on a task of its own, so a caller that stops waiting (the service
+bounds every append) does not leave a line cut short or a sequence number used
+twice. Reading the last day skips a file last written before the cutoff, and
+reads the rest line by line. The log is not tamper-proof against a process
+running as the same user.
 
 **The Agent path.** `submit` counts a new write against the label's caps (30 a
 minute and 8 unfinished; a retry of an operation that exists is not a new write,
@@ -242,9 +246,11 @@ without creating an operation or a record. Otherwise the operation starts
 
 1. Refuses as `rejected` when there is no policy or the ledger cannot be rebuilt.
 2. Takes a lease on the receiver.
-3. In one step under the ledger lock, with nothing awaited: reads the state and
-   the ledger, evaluates, captures the precondition from the baseline, and
-   reserves a volume change.
+3. In one step under the ledger lock, with nothing awaited: reads the policy in
+   force at that moment (not the one in force before the lease, which can take
+   seconds to get, so a reload made meanwhile decides), the state, and the ledger,
+   evaluates, captures the precondition from the baseline, and reserves a volume
+   change.
 4. Ends `denied` or `approval_unavailable` for a refusal, with `Decided` recorded.
    There is no approval path yet, so what needs approval is not sent.
 5. For an allow: moves to `allowed` (cancellable), appends `Decided`, then appends
@@ -258,8 +264,13 @@ without creating an operation or a record. Otherwise the operation starts
 Every agent operation ends with a `Finished` record. On a service built by `start`
 the Operator's writes get `Decided`, `Dispatching`, and `Finished` records and a
 ledger entry for a volume change; a failing log does not stop them, and `health`
-reports it as failing. Audit health is the result of the last append, and every
-Agent write tries again, so it recovers by itself.
+reports it as failing. An Operator's appends are bounded to one second, not five,
+and are skipped while the log is known to be failing; the `Finished` record that
+follows the write is what notices the log working again. Audit health is the result
+of the last append, and every Agent write tries again, so it recovers by itself.
+Policy reloads run one at a time, from the read to the record, so the policy in
+force and the log agree on which file loaded last. The ledger drops entries older
+than a day as it reserves new ones.
 
 | Condition | Status | `dispatch` |
 | --- | --- | --- |
@@ -270,11 +281,16 @@ Agent write tries again, so it recovers by itself.
 | Cancelled before the session | `cancelled` | `not_dispatched` |
 | Any other session outcome | as the table above | as reported |
 
-An agent is told the sentences of the limits that fired and fixed text for the
-faults. Rule ids appear in the audit log, in the result of a dry run (an agent's
-own included, so it can see which rule held a request), and in the Operator's
-views. File paths, error text, and the receiver's address stay in the audit log
-and the Operator's views.
+An agent is told the sentences of the limits that fired and fixed text for
+everything else: for the faults above, for what a session reports (one sentence
+per rejection cause, and "the outcome could not be established" for an
+indeterminate result, because the session's own text formats the I/O error
+underneath and can name an address), and for a failed connection or read (an
+agent's `state`, `source_catalog`, `submit`, and `dry_run` never carry the
+connector's or the repository's message). Rule ids, file paths, error text, and
+the receiver's address appear in the audit log and the Operator's views, and the
+Operator's `dry_run_as` shows the rule ids; an agent's own `dry_run` shows the
+limits and no ids.
 
 ## Desktop GUI
 

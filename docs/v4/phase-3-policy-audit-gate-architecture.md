@@ -378,14 +378,16 @@ because there is nothing to report on. An agent is refused a handle altogether.
 
 What an agent is told is fixed text: "policy unavailable", "the budget history is
 not available", "audit log unavailable", "the receiver could not be reached", and
-the sentences of the limits that fired. Rule ids appear in the audit log, in a dry
-run's result, an agent's own included, and in the Operator's views; file paths,
-audit error text, and the receiver's address stay in the audit log and the
-Operator's views.
+the sentences of the limits that fired. What a session reports reaches an agent as
+one fixed sentence per rejection cause, and a failed connection or read as "the
+receiver could not be reached". Rule ids, file paths, audit error text, and the
+receiver's address appear in the audit log and the Operator's views, and
+`dry_run_as` shows the rule ids to the Operator; an agent's own `dry_run` shows the
+limits and no ids (decision D23).
 
 `OperationSnapshot` is unchanged. Its `reason` is text built from the `Reason`
 values, which names the limit that fired; rule ids appear in the audit log, in
-`DryRun`, and in Operator views only.
+the Operator's `dry_run_as`, and in Operator views only.
 
 ## The Agent path
 
@@ -556,6 +558,7 @@ one.
 | D20 | A decrease is exempt from the step and budget conditions only. `target_above_db` limits still apply to it | The design's rule order lists the target limits first. Consequence: with the volume at -15 dB, an agent can lower it to -30 or below but not to -18, which is above the hard limit and ends `denied` |
 | D21 | Classification is by kind and, when a rule gives one, value: a rule naming `system_power` with value `standby` classifies standby only | Classifying by kind alone would turn a value-scoped `allow` into an `Allow` for the other value, so dropping the `system-power` rule would allow power-on. No table row changes |
 | D22 | `PolicyConfig::new` also refuses an `allow` rule that names no intent, a value that does not belong to its intent, and an empty `agents` or `receivers` list | Each reads like a rule and does nothing, which the validation exists to prevent |
+| D23 | An agent's `dry_run` omits rule ids; agents get fixed text for what a session reports and for failed connections and reads | The owner decided on 2026-10-08 that an agent should not learn the structure of the policy or an address. Supersedes D18's mention of `DryRun` |
 
 ## Live checks
 

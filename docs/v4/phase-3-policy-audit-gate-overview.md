@@ -248,6 +248,30 @@ volume uses a fake session that applies the write to its own state and refuses a
 write whose precondition no longer holds, so the harness cannot pass for want of
 an established epoch or a usable volume.
 
+A review of the finished branch found and fixed these, each with a test that
+failed first: the policy was read before the receiver connected instead of when the
+request was decided (`a_policy_edit_made_while_the_receiver_connects_decides_the_request`
+and `a_policy_that_fails_to_load_while_the_receiver_connects_stops_the_request`); the
+log said what the gate would have decided about an operation a cancel had already
+ended (`the_log_says_a_cancelled_operation_ended_cancelled_whatever_the_gate_decided`);
+two policy reloads could leave the policy in force and the log disagreeing
+(`two_reloads_leave_the_policy_and_the_log_in_the_order_they_loaded`); the write cap
+kept every label it had ever seen (`a_label_that_has_gone_quiet_is_forgotten`); an
+Operator write could wait ten seconds on a stalled audit disk
+(`a_stalled_audit_disk_delays_an_operator_write_by_at_most_a_second`,
+`the_operators_records_come_back_once_the_disk_does`, and
+`a_stalled_audit_disk_does_not_hold_shutdown_long_after_an_operator_write`); an
+agent was shown a session's own error text, an address among it
+(`an_agent_is_given_fixed_text_for_what_a_session_reports`), and the connector's
+message on a failed read (`an_agent_is_not_told_where_the_receiver_is_when_a_read_fails`,
+`after_shutdown_an_agent_is_told_so_and_not_that_the_receiver_is_out_of_reach`); an
+agent's dry run showed rule ids (`an_agents_dry_run_shows_the_limits_and_not_the_rule_ids`,
+decision D23); an append whose caller gave up could be left half done or number
+two records alike (`a_caller_that_gives_up_does_not_abandon_the_write_or_reuse_a_number`);
+and rebuilding the ledger parsed every file in the log however old
+(`reading_the_last_day_skips_files_not_written_in_it`). The decision and the ledger
+now read the observed volume through one function in the policy crate.
+
 The live test is `#[ignore]` and refuses to run unless armed. It was compiled and
 its Makefile target checked to refuse when unarmed; it was **not run**, because
 running it writes to a receiver.
