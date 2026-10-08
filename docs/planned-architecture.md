@@ -602,8 +602,7 @@ mismatched, or replayed decision is ignored and audited.
 
 ## Control API
 
-Implemented in milestone 4, except the Agent endpoint's configuration from a settings
-file, `/v1/approvals`, and OAuth client registration: see
+Implemented in milestone 4, except `/v1/approvals` and OAuth client registration: see
 [Control API](../ARCHITECTURE.md#control-api). The design below remains the
 statement of intent for the parts that are not built.
 

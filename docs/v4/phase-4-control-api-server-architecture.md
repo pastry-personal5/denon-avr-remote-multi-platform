@@ -34,7 +34,8 @@ amended the design where the review found it wrong.
   `~/Library/Application Support/Denon AVR Remote` is `drwxr-xr-x`, and
   `/Users/Shared` is `drwxrwxrwt`.
 - `cli` and `desktop` still depend on `infrastructure` until phase 5.
-- S2 has no research note yet, and the roadmap blocks this milestone on it.
+- S2 had no research note when this was reviewed, and the roadmap blocked this milestone
+  on it; the owner ran it and the note was written on 2026-10-09.
 
 ## What the review changed
 
@@ -246,8 +247,8 @@ wrong-kind credential.
   `Last-Event-ID` and no replay: a client that reconnects reads the state again and
   asks `GET /v1/operations/{id}` for any operation it was watching. An operation
   stream holds no lease on a receiver.
-- **Tokens.** `POST` returns `{ id, label, token }` once. `GET` returns
-  `{ id, label, created, revoked? }` and never a token or digest. `DELETE` is
+- **Tokens.** `POST` returns `{ id, label, created_ms, secret }` once. `GET` returns
+  `{ id, label, created_ms, revoked_ms? }` and never a secret or digest. `DELETE` is
   idempotent.
 
 ## Port and audit additions
@@ -357,13 +358,19 @@ it as it skips an unknown kind. Token events are `Flushed`.
 `<data>/server.yaml`, read by `apps/api-server/src/settings.rs` with
 `deny_unknown_fields`. Its absence is a valid file. The Operator endpoint needs no
 setting. The Agent endpoint exists only when `agent_endpoint` is present, and its
-keys are fixed by S2:
+keys were fixed by S2 (2026-10-09):
 
 ```yaml
 agent_endpoint:
-  directory: /Users/Shared/Denon AVR Remote    # S2 decides the default
-  uids: [502]                                  # the accounts admitted
+  directory: /Users/Shared/Denon AVR Remote    # optional; this is the default
+  uids: [503]                                  # required: the accounts admitted
 ```
+
+The socket's mode is not a key: it is `0600`, and a directory ACL with an inherited
+entry admits the account (the [note](../research/agent-endpoint-access-macos.md)).
+A file that cannot be read, a key it does not know, a relative `directory`, or an empty
+or missing `uids` stops the executable with status 2 and a message that names the file
+and the key, before anything is opened.
 
 ### The library
 
@@ -427,12 +434,16 @@ a pid that is optional; the pid is logged and decides nothing, because it can be
 reused. A connection from an uid that is not admitted is closed before any byte is
 read, and `record_refusal(PeerNotAdmitted)` is called.
 
-**The Agent endpoint's directory** (S2 fixes the rest): an absolute path; `lstat`
-says a directory, not a link; owned by the server's uid; not group- or world-
-writable. If it does not exist, the server creates it at 0700 and the owner admits
-the agent account (an ACL or a group, as S2 settles). Any other state is "the Agent
-endpoint is not created", with the reason in the log and in the `server` section of
-the Operator's health response.
+**The Agent endpoint's directory**: an absolute path; `lstat` says a directory, not a
+link; owned by the server's uid; not group- or world-writable. If it does not exist, the
+server creates it (and any missing parent) at 0700, and the owner admits the agent
+account with the directory ACL S2 settled on. After the bind the directory is read again
+(the same device and inode, still passing) and so is the socket (a socket, the server's
+own); a failure removes the socket and the endpoint is not created. Any other state is
+"the Agent endpoint is not created", with the reason in the log and in the `server`
+section of the Operator's health response, and the Operator endpoint serves. The checks
+are functions of plain `lstat` facts (`agent_directory.rs`), so a directory owned by
+another uid is tested without privilege.
 
 ### The request pipeline
 
@@ -563,7 +574,8 @@ server), and one for each event stream. `audience` picks the state view to decod
 
 ## S2: what the hand check decides
 
-Run on the Mac with the dedicated agent account. Nothing below has been run. The
+Run on the Mac with the dedicated agent account; run by the owner on 2026-10-09, with the
+results in the [note](../research/agent-endpoint-access-macos.md). The
 checks need a socket to connect to: after step 5 a throwaway server will do
 (`denon-avr-api-server --data-dir <scratch>`, with the Agent endpoint given to a test
 build), and before it a short script that binds a Unix socket and prints the peer's
@@ -603,9 +615,10 @@ outcome fits.
 - **The server's HTTP stack (D24).** axum, over this plan's recommendation of hyper
   alone. The client stays on hyper, so the stdio build's graph is unaffected.
 
-**Open, the owner's.** The Agent endpoint's directory and admission are decided by
-S2's hand check, with `/Users/Shared/Denon AVR Remote` as the candidate; asking before
-the check would be guessing.
+**Answered by the owner's hand check on 2026-10-09 (S2).** The Agent endpoint's
+directory is `/Users/Shared/Denon AVR Remote`, and a directory ACL with an inherited
+entry admits the account, with the socket kept at `0600`; the result is in the
+[note](../research/agent-endpoint-access-macos.md).
 
 **Settled by the review.** Any can be reversed in a follow-up commit.
 

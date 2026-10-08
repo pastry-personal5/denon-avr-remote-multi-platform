@@ -384,6 +384,9 @@ pub struct Options {
     pub audit_limits: Option<denon_avr_infrastructure::AuditLimits>,
     /// The longest the service holds a wait for an operation, when not its default.
     pub max_operation_wait: Option<Duration>,
+    /// An Agent endpoint of the test's own making, used instead of the safe one the
+    /// fixture otherwise creates, to show what the server does with an unsafe one.
+    pub agent_config: Option<AgentEndpointConfig>,
 }
 
 impl Default for Options {
@@ -395,6 +398,7 @@ impl Default for Options {
             policy: OWNERS_POLICY,
             audit_limits: None,
             max_operation_wait: None,
+            agent_config: None,
         }
     }
 }
@@ -465,7 +469,9 @@ impl Fixture {
             )
             .await,
         );
-        let agent = if options.agent_endpoint {
+        let agent = if options.agent_config.is_some() {
+            options.agent_config.clone()
+        } else if options.agent_endpoint {
             std::fs::create_dir_all(&agent_directory).unwrap();
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&agent_directory, std::fs::Permissions::from_mode(0o700))

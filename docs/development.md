@@ -36,8 +36,10 @@ through the Control API server and `ApiClient`.
 To run the Control API server by hand, use
 `cargo run -p denon-avr-api-server -- --data-dir DIR` (`--exit-with-parent` ends it
 when its standard input closes). It serves the Operator endpoint on
-`DIR/run/operator.sock`; the CLI and GUI do not use it yet, and they cannot connect to
-a receiver the server holds, so close them first.
+`DIR/run/operator.sock`, and the Agent endpoint too when `DIR/server.yaml` configures
+one (copy and edit `docs/examples/server.yaml`; the agent's account needs a directory ACL,
+whose commands the sample lists). The CLI and GUI do not use the server yet, and they
+cannot connect to a receiver the server holds, so close them first.
 
 On an Apple Silicon Mac, `make package-macos` writes the unsigned app and DMG
 under `target/release/macos/`. Gatekeeper may require right-clicking the app

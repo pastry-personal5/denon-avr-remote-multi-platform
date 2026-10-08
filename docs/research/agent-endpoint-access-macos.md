@@ -2,7 +2,7 @@
 
 Run by the owner by hand on 2026-10-09, macOS 26.7.1 (25G241), on the machine the
 project is developed on. This is the output of step 0b of
-[phase 4](../v4/phase-4-control-api-server-overview.md#step-0b--s2-the-agent-endpoints-directory-and-admission-open):
+[phase 4](../v4/phase-4-control-api-server-overview.md#step-0b--s2-the-agent-endpoints-directory-and-admission-done):
 it fixes the keys of `agent_endpoint` and the directory's default, and says how the
 dedicated account is admitted. The code of step 9 reads it.
 

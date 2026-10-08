@@ -2,6 +2,7 @@
 //! control service, and serves until it is told to stop.
 
 use denon_avr_api_contract::EndpointPaths;
+use denon_avr_api_server::settings::{self, SETTINGS_FILE};
 use denon_avr_api_server::shutdown::{parent_gone, Reason, Signals};
 use denon_avr_api_server::{Limits, Server, ServerConfig, StartError};
 use denon_avr_application::{AgentLimits, AgentPath, ControlService, ServiceConfig};
@@ -86,6 +87,16 @@ async fn run() -> ExitCode {
     let data = arguments.data_directory;
     let paths = EndpointPaths::under(&data);
 
+    // The settings are read before anything is opened, so a file that is wrong stops
+    // the server before it serves, and the message names the file.
+    let settings = match settings::load(&data.join(SETTINGS_FILE)) {
+        Ok(settings) => settings,
+        Err(error) => {
+            eprintln!("denon-avr-api-server: {error}");
+            return ExitCode::from(2);
+        }
+    };
+
     let tokens = match FileTokenStore::open(&paths.credentials_directory) {
         Ok(store) => Arc::new(store),
         Err(error) => {
@@ -119,7 +130,7 @@ async fn run() -> ExitCode {
         tokens,
         ServerConfig {
             paths,
-            agent: None,
+            agent: settings.agent_config(),
             limits: Limits::default(),
         },
     )

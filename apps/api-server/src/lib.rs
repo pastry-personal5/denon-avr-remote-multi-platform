@@ -10,10 +10,12 @@
 #[cfg(not(unix))]
 compile_error!("the Control API server is built for Unix only; macOS is the supported platform");
 
+pub mod agent_directory;
 pub mod endpoint;
 pub mod events;
 pub mod pipeline;
 pub mod routes;
+pub mod settings;
 pub mod shutdown;
 pub mod start;
 

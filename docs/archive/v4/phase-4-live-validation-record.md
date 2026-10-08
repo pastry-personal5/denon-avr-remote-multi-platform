@@ -11,12 +11,11 @@ merged.
 The armed live test was written and compiled, and its Makefile target was checked to
 refuse when unarmed. It has **not been run against a receiver**.
 
-**Step 9 is not built.** The plan makes reading the Agent endpoint's directory and
-admitted uids from `server.yaml` wait for S2, the hand check below, because S2 fixes
-that file's keys and the default directory and is the moment an agent can first
-connect to a real server. Until then the executable serves the Operator endpoint
-alone; the Agent endpoint is built, tested, and exercised by the live test, which
-gives the library its directory and uid as values.
+**S2 was run by the owner on 2026-10-09**, and step 9 followed it: the executable reads
+the Agent endpoint from `server.yaml`. The S2 results are in
+[agent-endpoint-access-macos.md](../../research/agent-endpoint-access-macos.md). What is
+left is the account boundary against the real server, the permissions after a run, the
+killed-server check, and the armed live run.
 
 The behaviors being checked are in the
 [architecture](../../v4/phase-4-control-api-server-architecture.md) and, now that
@@ -44,18 +43,20 @@ The exit criteria are in the
 
 ## S2: the Agent endpoint's directory and admission
 
-Run on the Mac with the dedicated agent account, following the procedure in the
+Run by the owner on 2026-10-09 on macOS 26.7.1 (25G241), with the dedicated account
+`agent0000` (uid 503) and a throwaway script, following the procedure in the
 [architecture](../../v4/phase-4-control-api-server-architecture.md#s2-what-the-hand-check-decides).
-Its output is `docs/research/agent-endpoint-access-macos.md`, which fixes the
-`agent_endpoint` keys and the default directory and is what step 9 waits for.
+The full results are in
+[agent-endpoint-access-macos.md](../../research/agent-endpoint-access-macos.md).
 
-| Check | Expected | Result |
-| --- | --- | --- |
-| The agent account can `connect()` to a socket in the chosen directory, by an ACL or by a shared group, and the mode the socket needs | recorded | To fill |
-| `/Users/Shared/<name>` with the `lstat` and owner checks, or another location | decided | To fill |
-| `peer_cred()` reports the agent account's uid, for a process started with `sudo -u` and for one started by the agent host | recorded | To fill |
-| The agent account cannot open `credentials/`, `run/`, or the audit directory, and cannot connect to the Operator socket | true | To fill |
-| The access still holds after the server restarts and the socket is recreated | true | To fill |
+| Check | Result |
+| --- | --- |
+| The agent account can `connect()` to a socket in the chosen directory, and the mode the socket needs | Pass. A directory ACL (`search`, and an inheritable `write`) admits it with the socket at `0600`; with only `search` and a `0600` socket it is refused; a `666` socket was admitted by the ACL alone |
+| `/Users/Shared/<name>` with the `lstat` and owner checks | Pass. `/Users/Shared/Denon AVR Remote`, made `0700` by the owner |
+| `peer_cred()` reports the agent account's uid | Pass: 503, for a process started with `sudo -u agent0000 -H -i`. For a process an agent host starts: not checked |
+| The agent account cannot open `credentials/`, `run/`, or the audit directory, and cannot connect to the Operator socket | Pass for the owner's home and data directory (refused). `credentials/`, `run/`, and the audit directory under it are covered by the home being `0700`; not tried against a running server |
+| An account outside the ACL (`_denonmcp`) cannot connect | Pass: refused, with the socket at `666` |
+| The access still holds after the server restarts and the socket is recreated | Pass |
 
 ## Permissions after a run
 
@@ -72,17 +73,37 @@ ls -l  <data>/run <data>/credentials
 | `operator.sock`, `server.lock`, `operator.token`, `agent-tokens.json` | owner-only (`-rw-------`, the socket `srw-------`) | To fill |
 | The data directory itself | unchanged from before the run | To fill |
 
-## The account boundary (after step 9)
+## The account boundary, against the real server
 
-As the dedicated account, with an Agent token the Operator issued:
+The real server now serves the Agent endpoint, so the S2 result can be checked against
+it. As the owner, with the directory and its two ACL entries from the S2 note in place
+(`docs/examples/server.yaml` lists the commands):
+
+```sh
+DATA=/tmp/dar-s9                       # short, so the socket paths stay under 104 bytes
+mkdir -p "$DATA" && cat > "$DATA/server.yaml" <<'YAML'
+agent_endpoint:
+  uids: [503]
+YAML
+cargo run -p denon-avr-api-server -- --data-dir "$DATA" &
+TOKEN=$(cat "$DATA/credentials/operator.token")
+# The Operator issues the agent's token; the answer's `secret` is printed once:
+curl -s --unix-socket "$DATA/run/operator.sock" -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -d '{"label":"agent0000"}' http://localhost/v1/tokens
+```
+
+Then as `agent0000`, with the token it was given in `AGENT_TOKEN`:
 
 | Check | Expected | Result |
 | --- | --- | --- |
-| A request to the Agent socket with the Agent token | succeeds | To fill |
-| Connecting to `operator.sock` | fails | To fill |
-| Listing `run/`, `credentials/`, and the audit directory | fails | To fill |
-| Reading `operator.token` | fails | To fill |
-| The Operator token presented on the Agent socket | `401`, and an `access_refused` record in the audit log | To fill |
+| `curl --unix-socket "/Users/Shared/Denon AVR Remote/agent.sock" -H "Authorization: Bearer $AGENT_TOKEN" http://localhost/v1/health` | `200` | To fill |
+| The same with no token | `401` | To fill |
+| The same path with the agent token on `/v1/tokens`, an Operator resource | `404` | To fill |
+| `curl --unix-socket "$DATA/run/operator.sock" ... http://localhost/v1/health` | fails to connect (`Permission denied`) | To fill |
+| `ls "$DATA/run" "$DATA/credentials"`, and `cat "$DATA/credentials/operator.token"` | all refused (a `/tmp` data directory is not the owner's real one; repeat against `~/Library/Application Support/Denon AVR Remote`) | To fill |
+| As the owner, the Operator token presented on the Agent socket | `401`, and an `access_refused` line in `$DATA/audit/audit.jsonl` (`grep access_refused`) | To fill |
+| As the owner, `GET /v1/health` on the Operator socket | `server.agent_endpoint.state` is `on` | To fill |
+| Make the directory group-writable (`chmod 770`) and restart the server | the Agent endpoint is off with a reason in the health response, and the Operator endpoint still serves | To fill |
 
 ## A killed server
 

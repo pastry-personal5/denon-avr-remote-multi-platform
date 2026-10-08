@@ -6,6 +6,7 @@
 //! socket is removed only by the server that holds the lock. A path that is not a
 //! socket of this server's own is never removed.
 
+use crate::agent_directory::{self, Facts};
 use crate::endpoint::{self, EndpointContext};
 use denon_avr_api_contract::receivers::{AgentEndpointDto, ServerHealthDto, TokenStoreDto};
 use denon_avr_api_contract::EndpointPaths;
@@ -170,48 +171,28 @@ impl Server {
             .uid();
 
         check_path_length(&paths.operator_socket)?;
+
+        // The Operator's socket first: a server that cannot serve its owner does not
+        // start. Only now is anything removed or created at a socket path.
+        remove_stale(&paths.operator_socket, server_uid)?;
+        let operator_listener = bind(&paths.operator_socket, 0o600)?;
+
+        // The Agent endpoint is the owner's wish, and it is not created when anything
+        // about it is wrong. The Operator endpoint serves either way, and says why.
         let mut agent_off = Some("no agent endpoint is configured".to_owned());
         let mut agent = None;
         if let Some(configured) = &config.agent {
-            if let Some(fault) = tokens.fault() {
-                warn!(%fault, "the Agent endpoint is off: the token store cannot be used");
-                agent_off = Some("the token store cannot be used".to_owned());
-            } else if configured.uids.is_empty() {
-                agent_off = Some("the Agent endpoint admits no uid".to_owned());
-            } else {
-                let socket = configured.socket();
-                check_path_length(&socket)?;
-                agent_off = None;
-                agent = Some((configured.clone(), socket));
+            match prepare_agent(configured, &tokens, server_uid) {
+                Ok(prepared) => {
+                    agent_off = None;
+                    agent = Some(prepared);
+                }
+                Err(reason) => {
+                    warn!(%reason, "the Agent endpoint is not created");
+                    agent_off = Some(reason);
+                }
             }
         }
-
-        // Only now is anything removed or created at a socket path.
-        let mut created = Vec::new();
-        let bound = (|| -> Result<_, StartError> {
-            remove_stale(&paths.operator_socket, server_uid)?;
-            let operator = bind(&paths.operator_socket, 0o600)?;
-            created.push(paths.operator_socket.clone());
-            let agent_listener = match &agent {
-                Some((configured, socket)) => {
-                    remove_stale(socket, server_uid)?;
-                    let listener = bind(socket, configured.mode)?;
-                    created.push(socket.clone());
-                    Some(listener)
-                }
-                None => None,
-            };
-            Ok((operator, agent_listener))
-        })();
-        let (operator_listener, agent_listener) = match bound {
-            Ok(listeners) => listeners,
-            Err(error) => {
-                for path in &created {
-                    let _ = std::fs::remove_file(path);
-                }
-                return Err(error);
-            }
-        };
 
         let server_health = ServerHealthDto {
             agent_endpoint: match &agent_off {
@@ -253,18 +234,22 @@ impl Server {
             vec![server_uid],
             limits.operator_connections,
         );
-        if let (Some(listener), Some((configured, _))) = (agent_listener, &agent) {
-            start(
-                EndpointKind::Agent,
-                listener,
-                configured.uids.clone(),
-                limits.agent_connections,
-            );
-        }
+        let agent_socket = match agent {
+            Some((configured, socket, listener)) => {
+                start(
+                    EndpointKind::Agent,
+                    listener,
+                    configured.uids.clone(),
+                    limits.agent_connections,
+                );
+                Some(socket)
+            }
+            None => None,
+        };
         info!(socket = %paths.operator_socket.display(), "the Control API server is serving");
         Ok(RunningServer {
             operator_socket: paths.operator_socket.clone(),
-            agent_socket: agent.map(|(_, socket)| socket),
+            agent_socket,
             service,
             shutdown,
             tasks,
@@ -339,6 +324,44 @@ impl Drop for RunningServer {
     }
 }
 
+/// Make the Agent endpoint's socket, or say why it cannot be made. Nothing is left
+/// behind when it cannot.
+fn prepare_agent(
+    configured: &AgentEndpointConfig,
+    tokens: &SharedTokenStore,
+    server_uid: u32,
+) -> Result<(AgentEndpointConfig, PathBuf, UnixListener), String> {
+    if let Some(fault) = tokens.fault() {
+        warn!(%fault, "the token store cannot be used");
+        return Err("the token store cannot be used".into());
+    }
+    if configured.uids.is_empty() {
+        return Err("the Agent endpoint admits no uid".into());
+    }
+    let directory = agent_directory::prepare(&configured.directory, server_uid)?;
+    let socket = configured.socket();
+    check_path_length(&socket).map_err(|error| error.to_string())?;
+    remove_stale(&socket, server_uid).map_err(|error| error.to_string())?;
+    let listener = bind(&socket, configured.mode).map_err(|error| error.to_string())?;
+
+    // The checks and the bind are two steps, so the facts are read again.
+    let problem = match (Facts::of(&configured.directory), Facts::of(&socket)) {
+        (Ok(now), Ok(made)) => {
+            agent_directory::after_bind_problem(&directory, &now, &made, server_uid)
+        }
+        _ => Some("the directory or the socket could not be read after the bind".into()),
+    };
+    if let Some(problem) = problem {
+        drop(listener);
+        // Remove what is at the path only if it is a socket, which is what was just made.
+        if Facts::of(&socket).is_ok_and(|facts| facts.is_socket) {
+            let _ = std::fs::remove_file(&socket);
+        }
+        return Err(problem);
+    }
+    Ok((configured.clone(), socket, listener))
+}
+
 fn take_lock(path: &Path) -> Result<std::fs::File, StartError> {
     let file = std::fs::OpenOptions::new()
         .read(true)
@@ -407,7 +430,11 @@ fn bind(path: &Path, mode: u32) -> Result<UnixListener, StartError> {
         why,
     };
     let listener = UnixListener::bind(path).map_err(|error| fail(error.to_string()))?;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
-        .map_err(|error| fail(error.to_string()))?;
+    if let Err(error) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)) {
+        // A socket that could not be made private is not left at the path.
+        drop(listener);
+        let _ = std::fs::remove_file(path);
+        return Err(fail(error.to_string()));
+    }
     Ok(listener)
 }

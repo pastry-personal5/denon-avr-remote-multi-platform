@@ -772,6 +772,7 @@ dependencies = [
  "hyper-util",
  "serde",
  "serde_json",
+ "serde_yaml",
  "sha2",
  "tokio",
  "tracing",

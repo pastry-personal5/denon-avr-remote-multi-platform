@@ -17,7 +17,7 @@ workspace edges are enforced by `make boundary`.
 | `crates/application` | Use-case policy, ports, status/control policy, the control-service port, and the in-process control service with its Operation Gate, Agent path, audit records, and budget ledger. |
 | `crates/api-contract` | The Control API's wire types, version 1: the views of state and sources (separate types for an agent and for the Operator), the error mapping, intents and operations, the route table, and the paths a client builds. Depends on `application` and `domain` and on `serde`; it names no HTTP stack, runtime, or filesystem. |
 | `crates/api-client` | The control-service port over the server's Unix socket: it implements `ReceiverReads`, `OperationControl`, and `OperatorAdmin` by asking the Control API server. HTTP/1.1 over a Unix socket only: no TLS crate, no server framework, no `server` feature of `hyper`. Depends on `api-contract`, `application`, and `domain`. |
-| `apps/api-server` | The Control API server: it hosts the in-process control service behind two Unix-socket endpoints, the Operator's and, when given a directory and the uids to admit, the Agent's, with the request pipeline that admits, authenticates, and routes. Nothing in the CLI or the GUI uses it yet. |
+| `apps/api-server` | The Control API server: it hosts the in-process control service behind two Unix-socket endpoints, the Operator's and, when `server.yaml` names a directory and the uids to admit, the Agent's, with the request pipeline that admits, authenticates, and routes. Nothing in the CLI or the GUI uses it yet. |
 | `crates/infrastructure` | SSDP discovery, YAML persistence, TCP/HTTP adapters, concrete receiver sessions, the JSON Lines audit log, the policy file loader, the file-backed token store, and the system clock. |
 | `crates/gui-lib` | Iced presentation state, reducers, views, the projection of receiver state into them, and the bridge to the control-service port. |
 | `apps/cli` | Short-lived CLI composition over the in-process control service. |
@@ -330,13 +330,23 @@ error). `run/operator.sock` is 0600, `run/server.lock` holds the lock, and
 `credentials/operator.token` and `credentials/agent-tokens.json` are 0600. The
 **Operator endpoint** admits the server's own uid and accepts only the Operator
 token. The **Agent endpoint** (`agent.sock`) admits the uids it is configured with
-and accepts only Agent tokens. With no configuration, no admitted uid, or a token store
-that cannot be used, the endpoint does not exist and the Operator's health response
-says why. `Server::start` takes the Agent endpoint as a value (`AgentEndpointConfig`: a
-directory, the uids, and the socket's mode) and binds `agent.sock` in the directory it is
-given, removing a stale socket there only if it is the server's own. Checking that
-directory, and reading the endpoint from a settings file, are not built (see
-[Not yet built](#not-yet-built)).
+and accepts only Agent tokens. It exists only when `server.yaml` in the data directory
+has an `agent_endpoint` (`directory`, which defaults to `/Users/Shared/Denon AVR
+Remote`, and `uids`, which is required; the socket's mode is not a setting and is
+`0600`). The file may be absent, a key it does not know is refused by name, and a file
+that is wrong stops the executable with status 2 before it opens anything. Before it
+binds, `Server::start` checks the directory: a real directory (not a link), owned by the
+server's uid, and not writable by its group or by anyone else, made at `0700` (with any
+missing parent) when it is missing; after the bind it reads the directory and the socket
+again and removes a socket that is not its own. A stale socket there is removed only if
+it is the server's own. With no configuration, no admitted uid, a token store that cannot
+be used, or a directory that fails a check, the endpoint is not created, the log and the
+`server` section of the Operator's health response say why, and the Operator endpoint
+serves regardless. The account is admitted by a directory ACL that the owner sets once
+(`docs/examples/server.yaml` has the commands, and
+[the S2 note](docs/research/agent-endpoint-access-macos.md) what was checked on macOS):
+an entry for `search`, and an inheritable `write` entry that every socket the server makes
+there carries, so the socket stays `0600`.
 
 **One server per data directory.** `Server::start` takes `File::try_lock` on
 `run/server.lock` before it touches a socket. A second server finds the lock held and
@@ -417,8 +427,9 @@ seconds, 256 such keys, and 30 records a minute), they do not change the audit
 health, and the ledger's rebuild ignores them, so a flood of refused requests can
 neither fill the log nor push an Operator's record out of the window.
 
-**Process model.** `denon-avr-api-server [--data-dir DIR] [--exit-with-parent]` opens
-the token store and the audit log, starts the control service, and serves. SIGTERM and
+**Process model.** `denon-avr-api-server [--data-dir DIR] [--exit-with-parent]` reads
+`server.yaml`, opens the token store and the audit log, starts the control service, and
+serves. SIGTERM and
 SIGINT start one shutdown: stop accepting, send `event: end` (`shutdown`) to every
 stream, wait for operations in flight, close the sessions, remove the sockets, and
 release the lock. With `--exit-with-parent` the end of standard input starts it too, so
@@ -442,13 +453,6 @@ the service directly and through the socket, and compares what it saw.
 
 ### Not yet built
 
-- **The Agent endpoint from a settings file.** The executable serves the Operator
-  endpoint alone. `server.yaml` and the endpoint's directory checks (a real directory
-  owned by the server's uid and not group- or world-writable, created 0700 if missing,
-  and the directory and socket checked again after the bind) wait for the owner's hand
-  check on the Mac with the dedicated account, which decides the keys and the default
-  directory. Until they exist, whatever hands `Server::start` a directory is trusted
-  to have made it safe.
 - **Approvals and OAuth** (`/v1/approvals`, client registration) wait for later
   milestones.
 - **A user of the server.** The CLI and the GUI become clients in milestone 5.

@@ -1,0 +1,31 @@
+# The Control API server's settings. Copy this to `server.yaml` in the data
+# directory (`~/Library/Application Support/Denon AVR Remote`) and edit it. With no
+# file there is no Agent endpoint: nothing is exposed to an agent until you say so.
+#
+# The Operator endpoint needs no setting. Its socket is `run/operator.sock` in the
+# data directory, private to you.
+#
+# The Agent endpoint serves only the resources an agent may use, only to Agent
+# tokens, and only to the accounts named here. It lives in its own directory, which
+# the server checks before it binds: a real directory (not a link), owned by the
+# account that runs the server, and not writable by its group or by anyone else. If
+# it does not exist the server makes it, mode 0700. Any other state, and the Agent
+# endpoint is not created; the Operator's health response says why.
+#
+# Admit the agent's account once, before the server starts (or restart it after),
+# with a directory ACL. For the account `agent0000`:
+#
+#   D="/Users/Shared/Denon AVR Remote"
+#   mkdir "$D" && chmod 700 "$D"
+#   chmod +a "agent0000 allow search" "$D"
+#   chmod +a "agent0000 allow write,file_inherit" "$D"
+#
+# The second entry is inherited by the socket the server creates in the directory,
+# which is what lets that account connect while the socket stays 0600 and yours.
+# See docs/research/agent-endpoint-access-macos.md for what was checked.
+agent_endpoint:
+  # Optional. This is the default.
+  directory: /Users/Shared/Denon AVR Remote
+  # Required: the user ids admitted. `id -u agent0000` prints one. A connection from
+  # any other uid is closed before a byte is read.
+  uids: [503]

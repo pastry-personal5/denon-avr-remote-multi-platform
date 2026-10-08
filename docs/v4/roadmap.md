@@ -7,10 +7,9 @@ Milestone 1 is complete (2026-10-08), tracked in its
 its [phase overview](phase-2-gui-on-port-overview.md). Milestone 3 is implemented
 (2026-10-08) and waits on the owner's live checks, tracked in its
 [phase overview](phase-3-policy-audit-gate-overview.md). Milestone 4 is implemented
-(2026-10-08) except enabling the Agent endpoint from a settings file, which waits on
-S2, the owner's hand check; its live checks are the owner's. It is tracked in its
-[phase overview](phase-4-control-api-server-overview.md). No version change is made
-until the release milestone.**
+(2026-10-08 and 2026-10-09) and waits on the owner's live checks, tracked in its
+[phase overview](phase-4-control-api-server-overview.md); S2 was run by the owner on
+2026-10-09. No version change is made until the release milestone.**
 
 This roadmap sequences the work needed to implement the target design in
 [Planned architecture](../planned-architecture.md). It does not restate that
@@ -432,8 +431,8 @@ the architecture lists each correction.
 
 ## Milestone 4 — Control API server, contract, and client
 
-**Implemented (2026-10-08), except step 9**: the executable does not yet read the Agent
-endpoint from `server.yaml`, because S2 fixes that file's keys. The design now lives in
+**Implemented (2026-10-08 and 2026-10-09).** S2 was run by the owner on 2026-10-09 and
+the executable reads the Agent endpoint from `server.yaml`. The design now lives in
 [ARCHITECTURE.md](../../ARCHITECTURE.md#control-api); the validation record is in the
 [archive](../archive/v4/phase-4-live-validation-record.md).
 

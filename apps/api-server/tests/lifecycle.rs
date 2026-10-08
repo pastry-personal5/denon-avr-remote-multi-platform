@@ -344,7 +344,10 @@ struct Running {
 
 impl Running {
     async fn start(parent_pipe: bool) -> Self {
-        let root = Arc::new(TempDir::new("bin"));
+        Self::start_in(Arc::new(TempDir::new("bin")), parent_pipe).await
+    }
+
+    async fn start_in(root: Arc<TempDir>, parent_pipe: bool) -> Self {
         let paths = EndpointPaths::under(&root.0);
         let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_denon-avr-api-server"));
         command.arg("--data-dir").arg(&root.0);
@@ -547,4 +550,80 @@ async fn shutdown_waits_for_operations_in_flight_before_closing_sessions() {
         .expect("shutdown finishes once the operation has")
         .unwrap();
     assert!(session.closed.load(std::sync::atomic::Ordering::SeqCst));
+}
+
+#[tokio::test]
+async fn the_binary_reads_server_yaml_and_serves_both_endpoints() {
+    use std::os::unix::fs::MetadataExt;
+    let root = Arc::new(TempDir::new("yaml"));
+    let agent_directory = root.0.join("agent");
+    let uid = std::fs::metadata(&root.0).unwrap().uid();
+    std::fs::write(
+        root.0.join("server.yaml"),
+        format!(
+            "agent_endpoint:\n  directory: {}\n  uids: [{uid}]\n",
+            agent_directory.display()
+        ),
+    )
+    .unwrap();
+    let mut server = Running::start_in(root, false).await;
+    let agent_socket = agent_directory.join("agent.sock");
+    wait_for("the Agent socket", || agent_socket.exists()).await;
+    assert_eq!(
+        mode(&agent_directory),
+        0o700,
+        "the directory was made private"
+    );
+    assert_eq!(mode(&agent_socket), 0o600);
+
+    let health = get(&server.socket, "/v1/health", &server.token())
+        .await
+        .json();
+    assert_eq!(
+        health["server"]["agent_endpoint"]["state"], "on",
+        "{health}"
+    );
+    // The Agent endpoint answers, and wants a token.
+    let refused = request(&agent_socket, "GET", "/v1/health", None, None).await;
+    assert_eq!(refused.status, 401);
+
+    server.signal("TERM");
+    assert!(server.exit(Duration::from_secs(10)).await.success());
+    assert!(!server.socket.exists(), "the Operator socket is removed");
+    assert!(!agent_socket.exists(), "the Agent socket is removed");
+    assert!(server.lock_is_free());
+}
+
+#[tokio::test]
+async fn a_malformed_server_yaml_stops_the_binary_before_it_serves() {
+    let root = Arc::new(TempDir::new("bad"));
+    std::fs::write(root.0.join("server.yaml"), "agent_endpoint:\n  uids: []\n").unwrap();
+    let paths = EndpointPaths::under(&root.0);
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_denon-avr-api-server"))
+        .arg("--data-dir")
+        .arg(&root.0)
+        .stdin(Stdio::null())
+        .output()
+        .expect("the server binary runs");
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let message = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        message.contains("server.yaml") && message.contains("uids"),
+        "{message}"
+    );
+    assert!(
+        !paths.operator_socket.exists(),
+        "a server that was refused is not serving"
+    );
+}
+
+#[tokio::test]
+async fn an_argument_the_binary_does_not_know_stops_it_with_status_2() {
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_denon-avr-api-server"))
+        .arg("--listen-on-the-network")
+        .stdin(Stdio::null())
+        .output()
+        .expect("the server binary runs");
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("--listen-on-the-network"));
 }

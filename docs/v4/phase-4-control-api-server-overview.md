@@ -1,9 +1,11 @@
 # Version 4, Phase 4 — Control API server, contract, and client
 
-**Planned, 2026-10-08, for the branch `v4/phase-4-control-api-server`; nothing is built.
-The owner has answered the questions the plan could not settle itself, listed in the
-architecture's [decisions](phase-4-control-api-server-architecture.md#decisions); one,
-the Agent endpoint's directory, waits for S2.**
+**Planned 2026-10-08 and implemented on the branch `v4/phase-4-control-api-server`
+(2026-10-08 and 2026-10-09). The owner answered the questions the plan could not settle
+itself, listed in the architecture's
+[decisions](phase-4-control-api-server-architecture.md#decisions); the last, the Agent
+endpoint's directory and admission, was settled by the S2 hand check on 2026-10-09. See
+[Exit status](#exit-status).**
 This is milestone 4 of the [roadmap](roadmap.md). It adds three packages, the
 `/v1` wire contract (`api-contract`), a client that implements the control-service
 port over a Unix socket (`api-client`), and the server that hosts the in-process
@@ -34,7 +36,7 @@ is the owner's; it gates step 9 only.
 | # | Step | State |
 | --- | --- | --- |
 | 0 | Amend the design | Done |
-| 0b | S2: the Agent endpoint's directory and admission, by hand | Open, the owner's |
+| 0b | S2: the Agent endpoint's directory and admission, by hand | Done, 2026-10-09 |
 | 1a | The label rule in `policy` and the policy loader | Done |
 | 1b | Port additions, token and refusal types, the audit adapter | Done |
 | 2 | `api-contract`: conventions, reads, state views, errors, routes | Done |
@@ -44,7 +46,7 @@ is the owner's; it gates step 9 only.
 | 6 | `api-server`: the routes and the refusal matrix | Done |
 | 7 | Event streams, waits, and revocation | Done |
 | 8 | `api-client` and the port conformance run | Done |
-| 9 | Enable the Agent endpoint from settings (needs 0b) | Waiting for S2, the owner's hand check |
+| 9 | Enable the Agent endpoint from settings (needs 0b) | Done |
 | 10 | Process model, live test | Done; the live test is compiled, not run |
 | 11 | Promote and exit | Done |
 
@@ -72,9 +74,12 @@ roadmap's step 5 assumed already existed.
 The roadmap's header, milestone 4, and gaps table are corrected to match, and the
 documentation map names this phase.
 
-### Step 0b — S2: the Agent endpoint's directory and admission (open)
+### Step 0b — S2: the Agent endpoint's directory and admission (done)
 
-Output: `docs/research/agent-endpoint-access-macos.md`. The procedure is in the
+Done by the owner on 2026-10-09; the result is
+[agent-endpoint-access-macos.md](../research/agent-endpoint-access-macos.md): a
+directory ACL admits the account, the socket stays `0600`, and the keys are `directory`
+and `uids`. Output: `docs/research/agent-endpoint-access-macos.md`. The procedure is in the
 architecture's [S2](phase-4-control-api-server-architecture.md#s2-what-the-hand-check-decides)
 section. It needs the dedicated account and a second terminal session as that
 account. The note fixes `agent_endpoint`'s keys and its default directory, and says
@@ -439,12 +444,14 @@ to any compared part changes the normalization and a change to a stamp does not.
 
 ### Step 9 — Enable the Agent endpoint from settings
 
-Needs step 0b. This is the step that lets an agent connect to a real server, so it
-waits for S2. Files: `apps/api-server/src/{settings,endpoint}.rs`,
-`apps/api-server/tests/lifecycle.rs`, `docs/examples/server.yaml`.
-Produces the `agent_endpoint` settings key (its shape from S2's note) and the checks
-of the endpoint's directory, which the settings path runs before it hands an
-`AgentEndpointConfig` to `Server::start`.
+Needed step 0b, since this is the step that lets an agent connect to a real server.
+Files: `apps/api-server/src/{settings,agent_directory,start,main}.rs`,
+`apps/api-server/tests/{settings,agent_directory,lifecycle}.rs`,
+`docs/examples/server.yaml`. Produces the `agent_endpoint` settings key (its shape from
+S2's note: `directory`, defaulting to `/Users/Shared/Denon AVR Remote`, and `uids`; the
+socket's mode is not a key) and the checks of the endpoint's directory. The checks are in
+`Server::start`, not only in the settings path, so every caller gets them: an Agent
+endpoint that fails one is not created, and the Operator endpoint serves regardless.
 
 Tests:
 
@@ -553,14 +560,15 @@ while its stream is open.
 
 ## Exit status
 
-**Implemented except step 9, and awaiting the owner's checks.** Steps 0 to 8, 10, and 11
-are done on branch `v4/phase-4-control-api-server`: the contract, the token store, the
-server with both endpoints, the routes and the refusal matrix, the event streams, the
-client and the port conformance run, the process model, and the armed live test, which
-is compiled and has not been run. Step 0b, S2, is the owner's, and step 9, reading the
-Agent endpoint from `server.yaml`, waits for it, so the executable serves the Operator
-endpoint alone. The exit criteria that need the Mac and the receiver are open: the
-account boundary, the permissions after a run, and the armed live run, all in the
+**Implemented, and awaiting the owner's live checks.** All steps are done on branch
+`v4/phase-4-control-api-server`: the contract, the token store, the server with both
+endpoints, the routes and the refusal matrix, the event streams, the client and the port
+conformance run, the settings and the Agent endpoint's directory checks, the process
+model, and the armed live test, which is compiled and has not been run. S2 (step 0b) was
+run by the owner on 2026-10-09 and is recorded in
+[agent-endpoint-access-macos.md](../research/agent-endpoint-access-macos.md). The exit
+criteria that need the receiver, and the account boundary against the real server, are
+open: they are in the
 [validation record](../archive/v4/phase-4-live-validation-record.md). The design is
 promoted into [ARCHITECTURE.md](../../ARCHITECTURE.md#control-api).
 
@@ -606,8 +614,8 @@ promoted into [ARCHITECTURE.md](../../ARCHITECTURE.md#control-api).
 2. **Sockets.** The tests bind Unix sockets and loopback ports. Run `make check`
    outside a sandbox that blocks them. The lifecycle tests make their socket
    directories under `/tmp` so the paths stay under 104 bytes.
-3. **S2.** Run the architecture's S2 procedure with the dedicated account, and write
-   `docs/research/agent-endpoint-access-macos.md` before step 9.
+3. **S2.** Done 2026-10-09; see `docs/research/agent-endpoint-access-macos.md`. Re-run
+   its connect check from the agent account after a major macOS update.
 4. **Permissions after a run.** `ls -ld` on `run/` and `credentials/` shows
    `drwx------`, and `ls -l` shows the socket, lock, and token files owner-only.
 5. **The account boundary.** As the dedicated account, a request to the Agent socket
