@@ -40,7 +40,7 @@ is the owner's; it gates step 9 only.
 | 2 | `api-contract`: conventions, reads, state views, errors, routes | Done |
 | 3 | `api-contract`: requests, configuration, events, Operator resources | Done |
 | 4 | Token store | Done |
-| 5 | `api-server`: start, lock, both endpoints, request pipeline | Not started |
+| 5 | `api-server`: start, lock, both endpoints, request pipeline | Done |
 | 6 | `api-server`: the routes and the refusal matrix | Not started |
 | 7 | Event streams, waits, and revocation | Not started |
 | 8 | `api-client` and the port conformance run | Not started |
@@ -263,10 +263,10 @@ Produces: `Server::start`, `RunningServer`, `StartError`, `Limits`,
 audit directory and policy file, and a raw Unix-socket HTTP helper.
 
 The server runs its own accept loop over each `UnixListener` (peer uid, connection cap,
-then hyper's HTTP/1 builder with the head timeout, header size, and keep-alive idle
-time), serving an axum `Router` wrapped in an outer `tower` layer that authenticates
-and checks the declared body length before routing. `axum::serve` is not used (see the
-architecture's [HTTP stack](phase-4-control-api-server-architecture.md#packages-and-edges)).
+then hyper's HTTP/1 builder with the head timeout, which also bounds the idle time
+between requests, and the header size), serving an axum `Router` with a middleware
+layer, added after its routes and its fallback, that authenticates and checks the
+declared body length. `axum::serve` is not used (see the architecture's [HTTP stack](phase-4-control-api-server-architecture.md#packages-and-edges)).
 
 An endpoint is a value (kind, socket, admitted uids, credential kind), so the Agent
 endpoint is the same code as the Operator's. `Server::start` creates it when it is
@@ -299,9 +299,11 @@ Tests in `pipeline.rs`, over the raw helper, on both endpoints:
 - `two_authorization_headers_are_refused`, `a_token_in_the_query_string_is_400`,
   `a_scheme_other_than_bearer_is_401`.
 - `an_agent_token_is_accepted_only_on_the_agent_endpoint_and_the_operator_token_only_on_the_operator_endpoint`.
-- `a_head_over_16_kib_is_refused`, `a_slow_head_is_closed_after_five_seconds`,
-  `a_body_over_the_cap_is_413_before_it_is_read`, `a_chunked_body_is_411`,
-  `a_slow_body_is_408` (paused clock for the three timeouts).
+- `a_head_over_16_kib_is_refused`, `a_slow_head_is_closed_when_the_head_timeout_passes`
+  (a 300 ms timeout in the test, with `default_limits_are_the_documented_ones` pinning
+  the five seconds), `a_body_over_the_cap_is_413_before_it_is_read`, and
+  `a_chunked_body_is_411`. The slow-body case, `a_slow_body_is_408`, needs a handler that
+  reads a body, so it is in step 6.
 - `the_connection_cap_closes_the_extra_connection`.
 - `health_answers_with_the_contract_version`,
   `health_on_the_operator_endpoint_reports_the_agent_endpoint_and_the_token_store`, and

@@ -368,8 +368,9 @@ agent_endpoint:
 ServerConfig     paths: EndpointPaths, agent: Option<AgentEndpointConfig>, limits: Limits
 EndpointPaths    under(dir) -> run/operator.sock, run/server.lock,
                  credentials/operator.token, credentials/agent-tokens.json
-Server::start(service: Arc<ControlService>, tokens: Option<SharedTokenStore>,
+Server::start(service: Arc<ControlService>, tokens: SharedTokenStore,
               config: ServerConfig) -> Result<RunningServer, StartError>
+              (the store is required: the Operator's token comes from it)
 RunningServer    operator_socket() -> &Path; agent_socket() -> Option<&Path>;
                  shutdown(self) -> impl Future
 StartError       AlreadyRunning | SocketPathTooLong { len, max } | Directory { path, why }
@@ -434,14 +435,18 @@ the Operator's health response.
 
 For every connection and request, in this order, so a caller learns nothing before it
 is authenticated. Steps 0 to 2 are the accept loop and hyper's HTTP/1 builder. Steps 3
-to 5 are an outer `tower` layer wrapped around the whole `Router`, because
-`Router::layer` runs after routing and an unknown path would be a `404` before it was a
-`401`. Steps 4 and 6 are the router and the handler.
+and 5 are one `axum` middleware layer, added to the `Router` after its routes and its
+fallback. A layer added that way wraps every one of them (axum documents it), a path that
+matches nothing and a method that is not allowed included, so an unknown path is a
+`401` before it can be a `404`; a test pins it. Steps 4 and 6 are the router and the
+handler.
 
 0. Admission: the peer's uid, as above. A connection that fails it is closed unread.
 1. Connection caps: 16 on the Operator endpoint, 32 on the Agent endpoint. One more
    is closed.
-2. Head: 5 seconds to read it, at most 16 KiB, HTTP/1.1, keep-alive idle 15 seconds.
+2. Head: 5 seconds to read it, at most 16 KiB, HTTP/1.1. hyper applies the same
+   timeout to the next request's head on a connection kept open, so an idle connection
+   is closed after five seconds.
 3. Authenticate (`401` for none, more than one, an unknown token, or the wrong
    kind). Every failure is `record_refusal` with its own reason; the response never
    says which. An Operator token on the Agent endpoint is its own reason.
@@ -615,7 +620,7 @@ the check would be guessing.
 | D34 | One server per user is a `File::try_lock` on `run/server.lock`; a stale socket is removed only under it | R12 |
 | D35 | Streams: 15-second keep-alive, 10-second send timeout, four per principal, no replay; an Agent's state stream ends after ten minutes; state and operations are separate streams | R13, R21. The maximum age is what bounds a client that is connected and not reading, which neither the keep-alive nor the send timeout can see on a quiet receiver |
 | D36 | Config writes use `ETag` and `If-Match` | R14 |
-| D37 | Caps: 16 and 32 connections, 16 KiB head and body (1 MiB for config), 5 second head, 10 second body, 15 second idle | A caller is anonymous until the pipeline's authentication stage. The Operator endpoint is separate, so an agent that holds every connection of the Agent endpoint cannot starve the Operator |
+| D37 | Caps: 16 and 32 connections, 16 KiB head and body (1 MiB for config), 5 second head and idle, 10 second body | A caller is anonymous until the pipeline's authentication stage. The Operator endpoint is separate, so an agent that holds every connection of the Agent endpoint cannot starve the Operator |
 | D38 | `server.yaml` configures the Agent endpoint; with no file there is none | Fail closed: nothing is exposed to an agent until the owner says so |
 | D39 | `EndpointPaths::under(dir)` is in `api-contract` | Phase 5 removes the infrastructure edge from `cli` and `desktop`, and then only `data_directory()` needs to move |
 | D40 | The transitive boundary rules cover the new packages; `cli` and `desktop` are named exceptions | R2 |

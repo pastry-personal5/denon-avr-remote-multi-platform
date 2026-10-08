@@ -77,6 +77,10 @@ while IFS=: read -r from to; do
         denon-avr-application:denon-avr-policy | \
         denon-avr-api-contract:denon-avr-application | \
         denon-avr-api-contract:denon-avr-domain | \
+        denon-avr-api-server:denon-avr-api-contract | \
+        denon-avr-api-server:denon-avr-application | \
+        denon-avr-api-server:denon-avr-domain | \
+        denon-avr-api-server:denon-avr-infrastructure | \
         denon-avr-infrastructure:denon-avr-application | \
         denon-avr-infrastructure:denon-avr-domain | \
         denon-avr-infrastructure:denon-avr-policy | \

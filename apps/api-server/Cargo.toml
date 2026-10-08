@@ -1,0 +1,29 @@
+[package]
+name = "denon-avr-api-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+[lib]
+name = "denon_avr_api_server"
+path = "src/lib.rs"
+[[bin]]
+name = "denon-avr-api-server"
+path = "src/main.rs"
+[dependencies]
+denon-avr-api-contract = { path = "../../crates/api-contract" }
+denon-avr-application = { path = "../../crates/application" }
+denon-avr-domain = { path = "../../crates/domain" }
+denon-avr-infrastructure = { path = "../../crates/infrastructure" }
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio"] }
+bytes = "1"
+http-body-util = "0.1"
+hyper = { version = "1", features = ["http1", "server"] }
+hyper-util = { version = "0.1", features = ["tokio", "service"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+[dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }
