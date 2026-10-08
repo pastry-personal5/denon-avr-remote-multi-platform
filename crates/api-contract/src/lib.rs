@@ -10,10 +10,13 @@
 //! ignored. Responses are lenient, so the contract can grow: a reader skips the
 //! fields it does not know.
 
+pub mod admin;
 pub mod error;
+pub mod events;
 pub mod operations;
 pub mod paths;
 pub mod receivers;
+pub mod requests;
 pub mod routes;
 pub mod state;
 pub mod values;

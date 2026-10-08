@@ -1,0 +1,7 @@
+{
+  "intent": {
+    "kind": "mute",
+    "value": "on"
+  },
+  "idempotency_key": "retry-1"
+}

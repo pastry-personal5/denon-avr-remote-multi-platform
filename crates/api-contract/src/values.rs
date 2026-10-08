@@ -152,3 +152,17 @@ impl From<SoundModeDto> for SoundModeIntent {
         }
     }
 }
+
+/// A moment as milliseconds since the Unix epoch, which is how the wire carries
+/// the times of observations.
+pub(crate) fn system_time_ms(at: Option<std::time::SystemTime>) -> Option<u64> {
+    at.and_then(|at| {
+        at.duration_since(std::time::UNIX_EPOCH)
+            .ok()
+            .and_then(|since| u64::try_from(since.as_millis()).ok())
+    })
+}
+
+pub(crate) fn system_time_from_ms(millis: Option<u64>) -> Option<std::time::SystemTime> {
+    millis.map(|millis| std::time::UNIX_EPOCH + std::time::Duration::from_millis(millis))
+}

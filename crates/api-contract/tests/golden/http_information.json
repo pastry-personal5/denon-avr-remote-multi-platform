@@ -1,0 +1,65 @@
+{
+  "input_slots": {
+    "value": [
+      {
+        "label": "FL",
+        "state": "active"
+      },
+      {
+        "label": "FR",
+        "state": "available"
+      }
+    ]
+  },
+  "output_slots": {
+    "unavailable": {
+      "kind": "timeout",
+      "message": "no answer from 192.0.2.10"
+    }
+  },
+  "audio": {
+    "input_mode": {
+      "value": "Auto"
+    },
+    "output": {
+      "value": "FL FR"
+    },
+    "signal": {
+      "value": "PCM"
+    },
+    "sound": {
+      "value": "Stereo"
+    },
+    "sample_rate": {
+      "unavailable": {
+        "kind": "unsupported",
+        "message": "not supported"
+      }
+    }
+  },
+  "video": {
+    "monitor": {
+      "value": "1"
+    },
+    "hdmi_input": {
+      "value": "4K"
+    },
+    "hdmi_output": {
+      "value": "4K"
+    }
+  },
+  "audyssey": {
+    "multeq": {
+      "value": "Reference"
+    },
+    "dynamic_eq": {
+      "value": "Off"
+    },
+    "dynamic_volume": {
+      "value": "Off"
+    }
+  },
+  "freshness": "partial",
+  "generation": 9,
+  "observed_at_ms": 1700000000500
+}

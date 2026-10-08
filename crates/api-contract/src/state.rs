@@ -15,7 +15,9 @@
 //! class, the last good value, and the issue text.
 
 use crate::receivers::parse_receiver_id;
-use crate::values::{MuteDto, SystemPowerDto, VolumeDto, ZonePowerDto};
+use crate::values::{
+    system_time_from_ms, system_time_ms, MuteDto, SystemPowerDto, VolumeDto, ZonePowerDto,
+};
 use denon_avr_domain::receiver_state::{MainZoneState, ReceiverEvidence};
 use denon_avr_domain::{
     CatalogResponseEvidence, Epoch, FieldIssue, FrameSeq, Freshness, MasterVolume, MonotonicMillis,
@@ -24,7 +26,6 @@ use denon_avr_domain::{
     SourceEntry, SourceId, SourceVisibility, StaleReason, StateRevision, SystemPower, ZonePower,
 };
 use serde::{Deserialize, Serialize};
-use std::time::{Duration, UNIX_EPOCH};
 
 /// A view that cannot be read back into a state or a catalog.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -517,11 +518,7 @@ impl<X: SourcesDetail> From<&SourceCatalogObservation> for SourcesView<X> {
                 Freshness::Invalidated => FreshnessDto::Invalidated,
             },
             generation: catalog.generation,
-            observed_at_ms: catalog.observed_at.and_then(|at| {
-                at.duration_since(UNIX_EPOCH)
-                    .ok()
-                    .and_then(|since| u64::try_from(since.as_millis()).ok())
-            }),
+            observed_at_ms: system_time_ms(catalog.observed_at),
             response: match observation.response_evidence {
                 CatalogResponseEvidence::Complete => CatalogEvidenceDto::Complete,
                 CatalogResponseEvidence::Partial => CatalogEvidenceDto::Partial,
@@ -564,9 +561,7 @@ impl<X: SourcesDetail> SourcesView<X> {
                     FreshnessDto::Invalidated => Freshness::Invalidated,
                 },
                 generation: self.generation,
-                observed_at: self
-                    .observed_at_ms
-                    .map(|millis| UNIX_EPOCH + Duration::from_millis(millis)),
+                observed_at: system_time_from_ms(self.observed_at_ms),
                 error: self.extra.error(),
             },
             raw_response: self.extra.raw_response(),

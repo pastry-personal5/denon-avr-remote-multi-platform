@@ -1,0 +1,10 @@
+{
+  "decision": "require_approval",
+  "reasons": [
+    "the volume target -25.0 dB is above the limit -30.0 dB"
+  ],
+  "policy_digest": "abababababababababababababababababababababababababababababababab",
+  "rules": [
+    "volume-ceiling"
+  ]
+}

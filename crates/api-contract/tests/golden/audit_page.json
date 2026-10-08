@@ -1,0 +1,183 @@
+{
+  "entries": [
+    {
+      "seq": 10,
+      "schema": 1,
+      "run_ms": 1000,
+      "at_ms": 2000,
+      "operation": null,
+      "principal": "operator",
+      "receiver": null,
+      "event": {
+        "kind": "token_revoked",
+        "id": "t-0000002a",
+        "label": "claude-code"
+      }
+    },
+    {
+      "seq": 9,
+      "schema": 1,
+      "run_ms": 1000,
+      "at_ms": 2000,
+      "operation": null,
+      "principal": "operator",
+      "receiver": null,
+      "event": {
+        "kind": "token_issued",
+        "id": "t-0000002a",
+        "label": "claude-code"
+      }
+    },
+    {
+      "seq": 8,
+      "schema": 1,
+      "run_ms": 1000,
+      "at_ms": 2000,
+      "operation": null,
+      "principal": null,
+      "receiver": null,
+      "event": {
+        "kind": "access_refused",
+        "endpoint": "agent",
+        "reason": "no_credential",
+        "peer_uid": 502,
+        "resource": "/v1/policy",
+        "suppressed": 17
+      }
+    },
+    {
+      "seq": 7,
+      "schema": 1,
+      "run_ms": 1000,
+      "at_ms": 2000,
+      "operation": 4,
+      "principal": {
+        "agent": "openclaw"
+      },
+      "receiver": "living-room",
+      "event": {
+        "kind": "policy_load_failed",
+        "error": "line 3: unknown key"
+      }
+    },
+    {
+      "seq": 6,
+      "schema": 1,
+      "run_ms": 1000,
+      "at_ms": 2000,
+      "operation": 4,
+      "principal": {
+        "agent": "openclaw"
+      },
+      "receiver": "living-room",
+      "event": {
+        "kind": "policy_loaded",
+        "digest": "abababababababababababababababababababababababababababababababab"
+      }
+    },
+    {
+      "seq": 5,
+      "schema": 1,
+      "run_ms": 1000,
+      "at_ms": 2000,
+      "operation": 4,
+      "principal": {
+        "agent": "openclaw"
+      },
+      "receiver": "living-room",
+      "event": {
+        "kind": "finished",
+        "status": "rejected",
+        "dispatch": "not_dispatched",
+        "confirmed": false,
+        "reason": "policy unavailable"
+      }
+    },
+    {
+      "seq": 4,
+      "schema": 1,
+      "run_ms": 1000,
+      "at_ms": 2000,
+      "operation": 4,
+      "principal": {
+        "agent": "openclaw"
+      },
+      "receiver": "living-room",
+      "event": {
+        "kind": "finished",
+        "status": "completed",
+        "dispatch": "complete_write",
+        "confirmed": true,
+        "reason": null
+      }
+    },
+    {
+      "seq": 3,
+      "schema": 1,
+      "run_ms": 1000,
+      "at_ms": 2000,
+      "operation": 4,
+      "principal": {
+        "agent": "openclaw"
+      },
+      "receiver": "living-room",
+      "event": {
+        "kind": "dispatching",
+        "intent": "volume -35.0 dB",
+        "before": -72,
+        "target": -70,
+        "precondition_fields": [
+          "volume"
+        ]
+      }
+    },
+    {
+      "seq": 2,
+      "schema": 1,
+      "run_ms": 1000,
+      "at_ms": 2000,
+      "operation": 4,
+      "principal": {
+        "agent": "openclaw"
+      },
+      "receiver": "living-room",
+      "event": {
+        "kind": "decided",
+        "intent": "mute on",
+        "decision": "allow",
+        "reasons": [],
+        "rules": [],
+        "baseline": [],
+        "policy": null
+      }
+    },
+    {
+      "seq": 1,
+      "schema": 1,
+      "run_ms": 1000,
+      "at_ms": 2000,
+      "operation": 4,
+      "principal": {
+        "agent": "openclaw"
+      },
+      "receiver": "living-room",
+      "event": {
+        "kind": "decided",
+        "intent": "volume -35.0 dB",
+        "decision": "require_approval",
+        "reasons": [
+          "above the limit"
+        ],
+        "rules": [
+          "volume-ceiling"
+        ],
+        "baseline": [
+          "volume",
+          "mute"
+        ],
+        "policy": "abababababababababababababababababababababababababababababababab"
+      }
+    }
+  ],
+  "next": 0
+}

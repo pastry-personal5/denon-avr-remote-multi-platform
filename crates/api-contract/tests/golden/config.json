@@ -1,0 +1,19 @@
+{
+  "current": "living-room",
+  "receivers": {
+    "den": {
+      "host": "192.0.2.11"
+    },
+    "living-room": {
+      "host": "192.0.2.10",
+      "model": "AVR-X3800H",
+      "friendly_name": "Living Room"
+    }
+  },
+  "sound_mode_favorites": {
+    "living-room": [
+      "DOLBY ATMOS",
+      "STEREO"
+    ]
+  }
+}

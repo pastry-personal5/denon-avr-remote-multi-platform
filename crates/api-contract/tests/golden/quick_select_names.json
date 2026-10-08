@@ -1,0 +1,20 @@
+{
+  "names": [
+    "Movies",
+    null,
+    "Music",
+    null
+  ],
+  "sources": [
+    "BD",
+    null,
+    "TUNER",
+    null
+  ],
+  "freshness": "live",
+  "generation": 3,
+  "observed_at_ms": 1700000000000,
+  "error": "one slot did not answer",
+  "raw_response": "<names/>",
+  "response": "partial"
+}

@@ -38,7 +38,7 @@ is the owner's; it gates step 9 only.
 | 1a | The label rule in `policy` and the policy loader | Done |
 | 1b | Port additions, token and refusal types, the audit adapter | Done |
 | 2 | `api-contract`: conventions, reads, state views, errors, routes | Done |
-| 3 | `api-contract`: operations, configuration, events, Operator resources | Not started |
+| 3 | `api-contract`: requests, configuration, events, Operator resources | Done |
 | 4 | Token store | Not started |
 | 5 | `api-server`: start, lock, both endpoints, request pipeline | Not started |
 | 6 | `api-server`: the routes and the refusal matrix | Not started |
@@ -205,7 +205,9 @@ Produces: `SubmitRequest`, `DryRunRequest` (agent) and `OperatorDryRunRequest`
 (with `as_agent`), `DryRunDto` (agent, no rule ids) and
 `OperatorDryRunDto`, `ConfigDto`, `DiscoveredDto`, `AdHocRequest`,
 `PolicyDto`, `AuditPageDto`, `TokenIssueRequest`, `IssuedTokenDto`, `TokenDto`,
-`events::{EventName, StatePayload, OperationPayload, EndReason, Parser}`. The server
+`QuickSelectNamesDto`, `HttpInformationDto`, and `ReadinessDto` (the Operator's
+inspection reads, which the plan had not listed), and `events::{EventName, EndReason,
+Parser}`. The server
 writes the stream with axum's `Sse`, so the contract holds the names, the payloads, and
 the parser the client reads them with, and no encoder.
 
