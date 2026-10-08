@@ -330,12 +330,13 @@ error). `run/operator.sock` is 0600, `run/server.lock` holds the lock, and
 `credentials/operator.token` and `credentials/agent-tokens.json` are 0600. The
 **Operator endpoint** admits the server's own uid and accepts only the Operator
 token. The **Agent endpoint** (`agent.sock`) admits the uids it is configured with
-and accepts only Agent tokens. Its directory must be a real directory owned by the
-server's uid and not group- or world-writable, and is created 0700 if missing;
-with no configuration, no admitted uid, or a token store that cannot be used, the
-endpoint does not exist and the Operator's health response says why.
-`Server::start` takes the Agent endpoint as a value (`AgentEndpointConfig`);
-reading it from a settings file is not built (see [Not yet built](#not-yet-built)).
+and accepts only Agent tokens. With no configuration, no admitted uid, or a token store
+that cannot be used, the endpoint does not exist and the Operator's health response
+says why. `Server::start` takes the Agent endpoint as a value (`AgentEndpointConfig`: a
+directory, the uids, and the socket's mode) and binds `agent.sock` in the directory it is
+given, removing a stale socket there only if it is the server's own. Checking that
+directory, and reading the endpoint from a settings file, are not built (see
+[Not yet built](#not-yet-built)).
 
 **One server per data directory.** `Server::start` takes `File::try_lock` on
 `run/server.lock` before it touches a socket. A second server finds the lock held and
@@ -442,9 +443,12 @@ the service directly and through the socket, and compares what it saw.
 ### Not yet built
 
 - **The Agent endpoint from a settings file.** The executable serves the Operator
-  endpoint alone. `server.yaml` and the endpoint's directory checks wait for the
-  owner's hand check on the Mac with the dedicated account, which decides the keys
-  and the default directory.
+  endpoint alone. `server.yaml` and the endpoint's directory checks (a real directory
+  owned by the server's uid and not group- or world-writable, created 0700 if missing,
+  and the directory and socket checked again after the bind) wait for the owner's hand
+  check on the Mac with the dedicated account, which decides the keys and the default
+  directory. Until they exist, whatever hands `Server::start` a directory is trusted
+  to have made it safe.
 - **Approvals and OAuth** (`/v1/approvals`, client registration) wait for later
   milestones.
 - **A user of the server.** The CLI and the GUI become clients in milestone 5.

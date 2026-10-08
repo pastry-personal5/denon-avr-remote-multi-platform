@@ -315,6 +315,11 @@ async fn receiver_ids_with_slash_space_percent_question_mark_and_unicode_reach_t
         "a%2Fb",
         "..",
         "x y/z?w%v",
+        // Named like a route's own segment: the router must fall back to the id.
+        "discover",
+        "ad-hoc",
+        "events",
+        "health",
     ];
     {
         let mut config = locked(&fixture.config.0);
