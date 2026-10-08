@@ -7,15 +7,18 @@
 //! Operation Gate, the only caller of [`CanonicalReceiverSession::operate`]
 //! outside tests and the session implementations.
 //!
-//! This milestone serves the Operator principal only. An Agent handle is
-//! refused until the policy path exists.
+//! A service built by [`ControlService::new`] serves the Operator alone and
+//! writes no audit log. One built by [`ControlService::start`] also has the Agent
+//! path, in the `agent` module: a policy, an audit log, a budget ledger, and caps.
+//! An Agent handle is refused by the first and served by the second.
 
 use crate::audit::{AuditPage, AuditQuery};
 use crate::control::{
-    AgentLabel, ConnectionStatus, ControlError, DryRun, IdempotencyKey, OperationControl,
-    OperationEvent, OperationEventSource, OperationEvents, OperationSnapshot, OperationStatus,
-    OperationSubmission, OperatorAdmin, PolicyView, Principal, ReceiverCapabilities, ReceiverReads,
-    ReceiverSummary, ServiceHealth, SharedOperatorControl,
+    AgentLabel, ApprovalHealth, AuditHealth, ConnectionStatus, ControlError, DryRun,
+    DryRunDecision, IdempotencyKey, OperationControl, OperationEvent, OperationEventSource,
+    OperationEvents, OperationSnapshot, OperationStatus, OperationSubmission, OperatorAdmin,
+    PolicyHealth, PolicyView, Principal, ReceiverCapabilities, ReceiverReads, ReceiverSummary,
+    ServiceHealth, SharedOperatorControl,
 };
 use crate::ports::{
     AsyncConfigRepository, AsyncReceiverDiscovery, BoxFuture, OperationError, ReceiverConnector,
@@ -34,8 +37,14 @@ use std::time::Duration;
 use tokio::sync::{broadcast, watch};
 use tracing::{debug, warn};
 
+mod agent;
+#[cfg(test)]
+mod agent_tests;
 #[cfg(test)]
 mod tests;
+
+use agent::AgentState;
+pub use agent::{AgentLimits, AgentPath};
 
 /// How many operation events a slow reader may lag behind before it is told it
 /// missed some.
@@ -89,6 +98,31 @@ impl ControlService {
         discovery: Arc<dyn AsyncReceiverDiscovery>,
         settings: ServiceConfig,
     ) -> Self {
+        Self::assemble(connector, config, discovery, settings, None)
+    }
+
+    /// A service with the Agent path. It loads the policy, rebuilds the budget
+    /// ledger from the audit log, and records both. It cannot fail: a policy that
+    /// does not load, or a log that cannot be read, is state that refuses agent
+    /// writes until it is put right, and `health` says so.
+    pub async fn start(
+        connector: Arc<dyn ReceiverConnector>,
+        config: Arc<dyn AsyncConfigRepository>,
+        discovery: Arc<dyn AsyncReceiverDiscovery>,
+        settings: ServiceConfig,
+        agents: AgentPath,
+    ) -> Self {
+        let agent = AgentState::start(agents).await;
+        Self::assemble(connector, config, discovery, settings, Some(agent))
+    }
+
+    fn assemble(
+        connector: Arc<dyn ReceiverConnector>,
+        config: Arc<dyn AsyncConfigRepository>,
+        discovery: Arc<dyn AsyncReceiverDiscovery>,
+        settings: ServiceConfig,
+        agent: Option<AgentState>,
+    ) -> Self {
         let (events, _) = broadcast::channel(EVENT_BACKLOG);
         Self {
             inner: Arc::new(Inner {
@@ -102,6 +136,7 @@ impl ControlService {
                 events: Mutex::new(Some(events)),
                 in_flight: watch::channel(0).0,
                 closed: AtomicBool::new(false),
+                agent,
             }),
         }
     }
@@ -109,15 +144,16 @@ impl ControlService {
     /// A handle bound to `principal`. The principal is fixed for the life of
     /// the handle and is never a request parameter.
     ///
-    /// Only the Operator is served until the policy path exists; an Agent is
-    /// refused rather than handed an unguarded handle.
+    /// An Agent is served only by a service built by [`ControlService::start`];
+    /// one built by `new` has no policy, so it refuses rather than handing out
+    /// an unguarded handle.
     pub fn handle(&self, principal: Principal) -> Result<Arc<ServiceHandle>, ControlError> {
         match principal {
-            Principal::Operator => Ok(Arc::new(ServiceHandle {
+            Principal::Agent(_) if self.inner.agent.is_none() => Err(ControlError::Forbidden),
+            principal => Ok(Arc::new(ServiceHandle {
                 inner: Arc::clone(&self.inner),
                 principal,
             })),
-            Principal::Agent(_) => Err(ControlError::Forbidden),
         }
     }
 
@@ -188,6 +224,8 @@ struct Inner {
     /// Operations whose task has not ended. Shutdown waits for zero.
     in_flight: watch::Sender<usize>,
     closed: AtomicBool,
+    /// The Agent path. `None` on a service built by `new`.
+    agent: Option<AgentState>,
 }
 
 /// One receiver's connection. The async lock serializes connect, use, and
@@ -629,6 +667,18 @@ impl Inner {
                 return Ok(Admission::Existing(existing.clone()));
             }
         }
+        // A new request. An agent's is counted against its caps, which a retry
+        // of one that exists (above) is not.
+        let status = match owner {
+            // An Operator request is evaluated trivially as allowed.
+            Principal::Operator => OperationStatus::Allowed,
+            // An agent's waits for the policy to decide it.
+            Principal::Agent(label) => {
+                let agent = self.agent.as_ref().ok_or(ControlError::Forbidden)?;
+                agent.admit_write(label, &operations)?;
+                OperationStatus::Submitted
+            }
+        };
         self.evict_finished(&mut operations);
         operations.next_id += 1;
         let id = OperationId(operations.next_id);
@@ -636,8 +686,7 @@ impl Inner {
             id,
             receiver: receiver.clone(),
             intent: submission.intent,
-            // An Operator request is evaluated trivially as allowed.
-            status: OperationStatus::Allowed,
+            status,
             dispatch: DispatchCertainty::NotDispatched,
             confirmed: false,
             reason: None,
@@ -831,21 +880,50 @@ async fn run_operation(
     id: OperationId,
     receiver: ReceiverId,
     intent: ReceiverIntent,
+    owner: Principal,
 ) {
     let _task = OperationTask {
         inner: Arc::clone(&inner),
         id,
     };
+    // An agent's request meets the policy first. `admit` only lets an agent's
+    // operation exist on a service that has an Agent path.
+    let agent = match (&owner, inner.agent.as_ref()) {
+        (Principal::Agent(label), Some(state)) => Some((label, state)),
+        _ => None,
+    };
+    let policy = match agent {
+        Some((label, state)) => match state.precheck().await {
+            Ok(policy) => Some(policy),
+            Err(reason) => {
+                finish_agent(&inner, state, id, label, &receiver, agent::refusal(reason)).await;
+                return;
+            }
+        },
+        None => None,
+    };
     let lease = match inner.lease_as(&receiver, true).await {
         Ok(lease) => lease,
         Err(error) => {
-            inner.finish(
-                id,
-                Resolution::not_dispatched(OperationStatus::Rejected, error.to_string()),
-            );
+            // An agent is not told where the receiver is, only that it is out of reach.
+            let resolution = match agent {
+                Some(_) => agent::refusal(agent::RECEIVER_UNREACHABLE),
+                None => Resolution::not_dispatched(OperationStatus::Rejected, error.to_string()),
+            };
+            match agent {
+                Some((label, state)) => {
+                    finish_agent(&inner, state, id, label, &receiver, resolution).await
+                }
+                None => inner.finish(id, resolution),
+            }
             return;
         }
     };
+    if let (Some((label, state)), Some(policy)) = (agent, policy) {
+        let resolution = agent::decide(state, &lease, id, &receiver, &intent, label, &policy).await;
+        finish_agent(&inner, state, id, label, &receiver, resolution).await;
+        return;
+    }
     if !inner.begin_session(id) {
         // Withdrawn while the receiver was connecting. Nothing was dispatched.
         return;
@@ -856,6 +934,21 @@ async fn run_operation(
         .operate(OperationRequest::new(id, intent))
         .await;
     inner.finish(id, resolve(outcome));
+}
+
+/// End an agent's operation and record how it ended.
+async fn finish_agent(
+    inner: &Inner,
+    agent: &AgentState,
+    id: OperationId,
+    label: &AgentLabel,
+    receiver: &ReceiverId,
+    resolution: Resolution,
+) {
+    inner.finish(id, resolution.clone());
+    agent
+        .record_finished(id, label, receiver, &resolution)
+        .await;
 }
 
 impl ReceiverReads for ServiceHandle {
@@ -919,7 +1012,18 @@ impl ReceiverReads for ServiceHandle {
     }
 
     fn health(&self) -> BoxFuture<'_, Result<ServiceHealth, ControlError>> {
-        Box::pin(async move { Err(no_agent_path()) })
+        Box::pin(async move {
+            Ok(match &self.inner.agent {
+                Some(agent) => agent.health(),
+                // No Agent path: nothing to judge, record, or count with.
+                None => ServiceHealth {
+                    policy: PolicyHealth::NotConfigured,
+                    audit: AuditHealth::NotConfigured,
+                    ledger_ready: false,
+                    approval: ApprovalHealth::Unavailable,
+                },
+            })
+        })
     }
 }
 
@@ -938,13 +1042,15 @@ impl OperationControl for ServiceHandle {
                 Admission::Existing(snapshot) => return Ok(snapshot),
                 Admission::New(snapshot) => snapshot,
             };
-            // The first snapshot is `allowed`; the task decides the rest.
+            // The first snapshot is `allowed` for the Operator and `submitted`
+            // for an agent; the task decides the rest.
             self.inner.publish(&self.principal, &snapshot);
             tokio::spawn(run_operation(
                 Arc::clone(&self.inner),
                 snapshot.id,
                 snapshot.receiver.clone(),
                 snapshot.intent.clone(),
+                self.principal.clone(),
             ));
             Ok(snapshot)
         })
@@ -989,10 +1095,27 @@ impl OperationControl for ServiceHandle {
 
     fn dry_run<'a>(
         &'a self,
-        _receiver: &'a ReceiverId,
-        _intent: ReceiverIntent,
+        receiver: &'a ReceiverId,
+        intent: ReceiverIntent,
     ) -> BoxFuture<'a, Result<DryRun, ControlError>> {
-        Box::pin(async move { Err(no_agent_path()) })
+        Box::pin(async move {
+            self.visible_receiver(receiver)?;
+            // An unknown receiver is refused here, as it is for a submission.
+            self.inner.identity(receiver).await?;
+            match &self.principal {
+                // The Operator skips policy, so there is nothing to evaluate.
+                Principal::Operator => Ok(DryRun {
+                    decision: DryRunDecision::Allow,
+                    policy: self.inner.agent.as_ref().and_then(AgentState::digest),
+                }),
+                Principal::Agent(label) => {
+                    let agent = self.inner.agent.as_ref().ok_or(ControlError::Forbidden)?;
+                    // A dry run opens the receiver, so it is a write against the cap.
+                    agent.charge_write(label)?;
+                    agent::dry_run(&self.inner, agent, label.as_str(), receiver, &intent).await
+                }
+            }
+        })
     }
 }
 
@@ -1131,34 +1254,40 @@ impl OperatorAdmin for ServiceHandle {
 
     fn dry_run_as<'a>(
         &'a self,
-        _agent: AgentLabel,
-        _receiver: &'a ReceiverId,
-        _intent: ReceiverIntent,
+        agent: AgentLabel,
+        receiver: &'a ReceiverId,
+        intent: ReceiverIntent,
     ) -> BoxFuture<'a, Result<DryRun, ControlError>> {
         Box::pin(async move {
             self.require_operator()?;
-            Err(no_agent_path())
+            let state = self.inner.agent.as_ref().ok_or_else(no_agent_path)?;
+            self.inner.identity(receiver).await?;
+            // The Operator testing a tier does not spend the agent's allowance.
+            agent::dry_run(&self.inner, state, agent.as_str(), receiver, &intent).await
         })
     }
 
     fn policy(&self) -> BoxFuture<'_, Result<PolicyView, ControlError>> {
         Box::pin(async move {
             self.require_operator()?;
-            Err(no_agent_path())
+            let agent = self.inner.agent.as_ref().ok_or_else(no_agent_path)?;
+            Ok(agent.policy_view())
         })
     }
 
     fn reload_policy(&self) -> BoxFuture<'_, Result<PolicyView, ControlError>> {
         Box::pin(async move {
             self.require_operator()?;
-            Err(no_agent_path())
+            let agent = self.inner.agent.as_ref().ok_or_else(no_agent_path)?;
+            Ok(agent.load_policy().await)
         })
     }
 
-    fn audit(&self, _query: AuditQuery) -> BoxFuture<'_, Result<AuditPage, ControlError>> {
+    fn audit(&self, query: AuditQuery) -> BoxFuture<'_, Result<AuditPage, ControlError>> {
         Box::pin(async move {
             self.require_operator()?;
-            Err(no_agent_path())
+            let agent = self.inner.agent.as_ref().ok_or_else(no_agent_path)?;
+            agent.audit_page(query).await
         })
     }
 }

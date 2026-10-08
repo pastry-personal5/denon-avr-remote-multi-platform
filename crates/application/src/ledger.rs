@@ -75,6 +75,20 @@ impl Ledger {
         }
     }
 
+    /// Take in what `other` holds. An operation both ledgers name is counted
+    /// once. A ledger rebuilt late from the audit log absorbs the one that kept
+    /// counting while it could not be rebuilt.
+    pub fn merge(&mut self, other: Ledger) {
+        for (receiver, entries) in other.entries {
+            let held = self.entries.entry(receiver).or_default();
+            for entry in entries {
+                if !held.iter().any(|existing| existing.key == entry.key) {
+                    held.push(entry);
+                }
+            }
+        }
+    }
+
     /// The changes to `receiver` inside `longest_window` before `now`, oldest
     /// first. A change dated after `now` is inside, so a clock that stepped back
     /// cannot shrink the budget. A rule with a shorter window narrows this
@@ -513,6 +527,31 @@ mod tests {
                 before: Some(Level::MINIMUM),
                 target: level(-64),
             }]
+        );
+    }
+
+    #[test]
+    fn merging_keeps_what_was_counted_while_the_ledger_was_unready() {
+        let records = [dispatching(
+            5,
+            1,
+            ago(minutes(3)),
+            agent(),
+            Some(-70),
+            Some(-64),
+        )];
+        let mut rebuilt = Ledger::rebuild(&records, NOW);
+
+        let mut live = Ledger::new();
+        let made_meanwhile = change(ago(minutes(1)), Some(-64), -58);
+        live.reserve(&room(), key(6, 1), made_meanwhile);
+        // The write the log also holds a record of is not counted twice.
+        live.reserve(&room(), key(5, 1), change(ago(minutes(3)), Some(-70), -64));
+        rebuilt.merge(live);
+
+        assert_eq!(
+            recent(&rebuilt, &room()),
+            vec![change(ago(minutes(3)), Some(-70), -64), made_meanwhile]
         );
     }
 

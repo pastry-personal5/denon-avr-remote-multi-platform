@@ -10,9 +10,22 @@ use std::collections::BTreeMap;
 use std::sync::atomic::AtomicUsize;
 use tokio::sync::Notify;
 
-type Script = Arc<dyn Fn(&OperationRequest) -> OperationOutcome + Send + Sync>;
+pub(super) type Script = Arc<dyn Fn(&OperationRequest) -> OperationOutcome + Send + Sync>;
 
-fn completed(request: &OperationRequest) -> OperationOutcome {
+/// What a fake session does to its own state when it is asked to write, and the
+/// answer it gives instead of the script's when it refuses. Tests of the Agent
+/// path use it to move the volume as a real receiver would, and to refuse a
+/// write whose precondition no longer holds.
+pub(super) type Effect = Arc<
+    dyn Fn(&OperationRequest, &watch::Sender<ReceiverState>) -> Option<OperationOutcome>
+        + Send
+        + Sync,
+>;
+
+/// A log that sessions and audit logs share, so a test can see which came first.
+pub(super) type OrderLog = Arc<Mutex<Vec<String>>>;
+
+pub(super) fn completed(request: &OperationRequest) -> OperationOutcome {
     OperationOutcome::ObservedRequestedValue {
         operation: request.id,
         dispatch: DispatchCertainty::CompleteWrite,
@@ -20,8 +33,8 @@ fn completed(request: &OperationRequest) -> OperationOutcome {
     }
 }
 
-struct FakeSession {
-    states: watch::Sender<ReceiverState>,
+pub(super) struct FakeSession {
+    pub(super) states: watch::Sender<ReceiverState>,
     calls: Mutex<Vec<OperationRequest>>,
     synchronizes: AtomicUsize,
     closes: AtomicUsize,
@@ -32,10 +45,14 @@ struct FakeSession {
     hold_operate: Option<Arc<Notify>>,
     /// When set, `close` waits for it before returning.
     hold_close: Option<Arc<Notify>>,
+    /// When set, run before the script.
+    effect: Option<Effect>,
+    /// When set, told when `operate` is entered.
+    order: Option<OrderLog>,
 }
 
 impl FakeSession {
-    fn calls(&self) -> Vec<OperationRequest> {
+    pub(super) fn calls(&self) -> Vec<OperationRequest> {
         locked(&self.calls).clone()
     }
     fn closes(&self) -> usize {
@@ -62,9 +79,17 @@ impl CanonicalReceiverSession for FakeSession {
     fn operate(&self, request: OperationRequest) -> BoxFuture<'_, OperationOutcome> {
         Box::pin(async move {
             locked(&self.calls).push(request.clone());
+            if let Some(order) = &self.order {
+                locked(order).push("operate".into());
+            }
             self.entered.notify_one();
             if let Some(hold) = &self.hold_operate {
                 hold.notified().await;
+            }
+            if let Some(effect) = &self.effect {
+                if let Some(outcome) = effect(&request, &self.states) {
+                    return outcome;
+                }
             }
             (self.script)(&request)
         })
@@ -108,7 +133,7 @@ impl CanonicalReceiverSession for FakeSession {
     }
 }
 
-struct FakeConnector {
+pub(super) struct FakeConnector {
     sessions: Mutex<Vec<Arc<FakeSession>>>,
     /// The identity each connection attempt was made with, in order.
     identities: Mutex<Vec<ReceiverIdentity>>,
@@ -119,10 +144,13 @@ struct FakeConnector {
     hold_connect: Mutex<Option<Arc<Notify>>>,
     hold_operate: Mutex<Option<Arc<Notify>>>,
     hold_close: Mutex<Option<Arc<Notify>>>,
+    initial: Mutex<Option<ReceiverState>>,
+    effect: Mutex<Option<Effect>>,
+    order: Mutex<Option<OrderLog>>,
 }
 
 impl FakeConnector {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self {
             sessions: Mutex::new(Vec::new()),
             identities: Mutex::new(Vec::new()),
@@ -133,15 +161,31 @@ impl FakeConnector {
             hold_connect: Mutex::new(None),
             hold_operate: Mutex::new(None),
             hold_close: Mutex::new(None),
+            initial: Mutex::new(None),
+            effect: Mutex::new(None),
+            order: Mutex::new(None),
         }
     }
-    fn attempts(&self) -> usize {
+    /// Sessions start in this state instead of an empty one.
+    pub(super) fn start_in(&self, state: ReceiverState) {
+        *locked(&self.initial) = Some(state);
+    }
+    /// What a session does when it is asked to write; the dispatch tests use it.
+    #[allow(dead_code)]
+    pub(super) fn effect(&self, effect: Effect) {
+        *locked(&self.effect) = Some(effect);
+    }
+    #[allow(dead_code)]
+    pub(super) fn order(&self, order: OrderLog) {
+        *locked(&self.order) = Some(order);
+    }
+    pub(super) fn attempts(&self) -> usize {
         self.attempts.load(Ordering::SeqCst)
     }
-    fn session(&self, index: usize) -> Arc<FakeSession> {
+    pub(super) fn session(&self, index: usize) -> Arc<FakeSession> {
         Arc::clone(&locked(&self.sessions)[index])
     }
-    fn sessions(&self) -> usize {
+    pub(super) fn sessions(&self) -> usize {
         locked(&self.sessions).len()
     }
     fn hosts(&self) -> Vec<String> {
@@ -150,12 +194,16 @@ impl FakeConnector {
             .map(|identity| identity.host.clone())
             .collect()
     }
-    fn hold_connect(&self) -> Arc<Notify> {
+    /// Every connection attempt from now on is refused.
+    pub(super) fn fail_connections(&self) {
+        self.fail.store(true, Ordering::SeqCst);
+    }
+    pub(super) fn hold_connect(&self) -> Arc<Notify> {
         let gate = Arc::new(Notify::new());
         *locked(&self.hold_connect) = Some(Arc::clone(&gate));
         gate
     }
-    fn hold_operate(&self) -> Arc<Notify> {
+    pub(super) fn hold_operate(&self) -> Arc<Notify> {
         let gate = Arc::new(Notify::new());
         *locked(&self.hold_operate) = Some(Arc::clone(&gate));
         gate
@@ -165,7 +213,7 @@ impl FakeConnector {
         *locked(&self.hold_close) = Some(Arc::clone(&gate));
         gate
     }
-    fn script(
+    pub(super) fn script(
         &self,
         script: impl Fn(&OperationRequest) -> OperationOutcome + Send + Sync + 'static,
     ) {
@@ -194,7 +242,12 @@ impl ReceiverConnector for FakeConnector {
                 ));
             }
             let session = Arc::new(FakeSession {
-                states: watch::channel(ReceiverState::new(receiver.clone())).0,
+                states: watch::channel(
+                    locked(&self.initial)
+                        .clone()
+                        .unwrap_or_else(|| ReceiverState::new(receiver.clone())),
+                )
+                .0,
                 calls: Mutex::new(Vec::new()),
                 synchronizes: AtomicUsize::new(0),
                 closes: AtomicUsize::new(0),
@@ -202,6 +255,8 @@ impl ReceiverConnector for FakeConnector {
                 entered: Arc::clone(&self.entered),
                 hold_operate: locked(&self.hold_operate).clone(),
                 hold_close: locked(&self.hold_close).clone(),
+                effect: locked(&self.effect).clone(),
+                order: locked(&self.order).clone(),
             });
             locked(&self.sessions).push(Arc::clone(&session));
             Ok(session as SharedReceiverSession)
@@ -209,7 +264,7 @@ impl ReceiverConnector for FakeConnector {
     }
 }
 
-struct FakeConfig(Mutex<ConfiguredReceivers>);
+pub(super) struct FakeConfig(pub(super) Mutex<ConfiguredReceivers>);
 
 impl AsyncConfigRepository for FakeConfig {
     fn load(&self) -> BoxFuture<'_, Result<ConfiguredReceivers, OperationError>> {
@@ -226,7 +281,7 @@ impl AsyncConfigRepository for FakeConfig {
     }
 }
 
-struct FakeDiscovery(Vec<DiscoveredReceiver>);
+pub(super) struct FakeDiscovery(pub(super) Vec<DiscoveredReceiver>);
 
 impl AsyncReceiverDiscovery for FakeDiscovery {
     fn discover(
@@ -237,16 +292,16 @@ impl AsyncReceiverDiscovery for FakeDiscovery {
     }
 }
 
-struct Harness {
-    service: Arc<ControlService>,
-    operator: SharedOperatorControl,
-    connector: Arc<FakeConnector>,
-    config: Arc<FakeConfig>,
+pub(super) struct Harness {
+    pub(super) service: Arc<ControlService>,
+    pub(super) operator: SharedOperatorControl,
+    pub(super) connector: Arc<FakeConnector>,
+    pub(super) config: Arc<FakeConfig>,
 }
 
 const IDLE: Duration = Duration::from_secs(60);
 
-fn harness() -> Harness {
+pub(super) fn harness() -> Harness {
     harness_with(ServiceConfig {
         idle_release: IDLE,
         ..ServiceConfig::default()
@@ -291,7 +346,7 @@ fn harness_with(settings: ServiceConfig) -> Harness {
     }
 }
 
-fn living_room() -> ReceiverId {
+pub(super) fn living_room() -> ReceiverId {
     ReceiverId::new("living-room").unwrap()
 }
 
@@ -302,7 +357,7 @@ fn volume(half_steps: i16) -> OperationSubmission {
 }
 
 /// Let every ready task run, including ones woken by what just ran.
-async fn settle() {
+pub(super) async fn settle() {
     for _ in 0..32 {
         tokio::task::yield_now().await;
     }
@@ -311,7 +366,7 @@ async fn settle() {
 /// Let `by` of virtual time pass. Sleeping, rather than `tokio::time::advance`,
 /// lets the paused clock step through every earlier timer in order and run the
 /// tasks each one wakes before the sleep itself returns.
-async fn advance(by: Duration) {
+pub(super) async fn advance(by: Duration) {
     tokio::time::sleep(by).await;
     settle().await;
 }
@@ -899,25 +954,13 @@ async fn an_agent_is_not_handed_a_handle_until_the_policy_path_exists() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn the_health_dry_run_policy_and_audit_views_fail_closed_until_the_agent_path_exists() {
+async fn the_administration_views_are_the_operators_alone_whatever_the_service_can_answer() {
     let h = harness();
     let intent = ReceiverIntent::Mute(MuteState::On);
     let agent_label = AgentLabel::new("openclaw").unwrap();
-    let is_unavailable = |error: ControlError| matches!(error, ControlError::Unavailable(_));
 
-    assert!(is_unavailable(h.operator.health().await.unwrap_err()));
-    assert!(is_unavailable(
-        h.operator
-            .dry_run(&living_room(), intent.clone())
-            .await
-            .unwrap_err()
-    ));
-    assert!(is_unavailable(
-        h.operator
-            .dry_run_as(agent_label.clone(), &living_room(), intent.clone())
-            .await
-            .unwrap_err()
-    ));
+    // A service without an Agent path has no policy or log to show the Operator.
+    let is_unavailable = |error: ControlError| matches!(error, ControlError::Unavailable(_));
     assert!(is_unavailable(h.operator.policy().await.unwrap_err()));
     assert!(is_unavailable(
         h.operator.reload_policy().await.unwrap_err()
@@ -928,9 +971,14 @@ async fn the_health_dry_run_policy_and_audit_views_fail_closed_until_the_agent_p
             .await
             .unwrap_err()
     ));
+    assert!(is_unavailable(
+        h.operator
+            .dry_run_as(agent_label.clone(), &living_room(), intent.clone())
+            .await
+            .unwrap_err()
+    ));
 
-    // The administration views are the Operator's alone, whatever the service
-    // can answer.
+    // An agent is refused them before that is even asked.
     let agent = ServiceHandle {
         inner: Arc::clone(&h.service.inner),
         principal: Principal::Agent(agent_label.clone()),

@@ -1,7 +1,7 @@
 # Version 4, Phase 3 — Policy, audit, and the Agent path
 
 **Planned and reviewed, 2026-10-08; in progress on the branch
-`v4/phase-3-policy-audit-gate`.** Steps 0 to 5 are
+`v4/phase-3-policy-audit-gate`.** Steps 0 to 6a are
 done; the [steps](#steps) table has the state of each. This is milestone 3 of the
 [roadmap](roadmap.md). It adds the `policy`
 crate, the audit log, and the Agent path through the Operation Gate, all in
@@ -35,7 +35,7 @@ the script fails if either half lands alone.
 | 3 | `Clock` and audit ports; JSON Lines adapter | Done |
 | 4 | Policy loading, digest, sample file | Done |
 | 5 | Ledger | Done |
-| 6a | Gate: Agent path, evaluation, and fail-closed outcomes | Planned |
+| 6a | Gate: Agent path, evaluation, and fail-closed outcomes | Done |
 | 6b | Gate: dispatch with the precondition, audit order, live test | Planned |
 | 7 | Promote to `ARCHITECTURE.md`; exit | Planned |
 
@@ -194,6 +194,15 @@ closed. Tests:
 - `a_dry_run_counts_against_the_write_cap`.
 - `an_idempotent_retry_is_not_a_new_write`.
 - `a_service_built_by_new_audits_nothing_and_serves_no_agent`.
+- Also: `an_agents_request_starts_submitted_and_an_operators_starts_allowed`,
+  `a_decision_records_what_it_read`,
+  `an_unreachable_receiver_is_reported_to_an_agent_without_detail`,
+  `an_audit_log_that_cannot_be_read_is_reported_without_its_text`,
+  `the_operator_reads_the_audit_log_through_the_port`,
+  `a_healthy_start_reports_every_part_working`, and, in `tests.rs`,
+  `the_administration_views_are_the_operators_alone_whatever_the_service_can_answer`,
+  which replaced the step 2 test of the same subject now that `health` and the
+  Operator's `dry_run` have answers on a service built by `new`.
 
 ### Step 6b — Agent path: dispatch
 
@@ -284,7 +293,7 @@ the inputs most likely to bite, most likely first. Each has a named test above.
 
 ## Exit status
 
-In progress: steps 0 to 5 are done.
+In progress: steps 0 to 6a are done.
 
 ## Known limits
 

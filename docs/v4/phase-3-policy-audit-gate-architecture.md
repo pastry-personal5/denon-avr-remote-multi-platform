@@ -366,9 +366,20 @@ optional cursor, and a cursor continues a newest-first listing.
 endpoints; it carries coarse states and no paths or error text. `DryRun` for the
 Operator's own principal is `Allow` with no rules, since the Operator skips policy.
 `dry_run_as` lets the owner test a policy before an agent meets it; milestone 5
-maps the CLI's `--dry-run` to it with the label named. A dry run leases the
-receiver, evaluates, and creates no operation and no record, but it counts against
-the write cap because it connects the receiver.
+maps the CLI's `--dry-run` to it with the label named. An agent's dry run leases
+the receiver, evaluates, and creates no operation and no record, but it counts
+against that agent's write cap because it connects the receiver. The Operator's
+`dry_run_as` does not, so testing a tier never spends the agent's allowance.
+
+On a service built by `new`, `health` answers `NotConfigured` for the policy and
+the audit log and `ledger_ready: false`, the Operator's `dry_run` answers `Allow`,
+and `policy`, `reload_policy`, `audit`, and `dry_run_as` answer `Unavailable`,
+because there is nothing to report on. An agent is refused a handle altogether.
+
+What an agent is told is fixed text: "policy unavailable", "the budget history is
+not available", "audit log unavailable", "the receiver could not be reached", and
+the sentences of the limits that fired. Rule ids, file paths, audit error text, and
+the receiver's address stay in the audit log and the Operator's views.
 
 `OperationSnapshot` is unchanged. Its `reason` is text built from the `Reason`
 values, which names the limit that fired; rule ids appear in the audit log, in
@@ -431,6 +442,13 @@ logic is in `service/agent.rs`, which returns either `Stop(resolution)` or
 7. `finish`; the ledger entry settles by `dispatch`; `Finished` appends as
    `Flushed`. A failed append marks audit failing and changes nothing the caller
    sees.
+
+Every agent operation ends with a `Finished` record, a refusal included, so the log
+shows each request's outcome; the rebuild ignores a `Finished` with no
+`Dispatching`. A request refused by a cap creates no operation and no record.
+The caps are checked after the lookups that find a retry, so a retry is never
+refused, and `unfinished_operations` counts the label's operations that have not
+reached a terminal status.
 
 The Operator path keeps its steps, and on a service built by `start` adds the
 `Decided`, `Dispatching`, and `Finished` records (each a warning on failure, not a

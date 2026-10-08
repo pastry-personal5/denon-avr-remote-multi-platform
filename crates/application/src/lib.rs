@@ -28,7 +28,7 @@ pub use control::{
 pub use policy_source::{
     LoadedPolicy, PolicyDigest, PolicyLoadError, PolicySource, SharedPolicySource,
 };
-pub use service::{ControlService, ServiceConfig, ServiceHandle};
+pub use service::{AgentLimits, AgentPath, ControlService, ServiceConfig, ServiceHandle};
 pub use session_v3::{
     CanonicalReceiverSession, OperationRequest, Readiness, SharedReceiverSession, StateSubscription,
 };
