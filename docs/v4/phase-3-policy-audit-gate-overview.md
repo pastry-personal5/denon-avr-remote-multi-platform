@@ -1,7 +1,7 @@
 # Version 4, Phase 3 — Policy, audit, and the Agent path
 
 **Planned and reviewed, 2026-10-08; in progress on the branch
-`v4/phase-3-policy-audit-gate`.** Steps 0 to 4 are
+`v4/phase-3-policy-audit-gate`.** Steps 0 to 5 are
 done; the [steps](#steps) table has the state of each. This is milestone 3 of the
 [roadmap](roadmap.md). It adds the `policy`
 crate, the audit log, and the Agent path through the Operation Gate, all in
@@ -34,7 +34,7 @@ the script fails if either half lands alone.
 | 2 | Port additions: dry run, health, policy and audit views | Done |
 | 3 | `Clock` and audit ports; JSON Lines adapter | Done |
 | 4 | Policy loading, digest, sample file | Done |
-| 5 | Ledger | Planned |
+| 5 | Ledger | Done |
 | 6a | Gate: Agent path, evaluation, and fail-closed outcomes | Planned |
 | 6b | Gate: dispatch with the precondition, audit order, live test | Planned |
 | 7 | Promote to `ARCHITECTURE.md`; exit | Planned |
@@ -163,7 +163,15 @@ change the constant in the test.
 `rebuild_drops_a_finished_not_dispatched`, `rebuild_ignores_finished_without_dispatching`,
 `rebuild_counts_operator_volume_writes`,
 `two_runs_with_the_same_operation_id_do_not_collide`,
-`a_future_dated_entry_is_never_pruned`, `entries_older_than_24_hours_are_pruned`.
+`a_future_dated_entry_still_counts_and_is_never_pruned`,
+`entries_older_than_24_hours_are_pruned` (an entry exactly 24 hours old stays),
+and: `recent_returns_what_is_inside_the_window_oldest_first`,
+`rebuild_keeps_every_finish_that_may_have_written`,
+`rebuild_does_not_pair_a_finish_from_another_run`,
+`rebuild_counts_only_volume_writes_inside_the_day`,
+`rebuild_of_a_volume_it_cannot_read_assumes_the_lowest_level` (a level off the
+scale reads as the lowest, which makes the budget harder to stay inside), and
+`a_rebuilt_ledger_answers_as_the_live_one_did`.
 
 ### Step 6a — Agent path: evaluation and refusals
 
@@ -276,7 +284,7 @@ the inputs most likely to bite, most likely first. Each has a named test above.
 
 ## Exit status
 
-In progress: steps 0 to 4 are done.
+In progress: steps 0 to 5 are done.
 
 ## Known limits
 
