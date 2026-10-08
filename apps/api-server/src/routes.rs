@@ -6,6 +6,7 @@
 //! do what: the handle does, and the Agent endpoint has only the shared routes.
 
 use crate::endpoint::EndpointContext;
+use crate::events;
 use crate::pipeline::{authenticate, json_response, respond, ApiFailure, Authenticated, ConnInfo};
 use axum::extract::{Path, Query, Request, State};
 use axum::http::{header, HeaderValue, StatusCode};
@@ -49,9 +50,7 @@ pub(crate) fn router(context: Context) -> Router {
     let operator = context.kind == EndpointKind::Operator;
     let mut router: Router<Context> = Router::new();
     for route in served_to(operator) {
-        if let Some(handler) = handler_for(route.id) {
-            router = router.route(route.pattern, handler);
-        }
+        router = router.route(route.pattern, handler_for(route.id));
     }
     router
         .fallback(not_found)
@@ -62,8 +61,8 @@ pub(crate) fn router(context: Context) -> Router {
 
 /// The handler of each row of the table. There is no wildcard arm, so a new row
 /// does not compile until it is listed here.
-fn handler_for(id: RouteId) -> Option<MethodRouter<Context>> {
-    Some(match id {
+fn handler_for(id: RouteId) -> MethodRouter<Context> {
+    match id {
         RouteId::Health => get(health),
         RouteId::Receivers => get(receivers),
         RouteId::State => get(state),
@@ -85,9 +84,9 @@ fn handler_for(id: RouteId) -> Option<MethodRouter<Context>> {
         RouteId::TokenIssue => post(token_issue),
         RouteId::TokenList => get(token_list),
         RouteId::TokenRevoke => delete(token_revoke),
-        // The event streams are not served yet.
-        RouteId::StateEvents | RouteId::OperationEvents => return None,
-    })
+        RouteId::StateEvents => get(state_events),
+        RouteId::OperationEvents => get(operation_events),
+    }
 }
 
 // ---- Reading a request ----
@@ -309,8 +308,46 @@ async fn operation(
 ) -> Reply {
     let id = operation_id(&id)?;
     let wait = query.wait_ms.map(Duration::from_millis);
-    let snapshot = handle(&context, who)?.operation(id, wait).await?;
+    let token = who.token.clone();
+    let handle = handle(&context, who)?;
+    // A wait is held for as long as thirty seconds, so a token revoked meanwhile
+    // ends it rather than waiting for it to finish.
+    let snapshot = tokio::select! {
+        biased;
+        () = events::revoked(&context, token.as_ref()) => {
+            return Err(ApiError::unauthenticated().into());
+        }
+        snapshot = handle.operation(id, wait) => snapshot?,
+    };
     ok(&OperationDto::from(&snapshot))
+}
+
+/// A receiver's state as a stream. The subscription is taken first, so a receiver
+/// that cannot be reached is a status code and not a stream that ends at once.
+async fn state_events(
+    State(context): State<Context>,
+    Extension(who): Extension<Authenticated>,
+    Path(id): Path<String>,
+) -> Reply {
+    let id = receiver(&id)?;
+    // The place is taken before the receiver is opened, so a principal that is at
+    // its cap does not open a connection it will not use.
+    let slot = context
+        .streams
+        .open(&who, context.limits.streams_per_principal)?;
+    let subscription = handle(&context, who.clone())?.state(&id).await?;
+    Ok(events::state_stream(context, who, subscription, slot))
+}
+
+async fn operation_events(
+    State(context): State<Context>,
+    Extension(who): Extension<Authenticated>,
+) -> Reply {
+    let slot = context
+        .streams
+        .open(&who, context.limits.streams_per_principal)?;
+    let stream = handle(&context, who.clone())?.operation_events().await?;
+    Ok(events::operation_stream(context, who, stream, slot))
 }
 
 async fn cancel(

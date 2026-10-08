@@ -461,8 +461,9 @@ handler.
    `DefaultBodyLimit` acts only when an extractor reads the body, and sets that limit
    as well. A validation error names the field and never echoes the body.
 6. `service.handle(principal)`, the port call, and the error mapping above. A
-   request's total time is capped at `max_operation_wait` plus five seconds; an
-   event stream is exempt.
+   request's total time is capped at `max_operation_wait` plus five seconds. For an
+   event stream the cap covers the time until the stream begins; the stream, once it
+   is a body, is bounded by its own limits below.
 
 ### Streams and waits
 

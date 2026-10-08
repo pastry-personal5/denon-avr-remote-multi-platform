@@ -34,6 +34,8 @@ pub struct EndpointContext {
     pub shutdown: watch::Receiver<bool>,
     /// One configuration write at a time, from the comparison to the save.
     pub config_lock: tokio::sync::Mutex<()>,
+    /// The event streams each principal holds open on this endpoint.
+    pub streams: Arc<crate::events::Streams>,
 }
 
 /// Whether a peer is served. The uid is read from the connection by the operating

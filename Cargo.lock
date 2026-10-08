@@ -749,6 +749,7 @@ dependencies = [
  "denon-avr-application",
  "denon-avr-domain",
  "denon-avr-infrastructure",
+ "futures-util",
  "http-body-util",
  "hyper",
  "hyper-util",

@@ -42,7 +42,7 @@ is the owner's; it gates step 9 only.
 | 4 | Token store | Done |
 | 5 | `api-server`: start, lock, both endpoints, request pipeline | Done |
 | 6 | `api-server`: the routes and the refusal matrix | Done |
-| 7 | Event streams, waits, and revocation | Not started |
+| 7 | Event streams, waits, and revocation | Done |
 | 8 | `api-client` and the port conformance run | Not started |
 | 9 | Enable the Agent endpoint from settings (needs 0b) | Not started |
 | 10 | Process model, live test | Not started |
@@ -379,12 +379,18 @@ Tests, on both endpoints:
 - `no_address_reaches_an_agent_in_a_state_stream`.
 - `a_slow_client_sees_the_newest_state_and_never_a_backlog`.
 - `a_missed_operation_event_is_reported_and_the_operation_can_be_read`.
-- `a_keep_alive_is_written_every_fifteen_seconds` (paused clock).
+- `a_keep_alive_is_written_every_fifteen_seconds`, which pins the defaults (15 s
+  keep-alive, 10 s send timeout, 10 min maximum age, four streams), and
+  `a_quiet_stream_is_written_to_at_the_keep_alive_interval`, which watches a shortened
+  interval. The limits are fields of `Limits`, so no test waits out a real one: a
+  paused clock does not hold still while a test also uses real sockets.
 - `a_stalled_client_is_dropped_after_ten_seconds_and_the_receiver_is_released`: the
   fake connector counts open sessions; with state changing, the stream is dropped when
-  a send times out and, after the idle time, the count is zero.
+  a send times out and, after the idle time, the count is zero (with the timeout
+  shortened).
 - `a_stalled_client_on_a_quiet_receiver_is_released_when_the_stream_reaches_its_maximum_age`
-  (paused clock): no event is produced, the send timeout never fires, and an Agent's
+  (with the maximum age shortened): no event is produced, the send timeout never
+  fires, and an Agent's
   state stream ends with `max_age` at ten minutes. The Operator's does not, and
   `an_operator_state_stream_has_no_maximum_age` says so.
 - `the_parser_reads_what_the_server_writes`: the bytes of each event kind, captured

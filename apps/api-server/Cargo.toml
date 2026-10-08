@@ -17,6 +17,7 @@ denon-avr-domain = { path = "../../crates/domain" }
 denon-avr-infrastructure = { path = "../../crates/infrastructure" }
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio"] }
 bytes = "1"
+futures-util = { version = "0.3", default-features = false }
 http-body-util = "0.1"
 hyper = { version = "1", features = ["http1", "server"] }
 hyper-util = { version = "0.1", features = ["tokio", "service"] }

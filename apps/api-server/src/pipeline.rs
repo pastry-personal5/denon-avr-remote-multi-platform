@@ -200,10 +200,9 @@ pub async fn authenticate(
     }
     request.extensions_mut().insert(authenticated);
 
-    let streaming = request.uri().path().ends_with("/events");
-    let response = if streaming {
-        next.run(request).await
-    } else {
+    // Time is allowed for the handler to answer, which for an event stream is until
+    // the stream begins. The stream itself, once it is a body, is not timed.
+    let response =
         match tokio::time::timeout(context.limits.request_timeout, next.run(request)).await {
             Ok(response) => response,
             Err(_) => respond(ApiError::server(
@@ -211,8 +210,7 @@ pub async fn authenticate(
                 "request_timeout",
                 "the request took too long to answer",
             )),
-        }
-    };
+        };
     tidy(response)
 }
 

@@ -99,6 +99,9 @@ pub struct FakeSession {
     pub states: watch::Sender<ReceiverState>,
     pub calls: Mutex<Vec<OperationRequest>>,
     pub closed: AtomicBool,
+    /// While false, a write waits: an operation that is in the session and has not
+    /// finished.
+    gate: watch::Receiver<bool>,
 }
 
 impl FakeSession {
@@ -155,6 +158,8 @@ impl CanonicalReceiverSession for FakeSession {
     fn operate(&self, request: OperationRequest) -> BoxFuture<'_, OperationOutcome> {
         Box::pin(async move {
             locked(&self.calls).push(request.clone());
+            let mut gate = self.gate.clone();
+            let _ = gate.wait_for(|open| *open).await;
             if let Some(precondition) = &request.precondition {
                 if let Some(mismatch) = precondition.mismatch(&self.states.borrow()) {
                     return OperationOutcome::RejectedBeforeDispatch {
@@ -229,6 +234,7 @@ pub struct FakeConnector {
     pub initial: Mutex<ReceiverState>,
     /// When set, a connection fails with this text, as an unreachable receiver does.
     pub fail: Mutex<Option<String>>,
+    gate: watch::Sender<bool>,
 }
 
 impl FakeConnector {
@@ -238,7 +244,18 @@ impl FakeConnector {
             opens: AtomicUsize::new(0),
             initial: Mutex::new(receiver_state(volume_db)),
             fail: Mutex::new(None),
+            gate: watch::channel(true).0,
         })
+    }
+
+    /// From now on a write reaches the receiver and waits there, so an operation
+    /// stays in the session until [`FakeConnector::release_operations`].
+    pub fn hold_operations(&self) {
+        self.gate.send_replace(false);
+    }
+
+    pub fn release_operations(&self) {
+        self.gate.send_replace(true);
     }
 
     /// Sessions opened and not yet closed.
@@ -282,6 +299,7 @@ impl ReceiverConnector for FakeConnector {
                 states: watch::channel(state).0,
                 calls: Mutex::new(Vec::new()),
                 closed: AtomicBool::new(false),
+                gate: self.gate.subscribe(),
             });
             locked(&self.sessions).push(Arc::clone(&session));
             Ok(session as SharedReceiverSession)
@@ -364,6 +382,8 @@ pub struct Options {
     pub policy: &'static str,
     /// Audit files this small rotate, to show what a flood would do.
     pub audit_limits: Option<denon_avr_infrastructure::AuditLimits>,
+    /// The longest the service holds a wait for an operation, when not its default.
+    pub max_operation_wait: Option<Duration>,
 }
 
 impl Default for Options {
@@ -374,6 +394,7 @@ impl Default for Options {
             volume_db: -35.0,
             policy: OWNERS_POLICY,
             audit_limits: None,
+            max_operation_wait: None,
         }
     }
 }
@@ -426,6 +447,9 @@ impl Fixture {
                 discovery.clone(),
                 ServiceConfig {
                     idle_release: Duration::from_millis(200),
+                    max_operation_wait: options
+                        .max_operation_wait
+                        .unwrap_or(ServiceConfig::default().max_operation_wait),
                     ..ServiceConfig::default()
                 },
                 AgentPath {
@@ -640,4 +664,245 @@ pub async fn audit_records(fixture: &Fixture) -> Vec<denon_avr_application::Audi
         .into_iter()
         .map(|entry| entry.record)
         .collect()
+}
+
+// ---- A client for the event streams ----
+
+/// Undoes HTTP/1.1 chunked transfer coding, which is how the server writes a body
+/// of no known length.
+#[derive(Default)]
+struct Chunked {
+    buffer: Vec<u8>,
+    remaining: usize,
+    state: ChunkState,
+}
+
+#[derive(Default, PartialEq)]
+enum ChunkState {
+    #[default]
+    Size,
+    Data,
+    DataEnd,
+    Done,
+}
+
+impl Chunked {
+    fn push(&mut self, bytes: &[u8]) -> Vec<u8> {
+        self.buffer.extend_from_slice(bytes);
+        let mut out = Vec::new();
+        loop {
+            match self.state {
+                ChunkState::Size => {
+                    let Some(end) = self.buffer.windows(2).position(|pair| pair == b"\r\n") else {
+                        break;
+                    };
+                    let line = String::from_utf8_lossy(&self.buffer[..end]).into_owned();
+                    self.buffer.drain(..end + 2);
+                    let size = line.split(';').next().unwrap_or("").trim();
+                    let size = usize::from_str_radix(size, 16)
+                        .unwrap_or_else(|_| panic!("a chunk size, not {size:?}"));
+                    if size == 0 {
+                        self.state = ChunkState::Done;
+                    } else {
+                        self.remaining = size;
+                        self.state = ChunkState::Data;
+                    }
+                }
+                ChunkState::Data => {
+                    let take = self.remaining.min(self.buffer.len());
+                    if take == 0 {
+                        break;
+                    }
+                    out.extend(self.buffer.drain(..take));
+                    self.remaining -= take;
+                    if self.remaining == 0 {
+                        self.state = ChunkState::DataEnd;
+                    }
+                }
+                ChunkState::DataEnd => {
+                    if self.buffer.len() < 2 {
+                        break;
+                    }
+                    self.buffer.drain(..2);
+                    self.state = ChunkState::Size;
+                }
+                ChunkState::Done => break,
+            }
+        }
+        out
+    }
+
+    fn done(&self) -> bool {
+        self.state == ChunkState::Done
+    }
+}
+
+/// What a stream's client saw when it looked.
+#[derive(Debug)]
+pub enum Next {
+    Event(denon_avr_api_contract::events::Event),
+    /// The stream is over: its body ended or the server closed the connection.
+    Closed,
+    /// Nothing arrived in the time given.
+    Quiet,
+}
+
+/// A connection reading `text/event-stream`, with the bytes it has read.
+pub struct Stream {
+    connection: UnixStream,
+    chunks: Chunked,
+    parser: denon_avr_api_contract::events::Parser,
+    queue: std::collections::VecDeque<denon_avr_api_contract::events::Event>,
+    /// The body as the server wrote it, with the chunk coding removed.
+    pub body: Vec<u8>,
+    pub headers: Vec<(String, String)>,
+    closed: bool,
+}
+
+impl Stream {
+    /// Open a stream, or return the error response that was sent instead.
+    pub async fn open(socket: &Path, path: &str, token: &str) -> Result<Self, Reply> {
+        let mut connection = UnixStream::connect(socket).await.expect("connect");
+        let head = format!(
+            "GET {path} HTTP/1.1\r\nHost: dar\r\nAuthorization: Bearer {token}\r\n\
+             Accept: text/event-stream\r\n\r\n"
+        );
+        connection
+            .write_all(head.as_bytes())
+            .await
+            .expect("write the request");
+        let mut raw = Vec::new();
+        let split = loop {
+            if let Some(split) = raw.windows(4).position(|window| window == b"\r\n\r\n") {
+                break split;
+            }
+            let mut buffer = [0u8; 4096];
+            let read = tokio::time::timeout(Duration::from_secs(5), connection.read(&mut buffer))
+                .await
+                .expect("a response head within five seconds")
+                .expect("read");
+            assert!(read > 0, "the connection closed before a response head");
+            raw.extend_from_slice(&buffer[..read]);
+        };
+        let rest = raw.split_off(split + 4);
+        let reply = parse_reply(&raw).expect("a response head");
+        if reply.status != 200 {
+            let length: usize = reply
+                .header("content-length")
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(0);
+            let mut body = rest;
+            while body.len() < length {
+                let mut buffer = [0u8; 4096];
+                let read = connection.read(&mut buffer).await.expect("read");
+                if read == 0 {
+                    break;
+                }
+                body.extend_from_slice(&buffer[..read]);
+            }
+            return Err(Reply { body, ..reply });
+        }
+        let mut stream = Self {
+            connection,
+            chunks: Chunked::default(),
+            parser: denon_avr_api_contract::events::Parser::new(),
+            queue: Default::default(),
+            body: Vec::new(),
+            headers: reply.headers,
+            closed: false,
+        };
+        stream.feed(&rest);
+        Ok(stream)
+    }
+
+    pub fn header(&self, name: &str) -> Option<&str> {
+        self.headers
+            .iter()
+            .find(|(key, _)| key.eq_ignore_ascii_case(name))
+            .map(|(_, value)| value.as_str())
+    }
+
+    fn feed(&mut self, bytes: &[u8]) {
+        let decoded = self.chunks.push(bytes);
+        self.body.extend_from_slice(&decoded);
+        let events = self
+            .parser
+            .push(&decoded)
+            .expect("the server writes events");
+        self.queue.extend(events);
+        if self.chunks.done() {
+            self.closed = true;
+        }
+    }
+
+    /// The next event, waiting up to `within` for it.
+    pub async fn next(&mut self, within: Duration) -> Next {
+        let deadline = tokio::time::Instant::now() + within;
+        loop {
+            if let Some(event) = self.queue.pop_front() {
+                return Next::Event(event);
+            }
+            if self.closed {
+                return Next::Closed;
+            }
+            let mut buffer = [0u8; 4096];
+            match tokio::time::timeout_at(deadline, self.connection.read(&mut buffer)).await {
+                Err(_) => return Next::Quiet,
+                Ok(Ok(0)) | Ok(Err(_)) => self.closed = true,
+                Ok(Ok(read)) => self.feed(&buffer[..read]),
+            }
+        }
+    }
+
+    /// The next event, which the test expects to be there soon.
+    pub async fn event(&mut self) -> denon_avr_api_contract::events::Event {
+        match self.next(Duration::from_secs(5)).await {
+            Next::Event(event) => event,
+            other => panic!("expected an event, saw {other:?}"),
+        }
+    }
+
+    /// The next event, which must be `name`.
+    pub async fn event_named(
+        &mut self,
+        name: denon_avr_api_contract::events::EventName,
+    ) -> denon_avr_api_contract::events::Event {
+        let event = self.event().await;
+        assert_eq!(event.name, name, "data: {}", event.data);
+        event
+    }
+
+    /// Read until the stream ends, and return its last event.
+    pub async fn last_event(&mut self) -> Option<denon_avr_api_contract::events::Event> {
+        let mut last = None;
+        loop {
+            match self.next(Duration::from_secs(5)).await {
+                Next::Event(event) => last = Some(event),
+                Next::Closed => return last,
+                Next::Quiet => panic!("the stream did not end"),
+            }
+        }
+    }
+
+    /// Whether the stream is still open and silent for `within`.
+    pub async fn stays_quiet(&mut self, within: Duration) -> bool {
+        matches!(self.next(within).await, Next::Quiet)
+    }
+
+    /// Lines of the body that are comments, which is how a keep-alive is written.
+    pub fn comments(&self) -> usize {
+        String::from_utf8_lossy(&self.body)
+            .lines()
+            .filter(|line| line.starts_with(':'))
+            .count()
+    }
+}
+
+/// The reason in an `end` event.
+pub fn end_reason(event: &denon_avr_api_contract::events::Event) -> String {
+    assert_eq!(event.name, denon_avr_api_contract::events::EventName::End);
+    event.decode::<Value>().unwrap()["reason"]
+        .as_str()
+        .unwrap()
+        .to_owned()
 }

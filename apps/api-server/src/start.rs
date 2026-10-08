@@ -48,6 +48,14 @@ pub struct Limits {
     pub request_timeout: Duration,
     /// Event streams one principal may hold open.
     pub streams_per_principal: usize,
+    /// How often a stream is written to when it has nothing to say, which is how a
+    /// client that has closed its end is found.
+    pub keep_alive: Duration,
+    /// How long a stream waits for its client to take one event before it is
+    /// dropped and its receiver released.
+    pub send_timeout: Duration,
+    /// How long an Agent's state stream lives before the client subscribes again.
+    pub agent_stream_max_age: Duration,
     /// How long shutdown waits for open connections to finish.
     pub grace: Duration,
 }
@@ -64,6 +72,9 @@ impl Default for Limits {
             config_body_limit: 1024 * 1024,
             request_timeout: Duration::from_secs(35),
             streams_per_principal: 4,
+            keep_alive: Duration::from_secs(15),
+            send_timeout: Duration::from_secs(10),
+            agent_stream_max_age: Duration::from_secs(10 * 60),
             grace: Duration::from_secs(5),
         }
     }
@@ -232,6 +243,7 @@ impl Server {
                 server_health: server_health.clone(),
                 shutdown: shutdown_rx.clone(),
                 config_lock: tokio::sync::Mutex::new(()),
+                streams: Arc::default(),
             });
             tasks.push(endpoint::spawn(listener, context, semaphore));
         };
