@@ -332,3 +332,219 @@ fn default_limits_are_the_documented_ones() {
     assert_eq!(limits.request_timeout, Duration::from_secs(35));
     assert_eq!(limits.streams_per_principal, 4);
 }
+
+// ---- Shutdown, with the real binary ----
+
+/// The binary, running on a data directory of its own.
+struct Running {
+    child: std::process::Child,
+    root: Arc<TempDir>,
+    socket: std::path::PathBuf,
+}
+
+impl Running {
+    async fn start(parent_pipe: bool) -> Self {
+        let root = Arc::new(TempDir::new("bin"));
+        let paths = EndpointPaths::under(&root.0);
+        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_denon-avr-api-server"));
+        command.arg("--data-dir").arg(&root.0);
+        if parent_pipe {
+            command.arg("--exit-with-parent");
+        }
+        let child = command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("the server binary starts");
+        let socket = paths.operator_socket;
+        wait_for("the server's socket", || socket.exists()).await;
+        Self {
+            child,
+            root,
+            socket,
+        }
+    }
+
+    fn token(&self) -> String {
+        std::fs::read_to_string(EndpointPaths::under(&self.root.0).operator_token)
+            .unwrap()
+            .trim()
+            .to_owned()
+    }
+
+    fn signal(&self, name: &str) {
+        let status = std::process::Command::new("kill")
+            .arg(format!("-{name}"))
+            .arg(self.child.id().to_string())
+            .status()
+            .expect("kill runs");
+        assert!(status.success());
+    }
+
+    /// Wait for the process to exit.
+    async fn exit(&mut self, within: Duration) -> std::process::ExitStatus {
+        let deadline = std::time::Instant::now() + within;
+        loop {
+            if let Some(status) = self.child.try_wait().unwrap() {
+                return status;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the server did not exit within {within:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    }
+
+    /// Whether the lock is free, which it is only when no server holds it.
+    fn lock_is_free(&self) -> bool {
+        let lock = EndpointPaths::under(&self.root.0).lock_file;
+        std::fs::File::open(lock)
+            .map(|file| file.try_lock().is_ok())
+            .unwrap_or(true)
+    }
+}
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+#[tokio::test]
+async fn end_of_input_in_parent_pipe_mode_shuts_down_removes_the_sockets_and_frees_the_lock() {
+    let mut server = Running::start(true).await;
+    assert!(!server.lock_is_free(), "a running server holds the lock");
+
+    // The parent goes away: the pipe it held closes.
+    drop(server.child.stdin.take());
+    let status = server.exit(Duration::from_secs(10)).await;
+    assert!(status.success(), "{status:?}");
+    assert!(!server.socket.exists(), "the socket is removed");
+    assert!(server.lock_is_free(), "the lock is released");
+}
+
+#[tokio::test]
+async fn a_standalone_server_ignores_standard_input() {
+    let mut server = Running::start(false).await;
+    drop(server.child.stdin.take());
+    tokio::time::sleep(Duration::from_millis(1_000)).await;
+    assert!(
+        server.child.try_wait().unwrap().is_none(),
+        "the server stopped when its standard input closed"
+    );
+    let token = server.token();
+    assert_eq!(get(&server.socket, "/v1/health", &token).await.status, 200);
+
+    server.signal("TERM");
+    assert!(server.exit(Duration::from_secs(10)).await.success());
+}
+
+#[tokio::test]
+async fn sigterm_and_sigint_shut_down_the_same_way() {
+    for name in ["TERM", "INT"] {
+        let mut server = Running::start(false).await;
+        server.signal(name);
+        let status = server.exit(Duration::from_secs(10)).await;
+        assert!(status.success(), "SIG{name}: {status:?}");
+        assert!(!server.socket.exists(), "SIG{name}: the socket is removed");
+        assert!(server.lock_is_free(), "SIG{name}: the lock is released");
+    }
+}
+
+#[tokio::test]
+async fn a_second_signal_exits_at_once() {
+    use tokio::io::AsyncWriteExt;
+    let mut server = Running::start(false).await;
+    let token = server.token();
+
+    // A request whose body never arrives keeps its connection busy, so the first
+    // signal's shutdown has something to wait for.
+    let mut busy = tokio::net::UnixStream::connect(&server.socket)
+        .await
+        .unwrap();
+    let head = format!(
+        "POST /v1/receivers/living-room/operations HTTP/1.1\r\nHost: dar\r\n\
+         Authorization: Bearer {token}\r\nContent-Type: application/json\r\n\
+         Content-Length: 100\r\n\r\n{{"
+    );
+    busy.write_all(head.as_bytes()).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    server.signal("TERM");
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(
+        server.child.try_wait().unwrap().is_none(),
+        "the first signal waits for the busy connection"
+    );
+
+    let started = std::time::Instant::now();
+    server.signal("TERM");
+    let status = server.exit(Duration::from_secs(3)).await;
+    assert_eq!(status.code(), Some(128 + 15), "{status:?}");
+    assert!(started.elapsed() < Duration::from_secs(2));
+    drop(busy);
+}
+
+#[tokio::test]
+async fn a_shutdown_while_a_client_streams_ends_the_stream_with_an_end_event() {
+    let mut server = Running::start(false).await;
+    let token = server.token();
+    let mut stream = Stream::open(&server.socket, "/v1/operations/events", &token)
+        .await
+        .map_err(|reply| reply.text())
+        .expect("the stream opens");
+
+    server.signal("TERM");
+    let end = stream.last_event().await.expect("an end event");
+    assert_eq!(end_reason(&end), "shutdown");
+    assert!(server.exit(Duration::from_secs(10)).await.success());
+}
+
+#[tokio::test]
+async fn shutdown_waits_for_operations_in_flight_before_closing_sessions() {
+    let fixture = Fixture::start(Options::default()).await;
+    let agent = fixture.agent_token("openclaw").await;
+    let socket = fixture.agent_socket().to_owned();
+    fixture.connector.hold_operations();
+    let body = br#"{"intent":{"kind":"mute","value":"on"}}"#;
+    let made = request(
+        &socket,
+        "POST",
+        "/v1/receivers/living-room/operations",
+        Some(&agent),
+        Some(body),
+    )
+    .await;
+    assert_eq!(made.status, 200, "{}", made.text());
+    let id = made.json()["id"].as_u64().unwrap();
+    let operation = format!("/v1/operations/{id}");
+    for _ in 0..200 {
+        if get(&socket, &operation, &agent).await.json()["status"] == "in_session" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let session = fixture.connector.latest();
+    let connector = fixture.connector.clone();
+
+    let shutdown = tokio::spawn(fixture.shutdown());
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert!(
+        !shutdown.is_finished(),
+        "shutdown did not wait for the operation"
+    );
+    assert!(
+        !session.closed.load(std::sync::atomic::Ordering::SeqCst),
+        "the session was closed under an operation in flight"
+    );
+
+    connector.release_operations();
+    tokio::time::timeout(Duration::from_secs(10), shutdown)
+        .await
+        .expect("shutdown finishes once the operation has")
+        .unwrap();
+    assert!(session.closed.load(std::sync::atomic::Ordering::SeqCst));
+}

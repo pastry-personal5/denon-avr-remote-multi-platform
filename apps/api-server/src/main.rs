@@ -2,6 +2,7 @@
 //! control service, and serves until it is told to stop.
 
 use denon_avr_api_contract::EndpointPaths;
+use denon_avr_api_server::shutdown::{parent_gone, Reason, Signals};
 use denon_avr_api_server::{Limits, Server, ServerConfig, StartError};
 use denon_avr_application::{AgentLimits, AgentPath, ControlService, ServiceConfig};
 use denon_avr_infrastructure::{
@@ -17,10 +18,14 @@ const ALREADY_RUNNING: u8 = 75;
 
 struct Arguments {
     data_directory: PathBuf,
+    /// Stop when standard input ends, because the process that started the server
+    /// held its other end.
+    exit_with_parent: bool,
 }
 
 fn arguments() -> Result<Arguments, String> {
     let mut data = None;
+    let mut exit_with_parent = false;
     let mut args = std::env::args().skip(1);
     while let Some(argument) = args.next() {
         match argument.as_str() {
@@ -29,16 +34,35 @@ fn arguments() -> Result<Arguments, String> {
                     args.next().ok_or("--data-dir needs a directory")?,
                 ));
             }
+            "--exit-with-parent" => exit_with_parent = true,
             other => return Err(format!("unknown argument {other:?}")),
         }
     }
     Ok(Arguments {
         data_directory: data.unwrap_or_else(data_directory),
+        exit_with_parent,
     })
 }
 
-#[tokio::main]
-async fn main() -> ExitCode {
+fn main() -> ExitCode {
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            eprintln!("denon-avr-api-server: {error}");
+            return ExitCode::from(1);
+        }
+    };
+    let code = runtime.block_on(run());
+    // A read of standard input may still be waiting in the runtime's thread pool,
+    // and it must not hold the process after the server has shut down.
+    runtime.shutdown_background();
+    code
+}
+
+async fn run() -> ExitCode {
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
         .with_env_filter(
@@ -50,6 +74,13 @@ async fn main() -> ExitCode {
         Err(error) => {
             eprintln!("denon-avr-api-server: {error}");
             return ExitCode::from(2);
+        }
+    };
+    let mut signals = match Signals::install() {
+        Ok(signals) => signals,
+        Err(error) => {
+            eprintln!("denon-avr-api-server: cannot watch for signals: {error}");
+            return ExitCode::from(1);
         }
     };
     let data = arguments.data_directory;
@@ -104,7 +135,18 @@ async fn main() -> ExitCode {
             return ExitCode::from(1);
         }
     };
-    let _ = tokio::signal::ctrl_c().await;
+    let reason = tokio::select! {
+        signal = signals.next() => Reason::Signal(signal),
+        () = parent_gone(), if arguments.exit_with_parent => Reason::ParentGone,
+    };
+    tracing::info!(?reason, "shutting down");
+    // A signal while the shutdown runs means now: the operator is not waiting for
+    // operations to finish.
+    tokio::spawn(async move {
+        let signal = signals.next().await;
+        eprintln!("denon-avr-api-server: stopped at once on a second signal");
+        std::process::exit(128 + signal);
+    });
     running.shutdown().await;
     ExitCode::SUCCESS
 }

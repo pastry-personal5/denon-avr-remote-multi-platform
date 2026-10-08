@@ -44,8 +44,8 @@ is the owner's; it gates step 9 only.
 | 6 | `api-server`: the routes and the refusal matrix | Done |
 | 7 | Event streams, waits, and revocation | Done |
 | 8 | `api-client` and the port conformance run | Done |
-| 9 | Enable the Agent endpoint from settings (needs 0b) | Not started |
-| 10 | Process model, live test | Not started |
+| 9 | Enable the Agent endpoint from settings (needs 0b) | Waiting for S2, the owner's hand check |
+| 10 | Process model, live test | Done; the live test is compiled, not run |
 | 11 | Promote and exit | Not started |
 
 The roadmap lists six steps; this phase splits them where a reviewer could reject one

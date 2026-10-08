@@ -14,6 +14,7 @@ pub mod endpoint;
 pub mod events;
 pub mod pipeline;
 pub mod routes;
+pub mod shutdown;
 pub mod start;
 
 pub use start::{AgentEndpointConfig, Limits, RunningServer, Server, ServerConfig, StartError};
