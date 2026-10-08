@@ -75,6 +75,12 @@ impl Ledger {
         }
     }
 
+    /// How many entries are stored, old ones included.
+    #[cfg(test)]
+    pub(crate) fn stored(&self) -> usize {
+        self.entries.values().map(Vec::len).sum()
+    }
+
     /// Take in what `other` holds. An operation both ledgers name is counted
     /// once. A ledger rebuilt late from the audit log absorbs the one that kept
     /// counting while it could not be rebuilt.

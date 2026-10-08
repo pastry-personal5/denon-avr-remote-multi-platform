@@ -385,6 +385,12 @@ impl AgentState {
         Ok(())
     }
 
+    /// How many entries the ledger holds, however old.
+    #[cfg(test)]
+    pub(super) fn stored(&self) -> usize {
+        locked(&self.books).ledger.stored()
+    }
+
     /// How many volume changes the ledger counts for `receiver`.
     #[cfg(test)]
     pub(super) fn counted(&self, receiver: &ReceiverId) -> usize {
@@ -483,6 +489,9 @@ impl AgentState {
         state: &ReceiverState,
         id: OperationId,
     ) -> Settlement {
+        // Entries last a day, so a service that runs for weeks does not keep, or
+        // scan, every write it has ever made.
+        gate.ledger.prune(now);
         let key = match intent {
             ReceiverIntent::Volume(target) => {
                 let key = OpKey::new(self.run, id);

@@ -1986,3 +1986,30 @@ async fn the_budget_forgets_changes_older_than_its_window() {
     let allowed = ask(&h.other("third"), set_volume(-38.0)).await;
     assert_eq!(allowed.status, OperationStatus::Completed);
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_running_service_forgets_what_is_older_than_a_day() {
+    let h = start(Setup {
+        volume_db: -50.0,
+        ..Setup::default()
+    })
+    .await;
+    let stored = |h: &AgentHarness| h.service.inner.agent.as_ref().unwrap().stored();
+
+    // A write counts, and is stored.
+    assert_eq!(
+        ask(&h.agent, set_volume(-44.0)).await.status,
+        OperationStatus::Completed
+    );
+    assert_eq!(stored(&h), 1);
+
+    // A day and an hour later, the next write finds it expired and drops it. The
+    // count by time alone would hide it, which is why the raw count is read.
+    h.clock.advance(Duration::from_secs(25 * 60 * 60));
+    assert_eq!(
+        ask(&h.agent, set_volume(-60.0)).await.status,
+        OperationStatus::Completed
+    );
+    assert_eq!(stored(&h), 1, "only the new write is kept");
+    assert_eq!(counted(&h), 1);
+}

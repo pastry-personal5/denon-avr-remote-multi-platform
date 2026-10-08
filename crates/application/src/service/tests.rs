@@ -170,12 +170,10 @@ impl FakeConnector {
     pub(super) fn start_in(&self, state: ReceiverState) {
         *locked(&self.initial) = Some(state);
     }
-    /// What a session does when it is asked to write; the dispatch tests use it.
-    #[allow(dead_code)]
+    /// What a session does when it is asked to write.
     pub(super) fn effect(&self, effect: Effect) {
         *locked(&self.effect) = Some(effect);
     }
-    #[allow(dead_code)]
     pub(super) fn order(&self, order: OrderLog) {
         *locked(&self.order) = Some(order);
     }
