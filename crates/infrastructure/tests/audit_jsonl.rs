@@ -304,10 +304,11 @@ async fn since_and_query_read_across_the_retained_files() {
 
     // Pages of four, followed by their cursors, are the same listing.
     let mut paged = Vec::new();
+    let mut sizes = Vec::new();
     let mut query = AuditQuery::new(4);
     loop {
         let page = log.query(query).await.unwrap();
-        assert!(page.entries.len() <= 4);
+        sizes.push(page.entries.len());
         paged.extend(page.entries.iter().map(|e| e.seq));
         match page.next {
             Some(cursor) => query = AuditQuery::new(4).after(cursor),
@@ -316,6 +317,23 @@ async fn since_and_query_read_across_the_retained_files() {
     }
     let all: Vec<u64> = retained.iter().rev().map(|(seq, _)| *seq).collect();
     assert_eq!(paged, all);
+    let (last, full) = sizes.split_last().unwrap();
+    assert!(
+        full.iter().all(|size| *size == 4),
+        "pages fill up: {sizes:?}"
+    );
+    assert!((1..=4).contains(last), "{sizes:?}");
+
+    // A page that holds everything left has no next; one short of it has.
+    let exact = log.query(AuditQuery::new(retained.len())).await.unwrap();
+    assert_eq!(exact.entries.len(), retained.len());
+    assert_eq!(exact.next, None);
+    let short = log
+        .query(AuditQuery::new(retained.len() - 1))
+        .await
+        .unwrap();
+    assert_eq!(short.entries.len(), retained.len() - 1);
+    assert!(short.next.is_some());
 }
 
 #[tokio::test]

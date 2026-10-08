@@ -218,6 +218,16 @@ bytes (`sha2`). It rejects `unclassified` other than `require_approval`,
 `or_unknown` other than `true`, limits off the grid, an `allow` rule with extra
 conditions, unknown keys (a time-of-day key among them), duplicate ids, and a
 file over 256 KiB. Errors name the rule id or the key and never the file contents.
+The loader also fixes what the design left open:
+
+- A file with nothing in it is a policy with no rules, which fails closed.
+- `or_unknown` may be left out and then means `true`; only `false` is refused.
+- `approval_lifetime_minutes` is a whole number from 1 to 1,440 and defaults to 5.
+- A rule names intents with `intent` (and `value`) or with `any`, not both, and a
+  `value` needs an `intent`.
+- A budget needs `rise_over_window_db` and `window_minutes` together.
+- The digest is of the bytes read, so a changed comment changes it.
+
 The port is `PolicySource::load() -> Result<LoadedPolicy, PolicyLoadError>` in
 `application::policy_source`, where `LoadedPolicy` holds the `PolicyConfig`, its
 `PolicyDigest`, and the text that was read (the Operator's `PolicyView` shows it).

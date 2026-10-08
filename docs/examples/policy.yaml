@@ -1,0 +1,58 @@
+# The owner's policy for agents. Copy it to `policy.yaml` beside
+# `denon-avr-remote.yaml` and edit it; nothing reads this file in place and no
+# value here is a default. Without a valid policy file every agent write is
+# refused.
+#
+# A rule matches a request when its intent, its value, and every condition it
+# names hold. The most restrictive matching rule wins: deny, then
+# require_approval. When no rule matches, a request is allowed only if some rule
+# that applies to the agent names its intent (an `allow` rule only does that),
+# and needs approval otherwise.
+#
+# Volume limits are in dB, on the 0.5 dB grid, from -80.0 to +18.0. Every limit
+# is strict: a target exactly at a limit is not over it. A condition that needs
+# the observed volume matches when the receiver reports none, or a stale one.
+#
+# Agent labels in `agents` match exactly, case and all. A label spelt
+# differently leaves that agent under the general rules.
+unclassified: require_approval
+agent:
+  approval_lifetime_minutes: 5
+  rules:
+    - id: volume-hard-limit
+      when: { intent: volume, target_above_db: -20.0 }
+      then: deny
+    - id: volume-ceiling
+      when: { intent: volume, target_above_db: -30.0 }
+      then: require_approval
+    - id: volume-step
+      when: { intent: volume, increase_over_baseline_db: 6.0 }
+      then: require_approval
+    - id: volume-budget
+      when: { intent: volume, rise_over_window_db: 10.0, window_minutes: 10 }
+      then: require_approval
+    - id: loud-or-unknown-baseline
+      when:
+        any:
+          - { intent: main_zone_power, value: on }
+          - { intent: mute, value: off }
+        baseline_volume: { above_db: -30.0, or_unknown: true }
+      then: require_approval
+    - id: system-power
+      when: { intent: system_power }
+      then: require_approval
+    - id: zone2-power
+      when: { intent: zone2_power }
+      then: require_approval
+    - id: low-risk
+      when:
+        any:
+          - { intent: main_zone_power, value: off }
+          - { intent: mute, value: on }
+          - { intent: source }
+          - { intent: sound_mode }
+      then: allow
+    # Narrowed to one label and naming no intent: deny every write for it.
+    # - id: claude-code-read-only
+    #   when: { agents: [claude-code] }
+    #   then: deny

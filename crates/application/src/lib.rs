@@ -24,7 +24,9 @@ pub use control::{
     OperatorControl, PolicyHealth, PolicyView, Principal, ReceiverCapabilities, ReceiverReads,
     ReceiverSummary, ServiceHealth, SharedAgentControl, SharedOperatorControl,
 };
-pub use policy_source::PolicyDigest;
+pub use policy_source::{
+    LoadedPolicy, PolicyDigest, PolicyLoadError, PolicySource, SharedPolicySource,
+};
 pub use service::{ControlService, ServiceConfig, ServiceHandle};
 pub use session_v3::{
     CanonicalReceiverSession, OperationRequest, Readiness, SharedReceiverSession, StateSubscription,

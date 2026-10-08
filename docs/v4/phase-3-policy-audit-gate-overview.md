@@ -1,7 +1,7 @@
 # Version 4, Phase 3 — Policy, audit, and the Agent path
 
 **Planned and reviewed, 2026-10-08; in progress on the branch
-`v4/phase-3-policy-audit-gate`.** Steps 0 to 3 are
+`v4/phase-3-policy-audit-gate`.** Steps 0 to 4 are
 done; the [steps](#steps) table has the state of each. This is milestone 3 of the
 [roadmap](roadmap.md). It adds the `policy`
 crate, the audit log, and the Agent path through the Operation Gate, all in
@@ -33,7 +33,7 @@ the script fails if either half lands alone.
 | 1 | `policy` crate, `WallTime`, boundary rules | Done |
 | 2 | Port additions: dry run, health, policy and audit views | Done |
 | 3 | `Clock` and audit ports; JSON Lines adapter | Done |
-| 4 | Policy loading, digest, sample file | Planned |
+| 4 | Policy loading, digest, sample file | Done |
 | 5 | Ledger | Planned |
 | 6a | Gate: Agent path, evaluation, and fail-closed outcomes | Planned |
 | 6b | Gate: dispatch with the precondition, audit order, live test | Planned |
@@ -141,7 +141,20 @@ independently), `the_sample_classifies_every_intent_kind_for_any_agent`,
 `a_limit_off_the_half_decibel_grid_is_rejected`,
 `an_allow_rule_with_a_condition_is_rejected`, `a_time_of_day_key_is_rejected`,
 `a_duplicate_rule_id_is_rejected`, `an_oversize_file_is_rejected`,
-`a_missing_file_is_reported_as_missing`, `one_changed_byte_changes_the_digest`.
+`a_missing_file_is_reported_as_missing`, `one_changed_byte_changes_the_digest`,
+and those for what the loader fixes (see the architecture's
+[loader](phase-3-policy-audit-gate-architecture.md#policy-file-and-loading)):
+`an_empty_file_is_an_empty_policy_that_requires_approval_for_everything`,
+`a_budget_needs_both_its_limit_and_its_window`,
+`unknown_keys_are_rejected_by_name_wherever_they_are`,
+`what_a_rule_names_must_make_sense`,
+`a_rule_can_be_narrowed_to_agents_and_receivers`,
+`the_approval_lifetime_is_in_minutes_and_has_a_default`,
+`a_file_that_cannot_be_read_is_unreadable_not_missing`,
+`an_edit_is_seen_by_the_next_load`, and
+`errors_name_the_rule_or_key_and_never_quote_the_file`. If you edit
+`docs/examples/policy.yaml`, compute its digest again with `shasum -a 256` and
+change the constant in the test.
 
 ### Step 5 — Ledger
 
@@ -263,7 +276,7 @@ the inputs most likely to bite, most likely first. Each has a named test above.
 
 ## Exit status
 
-In progress: steps 0 to 3 are done.
+In progress: steps 0 to 4 are done.
 
 ## Known limits
 
