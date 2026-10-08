@@ -540,3 +540,81 @@ async fn concurrent_appends_never_interleave_lines() {
     seqs.sort_unstable();
     assert_eq!(seqs, (1..=50).collect::<Vec<u64>>());
 }
+
+#[tokio::test]
+async fn a_caller_that_gives_up_does_not_abandon_the_write_or_reuse_a_number() {
+    let scratch = Scratch::new("abandoned");
+    let log = scratch.log();
+
+    // The caller stops waiting at once, as the service's bound does when a disk
+    // is slow. The write was begun, so it is finished and not left half done.
+    let outcome = tokio::time::timeout(
+        std::time::Duration::ZERO,
+        log.append(decided(1), Durability::Synced),
+    )
+    .await;
+    assert!(outcome.is_err(), "the caller did not wait");
+    for _ in 0..300 {
+        if !newest_first(&log).await.is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let entries = newest_first(&log).await;
+    assert_eq!(entries.len(), 1, "written once: {entries:?}");
+    assert_eq!(entries[0].0, 1);
+
+    // And the next record is numbered after it.
+    log.append(decided(2), Durability::Flushed).await.unwrap();
+    let seqs: Vec<u64> = newest_first(&log)
+        .await
+        .iter()
+        .map(|(seq, _)| *seq)
+        .collect();
+    assert_eq!(seqs, [2, 1]);
+}
+
+#[tokio::test]
+async fn reading_the_last_day_skips_files_not_written_in_it() {
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+    let now = SystemTime::now();
+    let now_ms = now.duration_since(UNIX_EPOCH).unwrap().as_millis() as u64;
+    let recent = |n: u64| AuditRecord {
+        at: WallTime(now_ms),
+        ..decided(n)
+    };
+
+    // The newest file holds a record from now.
+    let scratch = Scratch::new("old-files");
+    scratch
+        .log()
+        .append(recent(1), Durability::Flushed)
+        .await
+        .unwrap();
+
+    // An older file holds another. Its records say they are recent, but the file
+    // was last written three days ago, so nothing in it can be from the last day.
+    let other = Scratch::new("old-files-source");
+    other
+        .log()
+        .append(recent(2), Durability::Flushed)
+        .await
+        .unwrap();
+    let old = scratch.audit_dir().join("audit.1.jsonl");
+    std::fs::rename(other.audit_dir().join("audit.jsonl"), &old).unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&old)
+        .unwrap()
+        .set_modified(now - Duration::from_secs(3 * 24 * 60 * 60))
+        .unwrap();
+
+    let log = scratch.log();
+    let day_ago = WallTime(now_ms - 24 * 60 * 60 * 1_000);
+    let last_day = log.since(day_ago).await.unwrap();
+    assert_eq!(last_day, vec![recent(1)], "the old file was not read");
+
+    // Asked for everything, it is read.
+    let all = log.since(WallTime(0)).await.unwrap();
+    assert_eq!(all, vec![recent(2), recent(1)]);
+}

@@ -25,11 +25,17 @@ use denon_avr_domain::{CoreField, DispatchCertainty, OperationId, ReceiverId, Wa
 use serde_json::{json, Map, Value};
 use std::io::SeekFrom;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::UNIX_EPOCH;
 use tokio::fs::{self, File, OpenOptions};
-use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::Mutex;
 
 const ACTIVE: &str = "audit.jsonl";
+
+/// How far a file's last-written time may disagree with the times in its
+/// records before the file is read anyway.
+const CLOCK_MARGIN_MILLIS: u64 = 5 * 60 * 1_000;
 const MAX_STATUS_TEXT: usize = 64;
 
 /// How much audit is kept.
@@ -53,6 +59,11 @@ impl Default for AuditLimits {
 
 /// The audit log in a directory of JSON Lines files.
 pub struct JsonlAuditLog {
+    shared: Arc<Shared>,
+}
+
+/// What a write needs, shared so that a write can run on a task of its own.
+struct Shared {
     directory: PathBuf,
     limits: AuditLimits,
     state: Mutex<State>,
@@ -75,25 +86,34 @@ struct Writer {
 impl JsonlAuditLog {
     pub fn new(directory: impl Into<PathBuf>) -> Self {
         Self {
-            directory: directory.into(),
-            limits: AuditLimits::default(),
-            state: Mutex::new(State::default()),
+            shared: Arc::new(Shared {
+                directory: directory.into(),
+                limits: AuditLimits::default(),
+                state: Mutex::new(State::default()),
+            }),
         }
     }
 
-    pub fn with_limits(mut self, limits: AuditLimits) -> Self {
-        self.limits = AuditLimits {
-            max_files: limits.max_files.max(1),
-            ..limits
-        };
-        self
+    pub fn with_limits(self, limits: AuditLimits) -> Self {
+        Self {
+            shared: Arc::new(Shared {
+                directory: self.shared.directory.clone(),
+                limits: AuditLimits {
+                    max_files: limits.max_files.max(1),
+                    ..limits
+                },
+                state: Mutex::new(State::default()),
+            }),
+        }
     }
 
     /// The directory the files are in.
     pub fn directory(&self) -> &Path {
-        &self.directory
+        &self.shared.directory
     }
+}
 
+impl Shared {
     fn active_path(&self) -> PathBuf {
         self.directory.join(ACTIVE)
     }
@@ -335,15 +355,68 @@ impl JsonlAuditLog {
         }
         let mut records = Vec::new();
         for (_, path) in self.list_files().await?.iter().rev() {
-            for line in self.read_lines(path).await? {
-                if let Some(record) = decode_line(&line).and_then(|decoded| decoded.record) {
+            // The log can be 200 MiB and only the last day is wanted, so a file
+            // that was last written before then is not read at all.
+            if self.last_written_before(path, from).await? {
+                continue;
+            }
+            self.for_each_line(path, |line| {
+                if let Some(record) = decode_line(line).and_then(|decoded| decoded.record) {
                     if record.at >= from {
                         records.push(record);
                     }
                 }
-            }
+            })
+            .await?;
         }
         Ok(records)
+    }
+
+    /// Whether `path` was last written so long before `from` that no record in
+    /// it can be from `from` or later. A margin covers a clock that disagrees
+    /// with itself a little.
+    async fn last_written_before(&self, path: &Path, from: WallTime) -> Result<bool, AuditError> {
+        let metadata = fs::metadata(path)
+            .await
+            .map_err(|error| self.error("reading", path, error))?;
+        let written = metadata
+            .modified()
+            .ok()
+            .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+            .map(|elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX));
+        Ok(written
+            .is_some_and(|written| written.saturating_add(CLOCK_MARGIN_MILLIS) < from.as_millis()))
+    }
+
+    /// Hand `each` every non-blank line of `path`, one at a time, without holding
+    /// the file in memory.
+    async fn for_each_line(
+        &self,
+        path: &Path,
+        mut each: impl FnMut(&str),
+    ) -> Result<(), AuditError> {
+        let file = File::open(path)
+            .await
+            .map_err(|error| self.error("reading", path, error))?;
+        let mut reader = tokio::io::BufReader::new(file);
+        let mut line = Vec::new();
+        loop {
+            line.clear();
+            let read = reader
+                .read_until(b'\n', &mut line)
+                .await
+                .map_err(|error| self.error("reading", path, error))?;
+            if read == 0 {
+                return Ok(());
+            }
+            // A crash can cut a multi-byte character; the lossy line fails to
+            // parse and is skipped like any other cut-short line.
+            let text = String::from_utf8_lossy(&line);
+            let text = text.trim();
+            if !text.is_empty() {
+                each(text);
+            }
+        }
     }
 
     async fn query_locked(
@@ -397,23 +470,34 @@ impl AuditLog for JsonlAuditLog {
         record: AuditRecord,
         durability: Durability,
     ) -> BoxFuture<'_, Result<(), AuditError>> {
+        let shared = Arc::clone(&self.shared);
         Box::pin(async move {
-            let mut state = self.state.lock().await;
-            self.append_locked(&mut state, &record, durability).await
+            // The write runs on a task of its own. The caller may stop waiting
+            // (the control service bounds every append), and a write dropped
+            // half way would leave a line cut short, a size count that is wrong,
+            // or a sequence number that the next record uses again.
+            tokio::spawn(async move {
+                let mut state = shared.state.lock().await;
+                shared.append_locked(&mut state, &record, durability).await
+            })
+            .await
+            .unwrap_or_else(|error| {
+                Err(AuditError::new(format!("the append task failed: {error}")))
+            })
         })
     }
 
     fn since(&self, from: WallTime) -> BoxFuture<'_, Result<Vec<AuditRecord>, AuditError>> {
         Box::pin(async move {
-            let mut state = self.state.lock().await;
-            self.since_locked(&mut state, from).await
+            let mut state = self.shared.state.lock().await;
+            self.shared.since_locked(&mut state, from).await
         })
     }
 
     fn query(&self, query: AuditQuery) -> BoxFuture<'_, Result<AuditPage, AuditError>> {
         Box::pin(async move {
-            let mut state = self.state.lock().await;
-            self.query_locked(&mut state, query).await
+            let mut state = self.shared.state.lock().await;
+            self.shared.query_locked(&mut state, query).await
         })
     }
 }
