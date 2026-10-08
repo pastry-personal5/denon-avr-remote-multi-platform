@@ -251,6 +251,12 @@ impl From<DiscoveredDto> for DiscoveredReceiver {
     }
 }
 
+/// `POST /v1/receivers/discover`'s answer.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiscoveredListDto {
+    pub receivers: Vec<DiscoveredDto>,
+}
+
 /// `POST /v1/receivers/ad-hoc`: use a receiver chosen only by its address.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1099,6 +1105,12 @@ impl TryFrom<TokenDto> for TokenRecord {
             revoked: dto.revoked_ms.map(WallTime),
         })
     }
+}
+
+/// `GET /v1/tokens`'s answer.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TokenListDto {
+    pub tokens: Vec<TokenDto>,
 }
 
 /// The only response that holds a token's secret, once, when it is issued.

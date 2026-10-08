@@ -184,10 +184,33 @@ impl CanonicalReceiverSession for FakeSession {
                         visibility: SourceVisibility::Shown,
                     }],
                     generation: 7,
+                    error: Some("timed out talking to 192.0.2.10".into()),
                     ..SourceCatalog::default()
                 },
-                raw_response: "<list/>".into(),
+                raw_response: "<list host=\"192.0.2.10\"/>".into(),
                 response_evidence: denon_avr_domain::CatalogResponseEvidence::Complete,
+            })
+        })
+    }
+
+    fn quick_select_names(
+        &self,
+    ) -> BoxFuture<'_, Result<denon_avr_domain::QuickSelectNameObservation, OperationError>> {
+        Box::pin(async {
+            Ok(denon_avr_domain::QuickSelectNameObservation {
+                generation: 2,
+                ..Default::default()
+            })
+        })
+    }
+
+    fn http_information(
+        &self,
+    ) -> BoxFuture<'_, Result<denon_avr_domain::HttpInformationSnapshot, OperationError>> {
+        Box::pin(async {
+            Ok(denon_avr_domain::HttpInformationSnapshot {
+                generation: 3,
+                ..Default::default()
             })
         })
     }
@@ -204,6 +227,8 @@ pub struct FakeConnector {
     pub sessions: Mutex<Vec<Arc<FakeSession>>>,
     pub opens: AtomicUsize,
     pub initial: Mutex<ReceiverState>,
+    /// When set, a connection fails with this text, as an unreachable receiver does.
+    pub fail: Mutex<Option<String>>,
 }
 
 impl FakeConnector {
@@ -212,6 +237,7 @@ impl FakeConnector {
             sessions: Mutex::new(Vec::new()),
             opens: AtomicUsize::new(0),
             initial: Mutex::new(receiver_state(volume_db)),
+            fail: Mutex::new(None),
         })
     }
 
@@ -238,13 +264,22 @@ impl FakeConnector {
 impl ReceiverConnector for FakeConnector {
     fn connect<'a>(
         &'a self,
-        _: &'a ReceiverId,
+        receiver: &'a ReceiverId,
         _: &'a ReceiverIdentity,
     ) -> BoxFuture<'a, Result<SharedReceiverSession, OperationError>> {
         Box::pin(async move {
             self.opens.fetch_add(1, Ordering::SeqCst);
+            if let Some(text) = locked(&self.fail).clone() {
+                return Err(OperationError::new(
+                    denon_avr_application::ports::OperationErrorKind::Connection,
+                    "using AVR session",
+                    text,
+                ));
+            }
+            let mut state = locked(&self.initial).clone();
+            state.receiver = receiver.clone();
             let session = Arc::new(FakeSession {
-                states: watch::channel(locked(&self.initial).clone()).0,
+                states: watch::channel(state).0,
                 calls: Mutex::new(Vec::new()),
                 closed: AtomicBool::new(false),
             });
@@ -272,14 +307,23 @@ impl AsyncConfigRepository for FakeConfig {
     }
 }
 
-pub struct FakeDiscovery(pub Vec<DiscoveredReceiver>);
+pub struct FakeDiscovery(pub Vec<DiscoveredReceiver>, pub Mutex<Option<Duration>>);
+
+impl FakeDiscovery {
+    pub fn new(found: Vec<DiscoveredReceiver>) -> Self {
+        Self(found, Mutex::new(None))
+    }
+}
 
 impl AsyncReceiverDiscovery for FakeDiscovery {
     fn discover(
         &self,
-        _: Duration,
+        timeout: Duration,
     ) -> BoxFuture<'_, Result<Vec<DiscoveredReceiver>, OperationError>> {
-        Box::pin(async { Ok(self.0.clone()) })
+        Box::pin(async move {
+            *locked(&self.1) = Some(timeout);
+            Ok(self.0.clone())
+        })
     }
 }
 
@@ -318,6 +362,8 @@ pub struct Options {
     pub limits: Limits,
     pub volume_db: f64,
     pub policy: &'static str,
+    /// Audit files this small rotate, to show what a flood would do.
+    pub audit_limits: Option<denon_avr_infrastructure::AuditLimits>,
 }
 
 impl Default for Options {
@@ -327,6 +373,7 @@ impl Default for Options {
             limits: Limits::default(),
             volume_db: -35.0,
             policy: OWNERS_POLICY,
+            audit_limits: None,
         }
     }
 }
@@ -338,6 +385,7 @@ pub struct Fixture {
     pub tokens: Arc<FileTokenStore>,
     pub connector: Arc<FakeConnector>,
     pub config: Arc<FakeConfig>,
+    pub discovery: Arc<FakeDiscovery>,
     pub audit_directory: PathBuf,
     pub server: Option<RunningServer>,
     pub agent_directory: PathBuf,
@@ -358,6 +406,7 @@ impl Fixture {
         std::fs::write(root.0.join("policy.yaml"), options.policy).unwrap();
         let tokens = Arc::new(FileTokenStore::open(&paths.credentials_directory).unwrap());
         let connector = FakeConnector::new(options.volume_db);
+        let discovery = Arc::new(FakeDiscovery::new(Vec::new()));
         let config = Arc::new(FakeConfig(Mutex::new(ConfiguredReceivers {
             current: Some("living-room".into()),
             receivers: BTreeMap::from([(
@@ -374,14 +423,17 @@ impl Fixture {
             ControlService::start(
                 connector.clone(),
                 config.clone(),
-                Arc::new(FakeDiscovery(Vec::new())),
+                discovery.clone(),
                 ServiceConfig {
                     idle_release: Duration::from_millis(200),
                     ..ServiceConfig::default()
                 },
                 AgentPath {
                     policy: Arc::new(YamlPolicySource::new(root.0.join("policy.yaml"))),
-                    audit: Arc::new(JsonlAuditLog::new(&audit_directory)),
+                    audit: Arc::new(match options.audit_limits {
+                        Some(limits) => JsonlAuditLog::new(&audit_directory).with_limits(limits),
+                        None => JsonlAuditLog::new(&audit_directory),
+                    }),
                     clock: Arc::new(SystemClock),
                     limits: AgentLimits::default(),
                     tokens: Some(tokens.clone()),
@@ -419,6 +471,7 @@ impl Fixture {
             tokens,
             connector,
             config,
+            discovery,
             audit_directory,
             server: Some(server),
             agent_directory,
@@ -565,4 +618,26 @@ pub async fn wait_for<F: FnMut() -> bool>(what: &str, mut condition: F) {
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
     panic!("timed out waiting for {what}");
+}
+
+/// A path that fits a row's pattern, for the table-driven checks.
+pub fn sample_path(pattern: &str) -> String {
+    pattern
+        .replace("/receivers/{id}", "/receivers/living-room")
+        .replace("/operations/{id}", "/operations/1")
+        .replace("/tokens/{id}", "/tokens/t-0000ffff")
+}
+
+/// Every record in the audit log, newest first, as the Operator reads it.
+pub async fn audit_records(fixture: &Fixture) -> Vec<denon_avr_application::AuditRecord> {
+    use denon_avr_application::{AuditQuery, OperatorAdmin, Principal};
+    let handle = fixture.service.handle(Principal::Operator).unwrap();
+    handle
+        .audit(AuditQuery::new(500))
+        .await
+        .unwrap()
+        .entries
+        .into_iter()
+        .map(|entry| entry.record)
+        .collect()
 }

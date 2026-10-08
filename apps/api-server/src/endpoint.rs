@@ -32,6 +32,8 @@ pub struct EndpointContext {
     pub admitted_uids: Vec<u32>,
     pub server_health: ServerHealthDto,
     pub shutdown: watch::Receiver<bool>,
+    /// One configuration write at a time, from the comparison to the save.
+    pub config_lock: tokio::sync::Mutex<()>,
 }
 
 /// Whether a peer is served. The uid is read from the connection by the operating

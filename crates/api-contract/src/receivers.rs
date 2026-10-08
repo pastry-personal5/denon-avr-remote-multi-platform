@@ -50,6 +50,12 @@ impl From<ConnectionDto> for ConnectionStatus {
     }
 }
 
+/// `GET /v1/receivers`. The list is inside an object so it can grow.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReceiversDto {
+    pub receivers: Vec<ReceiverSummaryDto>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CapabilitiesDto {
     pub writable: bool,

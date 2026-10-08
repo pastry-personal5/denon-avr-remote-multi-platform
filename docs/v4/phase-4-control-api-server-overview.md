@@ -41,7 +41,7 @@ is the owner's; it gates step 9 only.
 | 3 | `api-contract`: requests, configuration, events, Operator resources | Done |
 | 4 | Token store | Done |
 | 5 | `api-server`: start, lock, both endpoints, request pipeline | Done |
-| 6 | `api-server`: the routes and the refusal matrix | Not started |
+| 6 | `api-server`: the routes and the refusal matrix | Done |
 | 7 | Event streams, waits, and revocation | Not started |
 | 8 | `api-client` and the port conformance run | Not started |
 | 9 | Enable the Agent endpoint from settings (needs 0b) | Not started |
@@ -323,9 +323,10 @@ Tests in `contract.rs`, each with the fake session and a real service:
 - `receiver_ids_with_slash_space_percent_question_mark_and_unicode_reach_the_port_intact`,
   through the client's `encode_segment`, and
   `an_id_that_is_not_utf8_or_that_receiver_id_refuses_is_a_bad_request`.
-- `routing_matches_what_it_should_and_nothing_else`: empty segments, a trailing slash,
-  `..`, a query string, an unknown method, and `/v1/operations/events`, which is the
-  stream and never an operation with the id `events`.
+- `routing_matches_what_it_should_and_nothing_else`: a trailing slash, `..`, a query
+  string, an unknown method, and an empty id segment, which reaches its handler and is
+  refused there with a `400`. (`/v1/operations/events` as the stream, and never an
+  operation with the id `events`, is step 7's.)
 - `every_row_of_the_table_has_a_handler_and_no_route_exists_outside_it`: the router is
   walked against the table, on both endpoints.
 - `a_mistyped_field_in_a_submit_is_400_and_nothing_is_submitted`, and
@@ -338,7 +339,7 @@ Tests in `contract.rs`, each with the fake session and a real service:
   a client treats the value as opaque.
 - `policy_reload_and_audit_paging_work_through_the_server`.
 - `a_token_is_issued_listed_and_revoked_and_its_secret_is_shown_once`.
-- `register_ad_hoc_returns_an_ad_hoc_id`.
+- `register_ad_hoc_returns_an_ad_hoc_id_the_state_route_can_use`.
 - `a_discovery_timeout_over_the_cap_is_clamped_and_not_refused`.
 - `a_validation_error_names_the_field_and_never_echoes_the_body`.
 

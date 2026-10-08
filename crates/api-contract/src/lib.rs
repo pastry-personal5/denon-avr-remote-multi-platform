@@ -26,7 +26,7 @@ pub use operations::{DispatchDto, IntentDto, OperationDto, StatusDto};
 pub use paths::{encode_segment, EndpointPaths};
 pub use receivers::{
     parse_receiver_id, AgentEndpointDto, ApprovalDto, AuditDto, CapabilitiesDto, ConnectionDto,
-    HealthDto, PolicyHealthDto, ReceiverSummaryDto, ServerHealthDto, TokenStoreDto,
+    HealthDto, PolicyHealthDto, ReceiverSummaryDto, ReceiversDto, ServerHealthDto, TokenStoreDto,
 };
 pub use routes::{Audience, Method, Route, RouteId};
 pub use state::{

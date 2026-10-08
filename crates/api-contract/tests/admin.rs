@@ -6,8 +6,8 @@ mod common;
 use common::*;
 use denon_avr_api_contract::admin::{
     AdHocRequest, AuditPageDto, ConfigDto, ConfigRequest, DiscoverRequest, DiscoveredDto,
-    HttpInformationDto, IssuedTokenDto, PolicyDto, QuickSelectNamesDto, ReadinessDto, TokenDto,
-    TokenIssueRequest,
+    DiscoveredListDto, HttpInformationDto, IssuedTokenDto, PolicyDto, QuickSelectNamesDto,
+    ReadinessDto, TokenDto, TokenIssueRequest, TokenListDto,
 };
 use denon_avr_api_contract::requests::{
     AgentDryRun, DryRunRequest, OperatorDryRun, OperatorDryRunRequest, SubmitRequest,
@@ -629,5 +629,49 @@ fn golden_json_for_the_requests_and_the_operator_resources_is_unchanged() {
     golden(
         "http_information.json",
         &pretty(&HttpInformationDto::from(&http_information())),
+    );
+    golden(
+        "token_list.json",
+        &pretty(&TokenListDto {
+            tokens: vec![TokenDto {
+                id: "t-0000002a".into(),
+                label: "claude-code".into(),
+                created_ms: 1_700_000_000_000,
+                revoked_ms: None,
+            }],
+        }),
+    );
+    golden(
+        "discovered_list.json",
+        &pretty(&DiscoveredListDto {
+            receivers: vec![DiscoveredDto::from(&DiscoveredReceiver {
+                address: ReceiverEndpoint {
+                    host: "192.0.2.10".into(),
+                    port: 80,
+                },
+                location: None,
+                server: None,
+                model: Some("AVR-X3800H".into()),
+                search_target: None,
+                unique_service_name: None,
+            })],
+        }),
+    );
+    golden(
+        "receivers_list.json",
+        &pretty(&denon_avr_api_contract::ReceiversDto {
+            receivers: vec![denon_avr_api_contract::ReceiverSummaryDto {
+                id: "living-room".into(),
+                model: Some("AVR-X3800H".into()),
+                capabilities: denon_avr_api_contract::CapabilitiesDto {
+                    writable: true,
+                    zone2_power: true,
+                    source_catalog_read: true,
+                    inputs: vec!["BD".into()],
+                    surround_modes: vec!["DIRECT".into()],
+                },
+                connection: denon_avr_api_contract::ConnectionDto::Released,
+            }],
+        }),
     );
 }

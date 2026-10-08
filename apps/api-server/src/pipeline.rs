@@ -278,5 +278,20 @@ fn tidy(response: Response) -> Response {
         }
         return replaced;
     }
+    // An error axum made on its own, such as a path segment that is not text, is
+    // plain text. The contract's errors are JSON.
+    let json = response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.starts_with("application/json"));
+    if response.status().is_client_error() && !json {
+        let status = response.status().as_u16();
+        return respond(ApiError::server(
+            status,
+            "invalid_request",
+            "the request could not be understood",
+        ));
+    }
     response
 }

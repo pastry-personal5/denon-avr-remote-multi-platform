@@ -276,7 +276,7 @@ async fn a_wider_run_or_credentials_directory_is_an_error() {
     let service = Arc::new(denon_avr_application::ControlService::new(
         FakeConnector::new(-35.0),
         Arc::new(FakeConfig(Default::default())),
-        Arc::new(FakeDiscovery(Vec::new())),
+        Arc::new(FakeDiscovery::new(Vec::new())),
         Default::default(),
     ));
     let error = Server::start(service, tokens, config(&paths))

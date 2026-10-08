@@ -231,6 +231,7 @@ impl Server {
                 admitted_uids: admitted,
                 server_health: server_health.clone(),
                 shutdown: shutdown_rx.clone(),
+                config_lock: tokio::sync::Mutex::new(()),
             });
             tasks.push(endpoint::spawn(listener, context, semaphore));
         };

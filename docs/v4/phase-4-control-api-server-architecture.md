@@ -125,6 +125,9 @@ new variant fails to compile in `api-contract` before it can reach a client.
   is refused (`411`).
 - The credential is `Authorization: Bearer <token>`, exactly one such header. A
   token in the query string is a `400` and is never logged.
+- A validation error names the field that is wrong, cut to 64 characters, and never
+  repeats a value the caller sent, a variant name included. An empty id segment is routed
+  to its handler and refused there with a `400`.
 - Receiver ids are percent-encoded in paths by the client (`paths::encode_segment`)
   and decoded by axum's `Path` extractor, which decodes after the route has matched, so
   an encoded `/` stays inside its segment. A decoded id that is not valid UTF-8, or
