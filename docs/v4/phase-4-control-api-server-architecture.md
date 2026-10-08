@@ -17,8 +17,8 @@ amended the design where the review found it wrong.
   operations in flight and closes every session. Nothing outside tests and the armed
   live test can name an Agent handle.
 - The port types hold `&'static` data in three places, so a client cannot rebuild
-  them from bytes: `ControlError::NotFound(&'static str)` (only `"receiver"` and
-  `"operation"` are ever produced), `OperationError.context: &'static str`, and
+  them from bytes: `ControlError::NotFound(&'static str)` (only `"receiver"`,
+  `"operation"`, and, from this phase, `"token"` are produced), `OperationError.context: &'static str`, and
   `ReceiverCapabilities.inputs` and `surround_modes: &'static [&'static str]`.
 - Absent: any HTTP code (`Cargo.lock` has no `hyper`, `http`, or `tower`), any token
   store or token method on `OperatorAdmin`, any audit event for a refused caller, a
@@ -206,7 +206,7 @@ a field expires, so a client sees `stale` without a clock.
 
 | `ControlError` | HTTP | `code` | Notes |
 | --- | --- | --- | --- |
-| `NotFound(what)` | 404 | `not_found` | `what` is `receiver` or `operation`; the client maps through that closed set and any other word becomes `resource` |
+| `NotFound(what)` | 404 | `not_found` | `what` is `receiver`, `operation`, or `token`; the client maps through that closed set and any other word becomes `resource` |
 | `Forbidden` | 403 | `forbidden` | |
 | `InvalidRequest(m)` | 400 | `invalid_request` | |
 | `Unavailable(m)` | 503 | `unavailable` | |

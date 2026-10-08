@@ -871,6 +871,23 @@ mod tests {
         ) -> BoxFuture<'_, Result<denon_avr_application::AuditPage, ControlError>> {
             unexpected("audit")
         }
+        fn issue_token(
+            &self,
+            _: denon_avr_application::AgentLabel,
+        ) -> BoxFuture<'_, Result<denon_avr_application::IssuedToken, ControlError>> {
+            unexpected("issue_token")
+        }
+        fn tokens(
+            &self,
+        ) -> BoxFuture<'_, Result<Vec<denon_avr_application::TokenRecord>, ControlError>> {
+            unexpected("tokens")
+        }
+        fn revoke_token(
+            &self,
+            _: denon_avr_application::TokenId,
+        ) -> BoxFuture<'_, Result<denon_avr_application::TokenRecord, ControlError>> {
+            unexpected("revoke_token")
+        }
     }
 
     fn block_on<T>(future: impl std::future::Future<Output = T>) -> T {

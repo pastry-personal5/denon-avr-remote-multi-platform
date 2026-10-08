@@ -15,6 +15,7 @@ use crate::audit::{AuditPage, AuditQuery};
 use crate::policy_source::PolicyDigest;
 use crate::ports::{BoxFuture, OperationError};
 use crate::session_v3::{Readiness, StateSubscription};
+use crate::tokens::{IssuedToken, TokenId, TokenRecord};
 use denon_avr_domain::{
     ConfiguredReceivers, DiscoveredReceiver, DispatchCertainty, HttpInformationSnapshot,
     ModelCapabilities, OperationId, QuickSelectNameObservation, ReceiverId, ReceiverIdentity,
@@ -276,18 +277,20 @@ pub struct ReceiverCapabilities {
     pub writable: bool,
     pub zone2_power: bool,
     pub source_catalog_read: bool,
-    pub inputs: &'static [&'static str],
-    pub surround_modes: &'static [&'static str],
+    /// Owned, so a client that read them from the wire can hold them.
+    pub inputs: Vec<String>,
+    pub surround_modes: Vec<String>,
 }
 
 impl From<&ModelCapabilities> for ReceiverCapabilities {
     fn from(capabilities: &ModelCapabilities) -> Self {
+        let owned = |names: &[&str]| names.iter().map(|name| (*name).to_owned()).collect();
         Self {
             writable: capabilities.writable,
             zone2_power: capabilities.zone2_power,
             source_catalog_read: capabilities.source_catalog_read,
-            inputs: capabilities.inputs,
-            surround_modes: capabilities.surround_modes,
+            inputs: owned(capabilities.inputs),
+            surround_modes: owned(capabilities.surround_modes),
         }
     }
 }
@@ -504,6 +507,17 @@ pub trait OperatorAdmin: Send + Sync {
 
     /// A page of the audit log, newest first.
     fn audit(&self, query: AuditQuery) -> BoxFuture<'_, Result<AuditPage, ControlError>>;
+
+    /// Issue an Agent token under `label`. The secret in the result is the only
+    /// copy there will be. A label already holding an active token is refused.
+    fn issue_token(&self, label: AgentLabel) -> BoxFuture<'_, Result<IssuedToken, ControlError>>;
+
+    /// Every token issued, revoked ones included. It holds no secret.
+    fn tokens(&self) -> BoxFuture<'_, Result<Vec<TokenRecord>, ControlError>>;
+
+    /// Revoke a token. The operations it started continue to their end; a call
+    /// into the session is never abandoned. Revoking twice is not an error.
+    fn revoke_token(&self, id: TokenId) -> BoxFuture<'_, Result<TokenRecord, ControlError>>;
 }
 
 /// What a writing agent is handed: observation and operations, no administration.
@@ -638,6 +652,15 @@ mod tests {
         fn audit(&self, _: AuditQuery) -> BoxFuture<'_, Result<AuditPage, ControlError>> {
             unavailable()
         }
+        fn issue_token(&self, _: AgentLabel) -> BoxFuture<'_, Result<IssuedToken, ControlError>> {
+            unavailable()
+        }
+        fn tokens(&self) -> BoxFuture<'_, Result<Vec<TokenRecord>, ControlError>> {
+            unavailable()
+        }
+        fn revoke_token(&self, _: TokenId) -> BoxFuture<'_, Result<TokenRecord, ControlError>> {
+            unavailable()
+        }
     }
 
     #[test]
@@ -677,6 +700,21 @@ mod tests {
         assert_eq!(Stub.reload_policy().await.unwrap_err(), unavailable);
         assert_eq!(
             Stub.audit(AuditQuery::new(10)).await.unwrap_err(),
+            unavailable
+        );
+
+        // So do the token methods.
+        assert_eq!(
+            Stub.issue_token(AgentLabel::new("openclaw").unwrap())
+                .await
+                .unwrap_err(),
+            unavailable
+        );
+        assert_eq!(Stub.tokens().await.unwrap_err(), unavailable);
+        assert_eq!(
+            Stub.revoke_token(TokenId::new("t-00000001").unwrap())
+                .await
+                .unwrap_err(),
             unavailable
         );
     }
@@ -788,5 +826,25 @@ mod tests {
         ));
         assert!(capabilities.writable && capabilities.zone2_power);
         assert!(!capabilities.inputs.is_empty());
+    }
+
+    #[test]
+    fn receiver_capabilities_own_their_lists() {
+        let model = ModelCapabilities::for_model(denon_avr_domain::Model::AvrX3800h);
+        let capabilities = ReceiverCapabilities::from(&model);
+        // The lists are the model's, as owned text, so a client can hold a copy it
+        // read from the wire without borrowing from the program.
+        let inputs: Vec<&str> = capabilities.inputs.iter().map(String::as_str).collect();
+        assert_eq!(inputs, model.inputs);
+        let modes: Vec<&str> = capabilities
+            .surround_modes
+            .iter()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(modes, model.surround_modes);
+        // Owned text, not borrowed: the types say so.
+        let _: &Vec<String> = &capabilities.inputs;
+        let _: &Vec<String> = &capabilities.surround_modes;
+        assert_eq!(capabilities.clone(), capabilities);
     }
 }

@@ -163,6 +163,7 @@ async fn armed_live_agent_volume_change_is_gated_audited_and_restored() {
             audit: Arc::new(JsonlAuditLog::new(&audit_directory)),
             clock: Arc::new(SystemClock),
             limits: AgentLimits::default(),
+            tokens: None,
         },
     )
     .await;

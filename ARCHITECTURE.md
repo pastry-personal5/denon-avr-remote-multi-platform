@@ -76,7 +76,12 @@ authority, and a surface takes only the traits it needs:
   and `refresh`, which reads every core field again. `refresh` is a read: it
   connects if the receiver is released, dispatches nothing, and does not use the
   gate. It also holds `dry_run_as` (a dry run as a named agent label, which does
-  not spend that agent's allowance), `policy` and `reload_policy`, and `audit`.
+  not spend that agent's allowance), `policy` and `reload_policy`, `audit`, and the
+  token methods `issue_token`, `tokens`, and `revoke_token`. A token belongs to one
+  agent label, is shown once when issued, and is kept only as a digest. A label is
+  lowercase letters, digits, `.`, `_`, and `-` (`policy::label_is_well_formed`), and
+  a label holds at most one active token. The methods answer `Unavailable` on a
+  service with no token store, and `Forbidden` to an agent whatever it has.
 
 `AgentControl` is the first two and `OperatorControl` all three. A handle is
 bound to one `Principal` when it is created and the principal is never a request
@@ -231,8 +236,15 @@ and count (10), in a directory created 0700 with files 0600. A directory or file
 that already exists with wider permissions is an error, not a repair. Reading skips
 a line cut short, one that is not JSON, and a record of a kind or schema it does
 not know, and numbering continues past them. A record is one of `Decided`,
-`Dispatching`, `Finished`, `PolicyLoaded`, and `PolicyLoadFailed`, and the text in
-it is bounded whatever it is handed. Only `Dispatching` is synced to disk. An
+`Dispatching`, `Finished`, `PolicyLoaded`, `PolicyLoadFailed`, `AccessRefused` (a
+caller refused at an endpoint), `TokenIssued`, and `TokenRevoked`, and the text in
+it is bounded whatever it is handed. A record's principal is absent when no valid
+credential was presented. A refusal is written at most once a minute for each
+caller and reason, with the count of those not written; at most 256 callers are
+tracked and 30 refusals a minute are written over all of them; and a refusal's
+failing append never changes the audit health, so being refused cannot mark the log
+failing. The ledger's rebuild reads `Dispatching` and `Finished` only. Only
+`Dispatching` is synced to disk. An
 append runs on a task of its own, so a caller that stops waiting (the service
 bounds every append) does not leave a line cut short or a sequence number used
 twice. Reading the last day skips a file last written before the cutoff, and

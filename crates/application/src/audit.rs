@@ -6,9 +6,10 @@
 //! them. Records hold text the service built from typed values, never raw agent
 //! text, and reasons arrive as the sentences the Operator would read.
 
-use crate::control::Principal;
+use crate::control::{AgentLabel, Principal};
 use crate::policy_source::PolicyDigest;
 use crate::ports::BoxFuture;
+use crate::tokens::TokenId;
 use denon_avr_domain::{
     CoreField, DispatchCertainty, MasterVolume, MuteState, OperationId, ReceiverId, ReceiverIntent,
     SoundModeIntent, SystemPower, WallTime, ZonePower,
@@ -33,7 +34,9 @@ pub struct AuditRecord {
     pub run: WallTime,
     pub at: WallTime,
     pub operation: Option<OperationId>,
-    pub principal: Principal,
+    /// Who acted. `None` when no valid credential was presented, as with a caller
+    /// refused at an endpoint.
+    pub principal: Option<Principal>,
     /// `None` for events about the service, such as loading the policy.
     pub receiver: Option<ReceiverId>,
     pub event: AuditEvent,
@@ -81,6 +84,108 @@ pub enum AuditEvent {
     PolicyLoadFailed {
         error: String,
     },
+    /// A caller was refused at an endpoint. It is written at most once a minute
+    /// for each caller and reason, with the count of those that were not.
+    AccessRefused {
+        endpoint: EndpointKind,
+        reason: RefusalReason,
+        /// The uid the operating system reported for the peer, when it did.
+        peer_uid: Option<u32>,
+        /// The route pattern an agent probed, never the path it sent.
+        resource: Option<String>,
+        /// How many like it were refused since the last record and not written.
+        suppressed: u32,
+    },
+    /// An Agent token was issued. The record holds no secret.
+    TokenIssued {
+        id: TokenId,
+        label: AgentLabel,
+    },
+    TokenRevoked {
+        id: TokenId,
+        label: AgentLabel,
+    },
+}
+
+/// Which of the Control API's two endpoints a request reached.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum EndpointKind {
+    Operator,
+    Agent,
+}
+
+impl EndpointKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Operator => "operator",
+            Self::Agent => "agent",
+        }
+    }
+
+    /// The kind a record's name stands for, or `None` for a name this code does
+    /// not know.
+    pub fn parse(name: &str) -> Option<Self> {
+        [Self::Operator, Self::Agent]
+            .into_iter()
+            .find(|kind| kind.as_str() == name)
+    }
+}
+
+/// Why a caller was refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RefusalReason {
+    /// The peer's uid is not one the endpoint admits. The connection was closed
+    /// before it was read.
+    PeerNotAdmitted,
+    NoCredential,
+    UnknownCredential,
+    /// The Operator's token, presented on the Agent endpoint.
+    OperatorTokenOnAgentEndpoint,
+    /// An Agent token, presented on the Operator endpoint.
+    AgentTokenOnOperatorEndpoint,
+    /// A valid credential asked for a resource the endpoint does not serve.
+    ResourceNotServed,
+}
+
+impl RefusalReason {
+    /// Every reason, for tests and for readers that must name them all.
+    pub const ALL: [Self; 6] = [
+        Self::PeerNotAdmitted,
+        Self::NoCredential,
+        Self::UnknownCredential,
+        Self::OperatorTokenOnAgentEndpoint,
+        Self::AgentTokenOnOperatorEndpoint,
+        Self::ResourceNotServed,
+    ];
+
+    /// The reason a record's name stands for, or `None` for a name this code does
+    /// not know.
+    pub fn parse(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|reason| reason.as_str() == name)
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::PeerNotAdmitted => "peer_not_admitted",
+            Self::NoCredential => "no_credential",
+            Self::UnknownCredential => "unknown_credential",
+            Self::OperatorTokenOnAgentEndpoint => "operator_token_on_agent_endpoint",
+            Self::AgentTokenOnOperatorEndpoint => "agent_token_on_operator_endpoint",
+            Self::ResourceNotServed => "resource_not_served",
+        }
+    }
+}
+
+/// A refusal at an endpoint, as the server reports it to the service.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccessRefusal {
+    pub endpoint: EndpointKind,
+    pub reason: RefusalReason,
+    /// The principal, when the credential was valid.
+    pub principal: Option<Principal>,
+    pub peer_uid: Option<u32>,
+    /// The route pattern, when a route was matched.
+    pub resource: Option<String>,
 }
 
 /// A record and its place in the log. `seq` rises with every append and
@@ -398,6 +503,36 @@ mod tests {
         assert_eq!(FIELDS.len(), 7);
         assert_eq!(parse_core_field("surround_back"), None);
         assert_eq!(parse_core_field("Volume"), None);
+    }
+
+    #[test]
+    fn refusal_reasons_and_endpoints_have_unique_snake_case_names_that_read_back() {
+        let names: Vec<&str> = RefusalReason::ALL.iter().map(|r| r.as_str()).collect();
+        let unique: std::collections::BTreeSet<_> = names.iter().collect();
+        assert_eq!(unique.len(), names.len());
+        for reason in RefusalReason::ALL {
+            assert!(reason
+                .as_str()
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c == '_'));
+            assert_eq!(RefusalReason::parse(reason.as_str()), Some(reason));
+            // An exhaustive match fails to compile when a reason is added without
+            // being listed in `ALL`, which the length check then confirms.
+            match reason {
+                RefusalReason::PeerNotAdmitted
+                | RefusalReason::NoCredential
+                | RefusalReason::UnknownCredential
+                | RefusalReason::OperatorTokenOnAgentEndpoint
+                | RefusalReason::AgentTokenOnOperatorEndpoint
+                | RefusalReason::ResourceNotServed => {}
+            }
+        }
+        assert_eq!(RefusalReason::ALL.len(), 6);
+        assert_eq!(RefusalReason::parse("from_the_future"), None);
+        for endpoint in [EndpointKind::Operator, EndpointKind::Agent] {
+            assert_eq!(EndpointKind::parse(endpoint.as_str()), Some(endpoint));
+        }
+        assert_eq!(EndpointKind::parse("Agent"), None);
     }
 
     #[test]

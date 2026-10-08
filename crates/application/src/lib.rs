@@ -12,10 +12,11 @@ pub mod receiver_selection;
 pub mod service;
 pub mod session_v3;
 pub mod source_catalog;
+pub mod tokens;
 
 pub use audit::{
-    AuditCursor, AuditDecision, AuditEntry, AuditError, AuditEvent, AuditLog, AuditPage,
-    AuditQuery, AuditRecord, Durability, SharedAuditLog,
+    AccessRefusal, AuditCursor, AuditDecision, AuditEntry, AuditError, AuditEvent, AuditLog,
+    AuditPage, AuditQuery, AuditRecord, Durability, EndpointKind, RefusalReason, SharedAuditLog,
 };
 pub use clock::{Clock, SharedClock};
 pub use control::{
@@ -31,4 +32,8 @@ pub use policy_source::{
 pub use service::{AgentLimits, AgentPath, ControlService, ServiceConfig, ServiceHandle};
 pub use session_v3::{
     CanonicalReceiverSession, OperationRequest, Readiness, SharedReceiverSession, StateSubscription,
+};
+pub use tokens::{
+    Credential, IssuedToken, SharedTokenStore, TokenError, TokenId, TokenRecord, TokenSecret,
+    TokenStore,
 };

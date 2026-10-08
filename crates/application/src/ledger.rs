@@ -250,7 +250,7 @@ mod tests {
             run: WallTime(run),
             at,
             operation: Some(OperationId(id)),
-            principal,
+            principal: Some(principal),
             receiver: Some(room()),
             event,
         }

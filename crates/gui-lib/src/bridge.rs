@@ -709,6 +709,23 @@ mod tests {
         ) -> BoxFuture<'_, Result<denon_avr_application::AuditPage, ControlError>> {
             unavailable()
         }
+        fn issue_token(
+            &self,
+            _: denon_avr_application::AgentLabel,
+        ) -> BoxFuture<'_, Result<denon_avr_application::IssuedToken, ControlError>> {
+            unavailable()
+        }
+        fn tokens(
+            &self,
+        ) -> BoxFuture<'_, Result<Vec<denon_avr_application::TokenRecord>, ControlError>> {
+            unavailable()
+        }
+        fn revoke_token(
+            &self,
+            _: denon_avr_application::TokenId,
+        ) -> BoxFuture<'_, Result<denon_avr_application::TokenRecord, ControlError>> {
+            unavailable()
+        }
     }
 
     fn bridge_over_a_fast_port() -> PortBridge {

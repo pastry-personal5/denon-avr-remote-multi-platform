@@ -13,8 +13,8 @@
 
 use super::{locked, Inner, Lease, Operations, Resolution};
 use crate::audit::{
-    intent_text, AuditDecision, AuditEvent, AuditPage, AuditQuery, AuditRecord, Durability,
-    SharedAuditLog, AUDIT_SCHEMA,
+    intent_text, AccessRefusal, AuditDecision, AuditEvent, AuditPage, AuditQuery, AuditRecord,
+    Durability, EndpointKind, RefusalReason, SharedAuditLog, AUDIT_SCHEMA,
 };
 use crate::clock::SharedClock;
 use crate::control::{
@@ -23,6 +23,7 @@ use crate::control::{
 };
 use crate::ledger::{Ledger, OpKey, RETENTION};
 use crate::policy_source::{LoadedPolicy, PolicyDigest, SharedPolicySource};
+use crate::tokens::SharedTokenStore;
 use denon_avr_domain::{
     CoreField, DispatchCertainty, OperationId, OperationOutcome, Precondition, ReceiverId,
     ReceiverIntent, ReceiverState, RejectionCause, WallTime,
@@ -88,6 +89,57 @@ pub struct AgentPath {
     pub audit: SharedAuditLog,
     pub clock: SharedClock,
     pub limits: AgentLimits,
+    /// Where Agent tokens are kept, when the service issues them. Without one the
+    /// token methods answer `Unavailable`.
+    pub tokens: Option<SharedTokenStore>,
+}
+
+impl AgentPath {
+    /// The same path with a token store.
+    pub fn with_tokens(mut self, tokens: SharedTokenStore) -> Self {
+        self.tokens = Some(tokens);
+        self
+    }
+}
+
+/// How often a refused caller is written to the log, per caller and reason.
+const ACCESS_LOG_EVERY: Duration = Duration::from_secs(60);
+
+/// How many refused callers are tracked at once.
+const ACCESS_KEYS: usize = 256;
+
+/// How many refusals are written a minute over all callers.
+const ACCESS_RECORDS_PER_WINDOW: usize = 30;
+
+/// Who a refusal is counted against: the agent when the credential was valid,
+/// otherwise the peer's uid.
+#[derive(Clone, PartialEq, Eq, Hash)]
+enum Subject {
+    Label(AgentLabel),
+    Uid(u32),
+    Nobody,
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct AccessKey {
+    endpoint: EndpointKind,
+    reason: RefusalReason,
+    who: Subject,
+}
+
+struct AccessEntry {
+    last: Instant,
+    suppressed: u32,
+}
+
+#[derive(Default)]
+struct AccessBook {
+    keys: HashMap<AccessKey, AccessEntry>,
+    /// When the records of the last minute were written.
+    written: VecDeque<Instant>,
+    /// Refusals not written because the whole log was at its rate and their
+    /// caller was not tracked, to be counted in the next record.
+    unwritten: u32,
 }
 
 /// A policy that loaded, and when.
@@ -129,6 +181,9 @@ pub(super) struct AgentState {
     /// how many have been refused since without being written.
     refusals: Mutex<(Option<Instant>, u32)>,
     writes: Mutex<HashMap<AgentLabel, VecDeque<Instant>>>,
+    tokens: Option<SharedTokenStore>,
+    /// The callers refused at an endpoint, and when each was last written.
+    access: Mutex<AccessBook>,
 }
 
 impl AgentState {
@@ -152,6 +207,8 @@ impl AgentState {
             reloading: tokio::sync::Mutex::new(()),
             refusals: Mutex::new((None, 0)),
             writes: Mutex::new(HashMap::new()),
+            tokens: path.tokens,
+            access: Mutex::new(AccessBook::default()),
         };
         state.load_policy().await;
         state.ensure_ledger().await;
@@ -270,6 +327,17 @@ impl AgentState {
         receiver: Option<ReceiverId>,
         event: AuditEvent,
     ) -> AuditRecord {
+        self.record_as(operation, Some(principal), receiver, event)
+    }
+
+    /// A record whose actor may be unknown: a caller with no valid credential.
+    fn record_as(
+        &self,
+        operation: Option<OperationId>,
+        principal: Option<Principal>,
+        receiver: Option<ReceiverId>,
+        event: AuditEvent,
+    ) -> AuditRecord {
         AuditRecord {
             schema: AUDIT_SCHEMA,
             run: self.run,
@@ -279,6 +347,125 @@ impl AgentState {
             receiver,
             event,
         }
+    }
+
+    // ---- Tokens and refused callers ----
+
+    /// The token store, when the service was given one.
+    pub(super) fn tokens(&self) -> Option<&SharedTokenStore> {
+        self.tokens.as_ref()
+    }
+
+    /// The time the service goes by.
+    pub(super) fn now(&self) -> WallTime {
+        self.clock.now()
+    }
+
+    /// Record that the Operator issued or revoked a token. Best effort and short,
+    /// like the Operator's other records: a failing log does not stop it.
+    pub(super) async fn record_token_event(&self, event: AuditEvent) {
+        let record = self.record(None, Principal::Operator, None, event);
+        let _ = self
+            .append_within(record, Durability::Flushed, OPERATOR_AUDIT_TIMEOUT)
+            .await;
+    }
+
+    /// Record a caller refused at an endpoint, at a bounded rate.
+    ///
+    /// A caller that keeps asking would otherwise write a line per attempt and
+    /// push real records out of the log, the budget's among them. So the first
+    /// refusal of a caller and reason is written, later ones inside a minute are
+    /// counted, and the next record after the minute carries the count. At most
+    /// [`ACCESS_KEYS`] callers are tracked and [`ACCESS_RECORDS_PER_WINDOW`]
+    /// records are written a minute over all of them, so a flood of different
+    /// callers cannot do what one caller cannot. A failed append is logged and
+    /// does not change the audit health: a caller must not be able to mark the log
+    /// failing, and so have every agent write refused, by being refused itself.
+    pub(super) async fn record_access_refusal(&self, refusal: AccessRefusal) {
+        let who = match (&refusal.principal, refusal.peer_uid) {
+            (Some(Principal::Agent(label)), _) => Subject::Label(label.clone()),
+            (_, Some(uid)) => Subject::Uid(uid),
+            _ => Subject::Nobody,
+        };
+        let key = AccessKey {
+            endpoint: refusal.endpoint,
+            reason: refusal.reason,
+            who,
+        };
+        let Some(suppressed) = self.admit_refusal(key, Instant::now()) else {
+            return;
+        };
+        let resource = refusal.resource.map(|route| {
+            let clean: String = route
+                .chars()
+                .map(|c| if c.is_control() { ' ' } else { c })
+                .collect();
+            crate::audit::bounded(&clean, crate::audit::MAX_INTENT_TEXT)
+        });
+        let record = self.record_as(
+            None,
+            refusal.principal,
+            None,
+            AuditEvent::AccessRefused {
+                endpoint: refusal.endpoint,
+                reason: refusal.reason,
+                peer_uid: refusal.peer_uid,
+                resource,
+                suppressed,
+            },
+        );
+        let outcome = tokio::time::timeout(
+            OPERATOR_AUDIT_TIMEOUT,
+            self.audit.append(record, Durability::Flushed),
+        )
+        .await;
+        match outcome {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => warn!(%error, "appending a refusal to the audit log"),
+            Err(_) => warn!("appending a refusal to the audit log timed out"),
+        }
+    }
+
+    /// Whether a refusal is written now, and how many like it were not.
+    fn admit_refusal(&self, key: AccessKey, now: Instant) -> Option<u32> {
+        let mut book = locked(&self.access);
+        book.written
+            .retain(|at| now.duration_since(*at) < ACCESS_LOG_EVERY);
+        if let Some(entry) = book.keys.get_mut(&key) {
+            if now.duration_since(entry.last) < ACCESS_LOG_EVERY {
+                entry.suppressed = entry.suppressed.saturating_add(1);
+                return None;
+            }
+        }
+        if book.written.len() >= ACCESS_RECORDS_PER_WINDOW {
+            // The log as a whole is at its rate. Count the refusal against its key,
+            // or against the next record written when the key is not tracked.
+            if let Some(entry) = book.keys.get_mut(&key) {
+                entry.suppressed = entry.suppressed.saturating_add(1);
+            } else {
+                book.unwritten = book.unwritten.saturating_add(1);
+            }
+            return None;
+        }
+        if !book.keys.contains_key(&key) && book.keys.len() >= ACCESS_KEYS {
+            let oldest = book
+                .keys
+                .iter()
+                .min_by_key(|(_, entry)| entry.last)
+                .map(|(key, _)| key.clone());
+            if let Some(oldest) = oldest {
+                book.keys.remove(&oldest);
+            }
+        }
+        let unwritten = std::mem::take(&mut book.unwritten);
+        let entry = book.keys.entry(key).or_insert(AccessEntry {
+            last: now,
+            suppressed: 0,
+        });
+        let suppressed = std::mem::take(&mut entry.suppressed).saturating_add(unwritten);
+        entry.last = now;
+        book.written.push_back(now);
+        Some(suppressed)
     }
 
     /// Append a record, bounded in time. The outcome is the audit health.
@@ -484,6 +671,12 @@ impl AgentState {
     #[cfg(test)]
     pub(super) fn stored(&self) -> usize {
         locked(&self.books).ledger.stored()
+    }
+
+    /// How many refused callers are being tracked.
+    #[cfg(test)]
+    pub(super) fn tracked_refusals(&self) -> usize {
+        locked(&self.access).keys.len()
     }
 
     /// How many volume changes the ledger counts for `receiver`.

@@ -19,7 +19,8 @@ use denon_avr_application::audit::{
 use denon_avr_application::ports::BoxFuture;
 use denon_avr_application::{
     AgentLabel, AuditCursor, AuditDecision, AuditEntry, AuditError, AuditEvent, AuditLog,
-    AuditPage, AuditQuery, AuditRecord, Durability, PolicyDigest, Principal,
+    AuditPage, AuditQuery, AuditRecord, Durability, EndpointKind, PolicyDigest, Principal,
+    RefusalReason, TokenId,
 };
 use denon_avr_domain::{CoreField, DispatchCertainty, OperationId, ReceiverId, WallTime};
 use serde_json::{json, Map, Value};
@@ -553,8 +554,10 @@ fn encode(seq: u64, record: &AuditRecord) -> String {
     object.insert(
         "principal".into(),
         match &record.principal {
-            Principal::Operator => json!("operator"),
-            Principal::Agent(label) => json!({ "agent": label.as_str() }),
+            Some(Principal::Operator) => json!("operator"),
+            Some(Principal::Agent(label)) => json!({ "agent": label.as_str() }),
+            // No valid credential was presented.
+            None => Value::Null,
         },
     );
     object.insert(
@@ -627,6 +630,30 @@ fn encode_event(event: &AuditEvent) -> Value {
             "kind": "policy_load_failed",
             "error": bounded(error, MAX_REASON_TEXT),
         }),
+        AuditEvent::AccessRefused {
+            endpoint,
+            reason,
+            peer_uid,
+            resource,
+            suppressed,
+        } => json!({
+            "kind": "access_refused",
+            "endpoint": endpoint.as_str(),
+            "reason": reason.as_str(),
+            "peer_uid": peer_uid,
+            "resource": resource.as_deref().map(|route| bounded(route, MAX_INTENT_TEXT)),
+            "suppressed": suppressed,
+        }),
+        AuditEvent::TokenIssued { id, label } => json!({
+            "kind": "token_issued",
+            "id": id.as_str(),
+            "label": label.as_str(),
+        }),
+        AuditEvent::TokenRevoked { id, label } => json!({
+            "kind": "token_revoked",
+            "id": id.as_str(),
+            "label": label.as_str(),
+        }),
     }
 }
 
@@ -658,10 +685,11 @@ fn decode_record(object: &Map<String, Value>) -> Option<AuditRecord> {
         value => Some(OperationId(value.as_u64()?)),
     };
     let principal = match object.get("principal")? {
-        Value::String(name) if name == "operator" => Principal::Operator,
-        Value::Object(agent) => {
-            Principal::Agent(AgentLabel::new(agent.get("agent")?.as_str()?).ok()?)
-        }
+        Value::Null => None,
+        Value::String(name) if name == "operator" => Some(Principal::Operator),
+        Value::Object(agent) => Some(Principal::Agent(
+            AgentLabel::new(agent.get("agent")?.as_str()?).ok()?,
+        )),
         _ => return None,
     };
     let receiver = match object.get("receiver")? {
@@ -758,6 +786,27 @@ fn decode_event(event: &Map<String, Value>) -> Option<AuditEvent> {
         }),
         "policy_load_failed" => Some(AuditEvent::PolicyLoadFailed {
             error: event.get("error")?.as_str()?.to_owned(),
+        }),
+        "access_refused" => Some(AuditEvent::AccessRefused {
+            endpoint: EndpointKind::parse(event.get("endpoint")?.as_str()?)?,
+            reason: RefusalReason::parse(event.get("reason")?.as_str()?)?,
+            peer_uid: match event.get("peer_uid")? {
+                Value::Null => None,
+                value => Some(u32::try_from(value.as_u64()?).ok()?),
+            },
+            resource: match event.get("resource")? {
+                Value::Null => None,
+                value => Some(value.as_str()?.to_owned()),
+            },
+            suppressed: u32::try_from(event.get("suppressed")?.as_u64()?).ok()?,
+        }),
+        "token_issued" => Some(AuditEvent::TokenIssued {
+            id: TokenId::new(event.get("id")?.as_str()?).ok()?,
+            label: AgentLabel::new(event.get("label")?.as_str()?).ok()?,
+        }),
+        "token_revoked" => Some(AuditEvent::TokenRevoked {
+            id: TokenId::new(event.get("id")?.as_str()?).ok()?,
+            label: AgentLabel::new(event.get("label")?.as_str()?).ok()?,
         }),
         _ => None,
     }

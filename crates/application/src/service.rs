@@ -12,7 +12,7 @@
 //! path, in the `agent` module: a policy, an audit log, a budget ledger, and caps.
 //! An Agent handle is refused by the first and served by the second.
 
-use crate::audit::{AuditPage, AuditQuery};
+use crate::audit::{AccessRefusal, AuditEvent, AuditPage, AuditQuery};
 use crate::control::{
     AgentLabel, ApprovalHealth, AuditHealth, ConnectionStatus, ControlError, DryRun,
     DryRunDecision, IdempotencyKey, OperationControl, OperationEvent, OperationEventSource,
@@ -25,6 +25,7 @@ use crate::ports::{
 };
 use crate::receiver_selection::receiver_id;
 use crate::session_v3::{OperationRequest, Readiness, SharedReceiverSession, StateSubscription};
+use crate::tokens::{IssuedToken, TokenError, TokenId, TokenRecord};
 use denon_avr_domain::{
     ConfiguredReceivers, DiscoveredReceiver, DispatchCertainty, HttpInformationSnapshot, Model,
     ModelCapabilities, OperationId, OperationOutcome, QuickSelectNameObservation, ReceiverId,
@@ -157,6 +158,15 @@ impl ControlService {
                 inner: Arc::clone(&self.inner),
                 principal,
             })),
+        }
+    }
+
+    /// Record a caller refused at an endpoint, in the audit log, at a bounded rate.
+    /// The Control API server calls this for every refusal. A service built by
+    /// [`ControlService::new`] has no log and records nothing.
+    pub async fn record_refusal(&self, refusal: AccessRefusal) {
+        if let Some(agent) = &self.inner.agent {
+            agent.record_access_refusal(refusal).await;
         }
     }
 
@@ -1417,5 +1427,80 @@ impl OperatorAdmin for ServiceHandle {
             let agent = self.inner.agent.as_ref().ok_or_else(no_agent_path)?;
             agent.audit_page(query).await
         })
+    }
+
+    fn issue_token(&self, label: AgentLabel) -> BoxFuture<'_, Result<IssuedToken, ControlError>> {
+        Box::pin(async move {
+            self.require_operator()?;
+            let agent = self.inner.agent.as_ref().ok_or_else(no_agent_path)?;
+            let tokens = agent.tokens().ok_or_else(no_token_store)?;
+            // The label rule is the policy crate's, so a token and a rule that name
+            // the same label spell it the same way.
+            if !denon_avr_policy::label_is_well_formed(label.as_str()) {
+                return Err(ControlError::InvalidRequest(
+                    "a token label is lowercase letters, digits, '.', '_' and '-', \
+                     starting with a letter or digit"
+                        .into(),
+                ));
+            }
+            let issued = tokens
+                .issue(label, agent.now())
+                .await
+                .map_err(token_error)?;
+            agent
+                .record_token_event(AuditEvent::TokenIssued {
+                    id: issued.record.id.clone(),
+                    label: issued.record.label.clone(),
+                })
+                .await;
+            Ok(issued)
+        })
+    }
+
+    fn tokens(&self) -> BoxFuture<'_, Result<Vec<TokenRecord>, ControlError>> {
+        Box::pin(async move {
+            self.require_operator()?;
+            let agent = self.inner.agent.as_ref().ok_or_else(no_agent_path)?;
+            Ok(agent.tokens().ok_or_else(no_token_store)?.list())
+        })
+    }
+
+    fn revoke_token(&self, id: TokenId) -> BoxFuture<'_, Result<TokenRecord, ControlError>> {
+        Box::pin(async move {
+            self.require_operator()?;
+            let agent = self.inner.agent.as_ref().ok_or_else(no_agent_path)?;
+            let tokens = agent.tokens().ok_or_else(no_token_store)?;
+            let was_active = tokens.is_active(&id);
+            let record = tokens.revoke(&id, agent.now()).await.map_err(token_error)?;
+            // Revoking twice is not an error, and it is recorded once.
+            if was_active {
+                agent
+                    .record_token_event(AuditEvent::TokenRevoked {
+                        id: record.id.clone(),
+                        label: record.label.clone(),
+                    })
+                    .await;
+            }
+            Ok(record)
+        })
+    }
+}
+
+fn no_token_store() -> ControlError {
+    ControlError::Unavailable("this service has no token store".into())
+}
+
+/// What a token store's refusal means to a caller of the port.
+fn token_error(error: TokenError) -> ControlError {
+    match error {
+        TokenError::InvalidLabel | TokenError::LabelInUse => {
+            ControlError::InvalidRequest(error.to_string())
+        }
+        TokenError::NotFound => ControlError::NotFound("token"),
+        TokenError::Storage(why) => {
+            // The store's text can name a path, which stays in the log.
+            warn!(%why, "the token store failed");
+            ControlError::Unavailable("the token store could not be read or written".into())
+        }
     }
 }

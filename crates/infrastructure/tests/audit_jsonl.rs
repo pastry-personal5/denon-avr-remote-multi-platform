@@ -4,7 +4,7 @@
 use denon_avr_application::audit::{bounded, intent_text, AUDIT_SCHEMA, MAX_INTENT_TEXT};
 use denon_avr_application::{
     AgentLabel, AuditDecision, AuditEvent, AuditLog, AuditQuery, AuditRecord, Durability,
-    PolicyDigest, Principal,
+    EndpointKind, PolicyDigest, Principal, RefusalReason, TokenId,
 };
 use denon_avr_domain::{
     CoreField, DispatchCertainty, OperationId, ReceiverId, ReceiverIntent, SoundModeIntent,
@@ -83,7 +83,7 @@ fn record(n: u64, event: AuditEvent) -> AuditRecord {
         run: WallTime(1_000),
         at: WallTime(2_000 + n),
         operation: Some(OperationId(n)),
-        principal: agent(),
+        principal: Some(agent()),
         receiver: Some(room()),
         event,
     }
@@ -113,7 +113,7 @@ fn every_kind() -> Vec<AuditRecord> {
     let mut records = vec![
         AuditRecord {
             operation: None,
-            principal: Principal::Operator,
+            principal: Some(Principal::Operator),
             receiver: None,
             ..record(
                 1,
@@ -124,7 +124,7 @@ fn every_kind() -> Vec<AuditRecord> {
         },
         AuditRecord {
             operation: None,
-            principal: Principal::Operator,
+            principal: Some(Principal::Operator),
             receiver: None,
             ..record(
                 2,
@@ -154,7 +154,7 @@ fn every_kind() -> Vec<AuditRecord> {
         ),
         AuditRecord {
             receiver: Some(ReceiverId::ad_hoc("192.0.2.50").unwrap()),
-            principal: Principal::Operator,
+            principal: Some(Principal::Operator),
             ..record(
                 5,
                 AuditEvent::Decided {
@@ -198,7 +198,69 @@ fn every_kind() -> Vec<AuditRecord> {
             },
         ));
     }
+    records.extend(new_kinds(11));
     records
+}
+
+/// The records about refused callers and tokens: a caller with no valid
+/// credential (no principal, no operation, no receiver), an agent that probed a
+/// resource, and a token issued and revoked.
+fn new_kinds(first: u64) -> Vec<AuditRecord> {
+    vec![
+        AuditRecord {
+            operation: None,
+            principal: None,
+            receiver: None,
+            ..record(
+                first,
+                AuditEvent::AccessRefused {
+                    endpoint: EndpointKind::Agent,
+                    reason: RefusalReason::NoCredential,
+                    peer_uid: Some(502),
+                    resource: None,
+                    suppressed: 0,
+                },
+            )
+        },
+        AuditRecord {
+            operation: None,
+            receiver: None,
+            ..record(
+                first + 1,
+                AuditEvent::AccessRefused {
+                    endpoint: EndpointKind::Agent,
+                    reason: RefusalReason::ResourceNotServed,
+                    peer_uid: Some(502),
+                    resource: Some("/v1/policy".into()),
+                    suppressed: 17,
+                },
+            )
+        },
+        AuditRecord {
+            operation: None,
+            principal: Some(Principal::Operator),
+            receiver: None,
+            ..record(
+                first + 2,
+                AuditEvent::TokenIssued {
+                    id: TokenId::new("t-0000002a").unwrap(),
+                    label: AgentLabel::new("claude-code").unwrap(),
+                },
+            )
+        },
+        AuditRecord {
+            operation: None,
+            principal: Some(Principal::Operator),
+            receiver: None,
+            ..record(
+                first + 3,
+                AuditEvent::TokenRevoked {
+                    id: TokenId::new("t-0000002a").unwrap(),
+                    label: AgentLabel::new("claude-code").unwrap(),
+                },
+            )
+        },
+    ]
 }
 
 async fn newest_first(log: &JsonlAuditLog) -> Vec<(u64, AuditRecord)> {
@@ -392,7 +454,7 @@ async fn agent_text_is_bounded_and_escaped_in_the_line() {
     // And the adapter bounds whatever it is handed, so a mistake elsewhere
     // cannot make a line long or split it.
     let record = AuditRecord {
-        principal: Principal::Agent(AgentLabel::new("p".repeat(64)).unwrap()),
+        principal: Some(Principal::Agent(AgentLabel::new("p".repeat(64)).unwrap())),
         ..record(
             1,
             AuditEvent::Decided {
@@ -617,4 +679,108 @@ async fn reading_the_last_day_skips_files_not_written_in_it() {
     // Asked for everything, it is read.
     let all = log.since(WallTime(0)).await.unwrap();
     assert_eq!(all, vec![recent(2), recent(1)]);
+}
+
+#[tokio::test]
+async fn access_refused_and_token_events_round_trip() {
+    let scratch = Scratch::new("new-kinds");
+    let log = scratch.log();
+    let written = new_kinds(1);
+    for record in &written {
+        log.append(record.clone(), Durability::Flushed)
+            .await
+            .unwrap();
+    }
+    assert_eq!(log.since(WallTime(0)).await.unwrap(), written);
+    let newest_first: Vec<AuditRecord> = newest_first(&log)
+        .await
+        .into_iter()
+        .rev()
+        .map(|(_, record)| record)
+        .collect();
+    assert_eq!(newest_first, written);
+}
+
+#[tokio::test]
+async fn a_record_with_no_principal_round_trips() {
+    let scratch = Scratch::new("no-principal");
+    let log = scratch.log();
+    let refused = new_kinds(1).remove(0);
+    assert_eq!(refused.principal, None);
+    log.append(refused.clone(), Durability::Flushed)
+        .await
+        .unwrap();
+
+    let line = std::fs::read_to_string(scratch.audit_dir().join("audit.jsonl")).unwrap();
+    let object: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+    assert!(object["principal"].is_null(), "{line}");
+    assert!(object["receiver"].is_null() && object["operation"].is_null());
+    assert_eq!(log.since(WallTime(0)).await.unwrap(), vec![refused]);
+}
+
+#[tokio::test]
+async fn text_in_the_new_events_is_bounded() {
+    let scratch = Scratch::new("new-kinds-bounded");
+    let log = scratch.log();
+    let hostile = format!("/v1/policy\n\"{}", "x".repeat(10_000));
+    let record = AuditRecord {
+        operation: None,
+        receiver: None,
+        ..record(
+            1,
+            AuditEvent::AccessRefused {
+                endpoint: EndpointKind::Agent,
+                reason: RefusalReason::ResourceNotServed,
+                peer_uid: None,
+                resource: Some(hostile),
+                suppressed: u32::MAX,
+            },
+        )
+    };
+    log.append(record, Durability::Flushed).await.unwrap();
+
+    // One line, however the text was built, and the resource cut to the intent bound.
+    let text = std::fs::read_to_string(scratch.audit_dir().join("audit.jsonl")).unwrap();
+    assert_eq!(text.lines().count(), 1);
+    let read = log.since(WallTime(0)).await.unwrap();
+    let AuditEvent::AccessRefused {
+        resource,
+        suppressed,
+        peer_uid,
+        ..
+    } = &read[0].event
+    else {
+        panic!("not a refusal");
+    };
+    assert!(resource.as_deref().unwrap().chars().count() <= MAX_INTENT_TEXT);
+    assert_eq!(*suppressed, u32::MAX);
+    assert_eq!(*peer_uid, None);
+}
+
+#[tokio::test]
+async fn a_refusal_naming_a_reason_or_endpoint_this_code_does_not_know_is_skipped() {
+    let scratch = Scratch::new("unknown-reason");
+    let log = scratch.log();
+    log.append(decided(1), Durability::Flushed).await.unwrap();
+    let path = scratch.audit_dir().join("audit.jsonl");
+    let mut text = std::fs::read_to_string(&path).unwrap();
+    text.push_str(
+        "{\"seq\":2,\"schema\":1,\"run\":1,\"at\":2,\"operation\":null,\"principal\":null,\"receiver\":null,\"event\":{\"kind\":\"access_refused\",\"endpoint\":\"agent\",\"reason\":\"a_reason_from_the_future\",\"peer_uid\":1,\"resource\":null,\"suppressed\":0}}\n",
+    );
+    std::fs::write(&path, text).unwrap();
+
+    // It is skipped, as any record of a kind this code does not know is, and the
+    // sequence continues past it.
+    assert_eq!(log.since(WallTime(0)).await.unwrap().len(), 1);
+    let reopened = scratch.log();
+    reopened
+        .append(decided(3), Durability::Flushed)
+        .await
+        .unwrap();
+    let seqs: Vec<u64> = newest_first(&reopened)
+        .await
+        .iter()
+        .map(|(seq, _)| *seq)
+        .collect();
+    assert_eq!(seqs, vec![3, 1]);
 }
