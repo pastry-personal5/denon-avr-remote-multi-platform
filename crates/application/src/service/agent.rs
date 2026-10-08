@@ -24,10 +24,12 @@ use crate::control::{
 use crate::ledger::{Ledger, OpKey, RETENTION};
 use crate::policy_source::{LoadedPolicy, PolicyDigest, SharedPolicySource};
 use denon_avr_domain::{
-    CoreField, DispatchCertainty, FieldBaseline, FieldValue, OperationId, Precondition, ReceiverId,
-    ReceiverIntent, ReceiverState, WallTime,
+    CoreField, DispatchCertainty, OperationId, OperationOutcome, Precondition, ReceiverId,
+    ReceiverIntent, ReceiverState, RejectionCause, WallTime,
 };
-use denon_avr_policy::{Decision, Effect as Verdict, Level, PolicyInput, RecentChange};
+use denon_avr_policy::{
+    observed_volume, Decision, Effect as Verdict, Level, PolicyInput, RecentChange,
+};
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -38,6 +40,17 @@ use tracing::warn;
 /// How long an audit append or read may take before it counts as failed, so a
 /// stalled disk cannot hold a receiver lease or block shutdown.
 const AUDIT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How long an Operator's audit append may take. The Operator's controls are not
+/// held up by the log, so this is much shorter than an agent's.
+const OPERATOR_AUDIT_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// How long reading the audit history to rebuild the ledger may take. It reads a
+/// day of records, which takes longer than appending one.
+const REBUILD_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// More labels than this are swept for ones that have gone quiet.
+const SWEEP_LABELS_ABOVE: usize = 64;
 
 /// The window the write cap counts over.
 const WRITE_WINDOW: Duration = Duration::from_secs(60);
@@ -106,6 +119,9 @@ pub(super) struct AgentState {
     audit_ok: AtomicBool,
     /// One rebuild of the ledger at a time.
     rebuilding: tokio::sync::Mutex<()>,
+    /// One load of the policy at a time, from the read to the record, so the
+    /// policy in force and the log agree on which file loaded last.
+    reloading: tokio::sync::Mutex<()>,
     writes: Mutex<HashMap<AgentLabel, VecDeque<Instant>>>,
 }
 
@@ -127,6 +143,7 @@ impl AgentState {
             books: Mutex::new(Books::default()),
             audit_ok: AtomicBool::new(true),
             rebuilding: tokio::sync::Mutex::new(()),
+            reloading: tokio::sync::Mutex::new(()),
             writes: Mutex::new(HashMap::new()),
         };
         state.load_policy().await;
@@ -139,6 +156,7 @@ impl AgentState {
     /// Read the policy again. A load that fails replaces the policy in force
     /// with nothing, so a bad edit never leaves the old rules quietly in place.
     pub(super) async fn load_policy(&self) -> PolicyView {
+        let _one_at_a_time = self.reloading.lock().await;
         let now = self.clock.now();
         let (event, view) = match self.policy_source.load().await {
             Ok(loaded) => {
@@ -216,15 +234,24 @@ impl AgentState {
 
     /// What an agent's write needs before the receiver is opened: a policy to
     /// judge it by and a ledger to count it in. The text is for the agent.
-    pub(super) async fn precheck(&self) -> Result<Arc<ActivePolicy>, &'static str> {
-        let policy = match &*locked(&self.policy) {
-            PolicyState::Active(policy) => Arc::clone(policy),
-            PolicyState::Unavailable(_) => return Err(POLICY_UNAVAILABLE),
-        };
+    pub(super) async fn precheck(&self) -> Result<(), &'static str> {
+        if self.active_policy().is_none() {
+            return Err(POLICY_UNAVAILABLE);
+        }
         if !self.ensure_ledger().await {
             return Err(LEDGER_UNAVAILABLE);
         }
-        Ok(policy)
+        Ok(())
+    }
+
+    /// The policy in force now. A decision asks for it at the moment it is made,
+    /// not before an await that can take seconds, so a reload that happened
+    /// meanwhile, a bad one included, is what decides.
+    pub(super) fn active_policy(&self) -> Option<Arc<ActivePolicy>> {
+        match &*locked(&self.policy) {
+            PolicyState::Active(policy) => Some(Arc::clone(policy)),
+            PolicyState::Unavailable(_) => None,
+        }
     }
 
     // ---- Audit ----
@@ -249,8 +276,16 @@ impl AgentState {
 
     /// Append a record, bounded in time. The outcome is the audit health.
     async fn append(&self, record: AuditRecord, durability: Durability) -> Result<(), ()> {
-        let outcome =
-            tokio::time::timeout(AUDIT_TIMEOUT, self.audit.append(record, durability)).await;
+        self.append_within(record, durability, AUDIT_TIMEOUT).await
+    }
+
+    async fn append_within(
+        &self,
+        record: AuditRecord,
+        durability: Durability,
+        limit: Duration,
+    ) -> Result<(), ()> {
+        let outcome = tokio::time::timeout(limit, self.audit.append(record, durability)).await;
         let ok = matches!(outcome, Ok(Ok(())));
         self.audit_ok.store(ok, Ordering::SeqCst);
         if !ok {
@@ -299,7 +334,12 @@ impl AgentState {
                 reason: resolution.reason.clone(),
             },
         );
-        let _ = self.append(record, Durability::Flushed).await;
+        // The Operator is not held up by the log, so its bound is short.
+        let limit = match owner {
+            Principal::Operator => OPERATOR_AUDIT_TIMEOUT,
+            Principal::Agent(_) => AUDIT_TIMEOUT,
+        };
+        let _ = self.append_within(record, Durability::Flushed, limit).await;
     }
 
     // ---- Ledger ----
@@ -316,7 +356,7 @@ impl AgentState {
         }
         let now = self.clock.now();
         let read = tokio::time::timeout(
-            AUDIT_TIMEOUT,
+            REBUILD_TIMEOUT,
             self.audit.since(now.saturating_sub(RETENTION)),
         )
         .await;
@@ -366,6 +406,14 @@ impl AgentState {
     pub(super) fn charge_write(&self, label: &AgentLabel) -> Result<(), ControlError> {
         let now = Instant::now();
         let mut writes = locked(&self.writes);
+        if writes.len() > SWEEP_LABELS_ABOVE {
+            // Forget the labels that have not written for a minute.
+            writes.retain(|_, recent| {
+                recent
+                    .back()
+                    .is_some_and(|at| now.duration_since(*at) < WRITE_WINDOW)
+            });
+        }
         let recent = writes.entry(label.clone()).or_default();
         while recent
             .front()
@@ -383,6 +431,12 @@ impl AgentState {
         }
         recent.push_back(now);
         Ok(())
+    }
+
+    /// How many labels the write cap is tracking.
+    #[cfg(test)]
+    pub(super) fn tracked_labels(&self) -> usize {
+        locked(&self.writes).len()
     }
 
     /// How many entries the ledger holds, however old.
@@ -500,7 +554,7 @@ impl AgentState {
                     key,
                     RecentChange {
                         at: now,
-                        before: observed_level(state),
+                        before: observed_volume(state),
                         target: Level::of(*target),
                     },
                 );
@@ -539,6 +593,12 @@ impl AgentState {
             let mut gate = locked(&self.books);
             self.reserve(&mut gate, now, receiver, intent, &state, id)
         };
+        // The Operator's records are best effort, and a log known to be failing is
+        // not waited for: the write goes ahead, and the `Finished` record that
+        // follows it is what notices the log working again.
+        if !self.audit_ok.load(Ordering::SeqCst) {
+            return settlement;
+        }
         let decided = AuditEvent::Decided {
             intent: intent_text(intent),
             decision: AuditDecision::Allow,
@@ -553,14 +613,22 @@ impl AgentState {
             Some(receiver.clone()),
             decided,
         );
-        let _ = self.append(record, Durability::Flushed).await;
+        if self
+            .append_within(record, Durability::Flushed, OPERATOR_AUDIT_TIMEOUT)
+            .await
+            .is_err()
+        {
+            return settlement;
+        }
         let record = self.record(
             Some(id),
             Principal::Operator,
             Some(receiver.clone()),
             self.dispatching(intent, &state, Vec::new()),
         );
-        let _ = self.append(record, Durability::Synced).await;
+        let _ = self
+            .append_within(record, Durability::Synced, OPERATOR_AUDIT_TIMEOUT)
+            .await;
         settlement
     }
 
@@ -572,7 +640,7 @@ impl AgentState {
     ) -> AuditEvent {
         let (before, target) = match intent {
             ReceiverIntent::Volume(target) => (
-                observed_level(state).map(Level::half_steps),
+                observed_volume(state).map(Level::half_steps),
                 Some(Level::of(*target).half_steps()),
             ),
             _ => (None, None),
@@ -583,15 +651,6 @@ impl AgentState {
             target,
             precondition_fields,
         }
-    }
-}
-
-/// The volume the receiver shows, or `None` when it is stale, unknown, or
-/// unavailable.
-fn observed_level(state: &ReceiverState) -> Option<Level> {
-    match FieldBaseline::capture(state, CoreField::Volume) {
-        FieldBaseline::Value(FieldValue::Volume(volume)) => Some(Level::of(volume)),
-        _ => None,
     }
 }
 
@@ -677,7 +736,6 @@ pub(super) async fn decide(
     agent: &AgentState,
     lease: &Lease,
     request: &Request<'_>,
-    policy: &ActivePolicy,
 ) -> Gate {
     let Request {
         id,
@@ -685,6 +743,12 @@ pub(super) async fn decide(
         intent,
         label,
     } = *request;
+    // The policy in force now, not the one in force before the receiver
+    // connected: an edit made meanwhile, a bad one included, decides this.
+    let Some(policy) = agent.active_policy() else {
+        return Gate::Stop(refusal(POLICY_UNAVAILABLE));
+    };
+    let policy = &*policy;
     let state = lease.session.state().latest();
     let principal = Principal::Agent(label.clone());
     let decided_record = |decision: &Decision| {
@@ -775,31 +839,42 @@ pub(super) async fn dry_run(
     label: &str,
     receiver: &ReceiverId,
     intent: &ReceiverIntent,
+    show_rules: bool,
 ) -> Result<DryRun, ControlError> {
-    let policy = match agent.precheck().await {
-        Ok(policy) => policy,
-        Err(reason) => {
-            return Ok(DryRun {
-                decision: DryRunDecision::Unavailable {
-                    reason: reason.into(),
-                },
-                policy: agent.digest(),
-            })
-        }
+    let unavailable = |reason: &str| {
+        Ok(DryRun {
+            decision: DryRunDecision::Unavailable {
+                reason: reason.into(),
+            },
+            policy: agent.digest(),
+        })
     };
+    if let Err(reason) = agent.precheck().await {
+        return unavailable(reason);
+    }
     let lease = inner.lease(receiver).await?;
+    // The policy in force now, after the receiver has connected.
+    let Some(policy) = agent.active_policy() else {
+        return unavailable(POLICY_UNAVAILABLE);
+    };
     let state = lease.session.state().latest();
     let decision = agent.evaluate(&policy, label, receiver, intent, &state);
+    // Rule ids are the Operator's to see; an agent is told the limits.
+    let rules = if show_rules {
+        decision.rules().to_vec()
+    } else {
+        Vec::new()
+    };
     Ok(DryRun {
         decision: match decision.effect() {
             Verdict::Allow => DryRunDecision::Allow,
             Verdict::RequireApproval => DryRunDecision::RequireApproval {
                 reasons: reasons(&decision),
-                rules: decision.rules().to_vec(),
+                rules,
             },
             Verdict::Deny => DryRunDecision::Deny {
                 reasons: reasons(&decision),
-                rules: decision.rules().to_vec(),
+                rules,
             },
         },
         policy: Some(policy.loaded.digest),
@@ -808,6 +883,25 @@ pub(super) async fn dry_run(
 
 /// What an agent is told when the gate cannot reach the receiver.
 pub(super) const RECEIVER_UNREACHABLE: &str = "the receiver could not be reached";
+
+/// What an agent is told of a session's answer, in place of the session's own
+/// text, which formats the I/O error underneath and can name an address. The
+/// audit log and the Operator keep the session's text.
+pub(super) fn fixed_reason(outcome: &OperationOutcome) -> Option<&'static str> {
+    match outcome {
+        OperationOutcome::RejectedBeforeDispatch { cause, .. } => Some(match cause {
+            RejectionCause::UnsupportedIntent => "the receiver does not support this change",
+            RejectionCause::ObservationFailed => "the receiver's state could not be read",
+            RejectionCause::PreconditionMismatch(_) => {
+                "the receiver changed since the request was judged"
+            }
+            RejectionCause::CommandRefused => "the receiver refused the command",
+            RejectionCause::SessionStopped => "the receiver connection closed",
+        }),
+        OperationOutcome::Indeterminate { .. } => Some("the outcome could not be established"),
+        _ => None,
+    }
+}
 
 /// The gate's refusals, as the service ends the operation with.
 pub(super) fn refusal(reason: &'static str) -> Resolution {

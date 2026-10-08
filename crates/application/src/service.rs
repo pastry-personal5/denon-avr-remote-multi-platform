@@ -50,6 +50,9 @@ pub use agent::{AgentLimits, AgentPath};
 /// missed some.
 const EVENT_BACKLOG: usize = 256;
 
+/// What a caller is told once the service has shut down.
+const SHUT_DOWN: &str = "the control service has shut down";
+
 /// Tunable behavior of the service.
 #[derive(Debug, Clone)]
 pub struct ServiceConfig {
@@ -199,6 +202,27 @@ impl ServiceHandle {
         match self.principal {
             Principal::Operator => Ok(()),
             Principal::Agent(_) => Err(ControlError::Forbidden),
+        }
+    }
+
+    /// An error as this caller may see it. The Operator sees every error whole.
+    /// An agent is never told where a receiver is or what a file path is, which
+    /// the connector's and the repository's messages can say, so what reaches it
+    /// from a connection or a read is fixed text.
+    fn sanitized(&self, error: ControlError) -> ControlError {
+        if self.principal == Principal::Operator {
+            return error;
+        }
+        match error {
+            ControlError::Unavailable(message) if message != SHUT_DOWN => {
+                ControlError::Unavailable(agent::RECEIVER_UNREACHABLE.into())
+            }
+            ControlError::Receiver(error) => ControlError::Receiver(OperationError::new(
+                error.kind,
+                error.context,
+                "the receiver could not complete the request",
+            )),
+            other => other,
         }
     }
 
@@ -364,7 +388,7 @@ impl Inner {
         receiver: &ReceiverId,
         operation: bool,
     ) -> Result<Lease, ControlError> {
-        let closed = || ControlError::Unavailable("the control service has shut down".into());
+        let closed = || ControlError::Unavailable(SHUT_DOWN.into());
         if self.closed.load(Ordering::SeqCst) {
             return Err(closed());
         }
@@ -639,9 +663,7 @@ impl Inner {
     ) -> Result<Admission, ControlError> {
         let mut operations = locked(&self.operations);
         if operations.closed {
-            return Err(ControlError::Unavailable(
-                "the control service has shut down".into(),
-            ));
+            return Err(ControlError::Unavailable(SHUT_DOWN.into()));
         }
         if let Some(key) = &submission.idempotency_key {
             if let Some(id) = operations.keys.get(&(owner.clone(), key.clone())) {
@@ -777,7 +799,9 @@ impl Inner {
         .is_some()
     }
 
-    fn finish(&self, id: OperationId, resolution: Resolution) {
+    /// End an operation. Returns whether it was still running: one that was
+    /// already over, because a cancel won, is left as it is.
+    fn finish(&self, id: OperationId, resolution: Resolution) -> bool {
         self.transition(id, |snapshot| {
             if snapshot.status.is_terminal() {
                 return false;
@@ -788,7 +812,21 @@ impl Inner {
             snapshot.reason = resolution.reason;
             snapshot.observation = resolution.observation;
             true
-        });
+        })
+        .is_some()
+    }
+
+    /// How an operation that has ended ended, as its snapshot says.
+    fn ended_as(&self, id: OperationId) -> Option<Resolution> {
+        let operations = locked(&self.operations);
+        let snapshot = operations.entries.get(&id)?.snapshot.borrow().clone();
+        snapshot.status.is_terminal().then_some(Resolution {
+            status: snapshot.status,
+            dispatch: snapshot.dispatch,
+            confirmed: snapshot.confirmed,
+            reason: snapshot.reason,
+            observation: snapshot.observation,
+        })
     }
 
     /// Where an operation is now, or `None` when it is gone.
@@ -900,16 +938,13 @@ async fn run_operation(
         (Principal::Agent(label), Some(state)) => Some((label, state)),
         _ => None,
     };
-    let policy = match agent {
-        Some((_, state)) => match state.precheck().await {
-            Ok(policy) => Some(policy),
-            Err(reason) => {
-                finish_agent(&inner, state, id, &owner, &receiver, agent::refusal(reason)).await;
-                return;
-            }
-        },
-        None => None,
-    };
+    if let Some((_, state)) = agent {
+        if let Err(reason) = state.precheck().await {
+            let resolution = agent::refusal(reason);
+            finish_agent(&inner, state, id, &owner, &receiver, resolution, None).await;
+            return;
+        }
+    }
     let lease = match inner.lease_as(&receiver, true).await {
         Ok(lease) => lease,
         Err(error) => {
@@ -917,12 +952,13 @@ async fn run_operation(
                 // An agent is not told where the receiver is, only that it is out of reach.
                 Some((_, state)) => {
                     let resolution = agent::refusal(agent::RECEIVER_UNREACHABLE);
-                    finish_agent(&inner, state, id, &owner, &receiver, resolution).await;
+                    finish_agent(&inner, state, id, &owner, &receiver, resolution, None).await;
                 }
-                None => inner.finish(
-                    id,
-                    Resolution::not_dispatched(OperationStatus::Rejected, error.to_string()),
-                ),
+                None => {
+                    let resolution =
+                        Resolution::not_dispatched(OperationStatus::Rejected, error.to_string());
+                    inner.finish(id, resolution);
+                }
             }
             return;
         }
@@ -930,16 +966,16 @@ async fn run_operation(
 
     let mut precondition = None;
     let mut settlement = None;
-    if let (Some((label, state)), Some(policy)) = (agent, policy) {
+    if let Some((label, state)) = agent {
         let request = agent::Request {
             id,
             receiver: &receiver,
             intent: &intent,
             label,
         };
-        match agent::decide(&inner, state, &lease, &request, &policy).await {
+        match agent::decide(&inner, state, &lease, &request).await {
             agent::Gate::Stop(resolution) => {
-                finish_agent(&inner, state, id, &owner, &receiver, resolution).await;
+                finish_agent(&inner, state, id, &owner, &receiver, resolution, None).await;
                 return;
             }
             agent::Gate::Dispatch {
@@ -977,6 +1013,12 @@ async fn run_operation(
     }
     // The only call that can write to the receiver, made exactly once.
     let outcome = lease.session.operate(request).await;
+    // An agent is told a fixed sentence for what the session reports, not the
+    // session's text, which can name an address. The log keeps the text.
+    let shown = match owner {
+        Principal::Agent(_) => agent::fixed_reason(&outcome),
+        Principal::Operator => None,
+    };
     let resolution = resolve(outcome);
     match (inner.agent.as_ref(), &settlement) {
         (Some(state), Some(settlement)) => {
@@ -986,9 +1028,11 @@ async fn run_operation(
                 settlement,
                 resolution.dispatch != DispatchCertainty::NotDispatched,
             );
-            finish_agent(&inner, state, id, &owner, &receiver, resolution).await;
+            finish_agent(&inner, state, id, &owner, &receiver, resolution, shown).await;
         }
-        _ => inner.finish(id, resolution),
+        _ => {
+            inner.finish(id, resolution);
+        }
     }
 }
 
@@ -1000,11 +1044,21 @@ async fn finish_agent(
     owner: &Principal,
     receiver: &ReceiverId,
     resolution: Resolution,
+    shown: Option<&str>,
 ) {
-    inner.finish(id, resolution.clone());
-    state
-        .record_finished(id, owner, receiver, &resolution)
-        .await;
+    // The snapshot carries `shown` when there is one; the log keeps `resolution`.
+    let mut visible = resolution.clone();
+    if let Some(text) = shown {
+        visible.reason = Some(text.into());
+    }
+    let recorded = if inner.finish(id, visible) {
+        resolution
+    } else {
+        // A cancel won while the gate was deciding. The log says what the client
+        // was told, not what the gate would have said.
+        inner.ended_as(id).unwrap_or(resolution)
+    };
+    state.record_finished(id, owner, receiver, &recorded).await;
 }
 
 impl ReceiverReads for ServiceHandle {
@@ -1015,7 +1069,7 @@ impl ReceiverReads for ServiceHandle {
                 .config
                 .load()
                 .await
-                .map_err(ControlError::Receiver)?;
+                .map_err(|error| self.sanitized(ControlError::Receiver(error)))?;
             let mut summaries = Vec::with_capacity(configuration.receivers.len());
             for (name, identity) in &configuration.receivers {
                 let Ok(id) = ReceiverId::new(name.as_str()) else {
@@ -1043,7 +1097,11 @@ impl ReceiverReads for ServiceHandle {
     ) -> BoxFuture<'a, Result<StateSubscription, ControlError>> {
         Box::pin(async move {
             self.visible_receiver(receiver)?;
-            let lease = self.inner.lease(receiver).await?;
+            let lease = self
+                .inner
+                .lease(receiver)
+                .await
+                .map_err(|error| self.sanitized(error))?;
             Ok(lease
                 .session
                 .state()
@@ -1058,12 +1116,16 @@ impl ReceiverReads for ServiceHandle {
     ) -> BoxFuture<'a, Result<SourceCatalogObservation, ControlError>> {
         Box::pin(async move {
             self.visible_receiver(receiver)?;
-            let lease = self.inner.lease(receiver).await?;
+            let lease = self
+                .inner
+                .lease(receiver)
+                .await
+                .map_err(|error| self.sanitized(error))?;
             lease
                 .session
                 .source_catalog()
                 .await
-                .map_err(ControlError::Receiver)
+                .map_err(|error| self.sanitized(ControlError::Receiver(error)))
         })
     }
 
@@ -1092,7 +1154,10 @@ impl OperationControl for ServiceHandle {
         Box::pin(async move {
             self.visible_receiver(receiver)?;
             // An unknown receiver is refused before an operation exists for it.
-            self.inner.identity(receiver).await?;
+            self.inner
+                .identity(receiver)
+                .await
+                .map_err(|error| self.sanitized(error))?;
             let admission = self.inner.admit(&self.principal, receiver, submission)?;
             let snapshot = match admission {
                 Admission::Existing(snapshot) => return Ok(snapshot),
@@ -1139,9 +1204,7 @@ impl OperationControl for ServiceHandle {
             let events = locked(&self.inner.events)
                 .as_ref()
                 .map(broadcast::Sender::subscribe)
-                .ok_or_else(|| {
-                    ControlError::Unavailable("the control service has shut down".into())
-                })?;
+                .ok_or_else(|| ControlError::Unavailable(SHUT_DOWN.into()))?;
             Ok(Box::new(EventStream {
                 events,
                 viewer: self.principal.clone(),
@@ -1157,7 +1220,10 @@ impl OperationControl for ServiceHandle {
         Box::pin(async move {
             self.visible_receiver(receiver)?;
             // An unknown receiver is refused here, as it is for a submission.
-            self.inner.identity(receiver).await?;
+            self.inner
+                .identity(receiver)
+                .await
+                .map_err(|error| self.sanitized(error))?;
             match &self.principal {
                 // The Operator skips policy, so there is nothing to evaluate.
                 Principal::Operator => Ok(DryRun {
@@ -1168,7 +1234,10 @@ impl OperationControl for ServiceHandle {
                     let agent = self.inner.agent.as_ref().ok_or(ControlError::Forbidden)?;
                     // A dry run opens the receiver, so it is a write against the cap.
                     agent.charge_write(label)?;
-                    agent::dry_run(&self.inner, agent, label.as_str(), receiver, &intent).await
+                    // An agent is told the limits, not the ids of the rules.
+                    agent::dry_run(&self.inner, agent, label.as_str(), receiver, &intent, false)
+                        .await
+                        .map_err(|error| self.sanitized(error))
                 }
             }
         })
@@ -1319,7 +1388,7 @@ impl OperatorAdmin for ServiceHandle {
             let state = self.inner.agent.as_ref().ok_or_else(no_agent_path)?;
             self.inner.identity(receiver).await?;
             // The Operator testing a tier does not spend the agent's allowance.
-            agent::dry_run(&self.inner, state, agent.as_str(), receiver, &intent).await
+            agent::dry_run(&self.inner, state, agent.as_str(), receiver, &intent, true).await
         })
     }
 

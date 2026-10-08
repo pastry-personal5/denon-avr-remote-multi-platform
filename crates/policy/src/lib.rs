@@ -13,6 +13,8 @@ pub mod level;
 pub use config::{
     Alternative, Budget, Conditions, Effect, Filter, PolicyConfig, PolicyError, Rule, Scope,
 };
-pub use evaluate::{evaluate, Baseline, Decision, PolicyInput, Reason, RecentChange};
+pub use evaluate::{
+    evaluate, observed_volume, Baseline, Decision, PolicyInput, Reason, RecentChange,
+};
 pub use intent::{IntentKind, IntentValue};
 pub use level::{Level, LevelError, Span};

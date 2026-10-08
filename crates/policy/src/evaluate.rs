@@ -264,7 +264,9 @@ pub fn evaluate(input: &PolicyInput<'_>, config: &PolicyConfig) -> Decision {
 }
 
 /// The observed volume, or `None` when it is stale, unknown, or unavailable.
-fn observed_volume(state: &ReceiverState) -> Option<Level> {
+/// The decision and the ledger both read the volume through this, so they agree
+/// on what counts as unusable.
+pub fn observed_volume(state: &ReceiverState) -> Option<Level> {
     match FieldBaseline::capture(state, CoreField::Volume) {
         FieldBaseline::Value(FieldValue::Volume(volume)) => Some(Level::of(volume)),
         _ => None,
