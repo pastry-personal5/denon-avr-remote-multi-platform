@@ -28,4 +28,5 @@ tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "rt-multi
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 [dev-dependencies]
+denon-avr-api-client = { path = "../../crates/api-client" }
 tokio = { version = "1", features = ["test-util"] }

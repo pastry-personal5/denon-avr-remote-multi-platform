@@ -77,6 +77,9 @@ while IFS=: read -r from to; do
         denon-avr-application:denon-avr-policy | \
         denon-avr-api-contract:denon-avr-application | \
         denon-avr-api-contract:denon-avr-domain | \
+        denon-avr-api-client:denon-avr-api-contract | \
+        denon-avr-api-client:denon-avr-application | \
+        denon-avr-api-client:denon-avr-domain | \
         denon-avr-api-server:denon-avr-api-contract | \
         denon-avr-api-server:denon-avr-application | \
         denon-avr-api-server:denon-avr-domain | \
@@ -126,6 +129,33 @@ contract_graph=$(cargo tree -p denon-avr-api-contract --edges normal --prefix no
 case "$contract_graph" in
     *denon-avr-infrastructure* | *denon-avr-protocol*) fail "api-contract must not reach infrastructure or protocol, found: $contract_graph" ;;
 esac
+
+# The client is small enough to run inside an agent's process: it speaks plain
+# HTTP/1.1 over a Unix socket, so no TLS stack and no server framework may be in
+# its graph, and it reaches neither the receiver adapters nor the wire protocols.
+client_graph=$(cargo tree -p denon-avr-api-client --edges normal --prefix none --format '{p}' | awk '{print $1}' | sort -u | tr '\n' ' ')
+for forbidden in rustls native-tls openssl security-framework ring aws-lc-rs webpki \
+    axum warp actix-web rocket tower-http poem salvo denon-avr-infrastructure denon-avr-protocol; do
+    case " $client_graph" in
+        *" $forbidden "*) fail "api-client must not reach $forbidden, found: $client_graph" ;;
+    esac
+done
+
+# The kinds are `normal,features`: `features` alone also walks dev-dependencies,
+# and a test-only fake server must not trip this rule. The probe is run on the
+# server as well, which does enable `server`, so a change in how Cargo prints
+# features cannot make the rule pass by finding nothing.
+server_features='^(hyper|hyper-util) feature "(server|server-auto|server-graceful)"'
+cargo tree -p denon-avr-api-server --edges normal,features --prefix none | rg -q "$server_features" ||
+    fail "the feature probe for the client's graph found no server feature on api-server"
+if cargo tree -p denon-avr-api-client --edges normal,features --prefix none | rg -q "$server_features"; then
+    fail "api-client must not enable the server side of hyper or hyper-util"
+fi
+
+# The server and the client are built for Unix only, and say so when they are not.
+for root in apps/api-server/src/lib.rs crates/api-client/src/lib.rs; do
+    contains '#\[cfg\(not\(unix\)\)\]' "$root" || fail "$root must refuse to build on a platform that is not Unix"
+done
 
 # The canonical receiver-session contract has one definition, in the
 # application crate's session module, and nothing else defines a receiver

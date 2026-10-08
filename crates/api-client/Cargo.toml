@@ -1,0 +1,21 @@
+[package]
+name = "denon-avr-api-client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+[lib]
+path = "src/lib.rs"
+[dependencies]
+denon-avr-api-contract = { path = "../api-contract" }
+denon-avr-application = { path = "../application" }
+denon-avr-domain = { path = "../domain" }
+bytes = "1"
+http-body-util = "0.1"
+hyper = { version = "1", default-features = false, features = ["http1", "client"] }
+hyper-util = { version = "0.1", default-features = false, features = ["tokio"] }
+serde = "1"
+serde_json = "1"
+tokio = { version = "1", features = ["net", "rt", "sync", "time"] }
+[dev-dependencies]
+tokio = { version = "1", features = ["io-util", "macros", "rt", "test-util"] }

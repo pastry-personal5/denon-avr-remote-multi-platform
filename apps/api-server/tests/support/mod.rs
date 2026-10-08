@@ -906,3 +906,98 @@ pub fn end_reason(event: &denon_avr_api_contract::events::Event) -> String {
         .unwrap()
         .to_owned()
 }
+
+// ---- Comparing a state read over the socket with one read in process ----
+
+/// What of a state both readings must agree on. A state read over the socket never
+/// equals the one read in process: its stamps are placeholders, its
+/// synchronization is `NotStarted`, and an agent's copy has no issue text or
+/// diagnostics. So the two are compared by this, which holds exactly what the wire
+/// promises to carry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Normalized {
+    /// For each of the seven fields: what a decision would see of it, its validity
+    /// class, and why it is stale.
+    pub fields: Vec<(
+        denon_avr_domain::CoreField,
+        denon_avr_domain::FieldBaseline,
+        &'static str,
+        Option<denon_avr_domain::StaleReason>,
+    )>,
+    pub epoch: Option<Epoch>,
+    pub revision: u64,
+    /// The Operator's only: each field's issue text, in the order above, and the
+    /// state's diagnostics.
+    pub issues: Option<Vec<Option<String>>>,
+    pub diagnostics: Option<Vec<String>>,
+}
+
+pub fn normalize(state: &ReceiverState, with_text: bool) -> Normalized {
+    use denon_avr_domain::{CoreField, FieldBaseline, ReceiverFieldValidity as Validity};
+    let parts: [(CoreField, &Validity, Option<&str>); 7] = {
+        fn issue(issue: &Option<denon_avr_domain::FieldIssue>) -> Option<&str> {
+            issue.as_ref().map(|issue| issue.message.as_str())
+        }
+        [
+            (
+                CoreField::SystemPower,
+                &state.system_power.validity,
+                issue(&state.system_power.last_issue),
+            ),
+            (
+                CoreField::MainZonePower,
+                &state.main_zone.power.validity,
+                issue(&state.main_zone.power.last_issue),
+            ),
+            (
+                CoreField::Zone2Power,
+                &state.zone2_power.validity,
+                issue(&state.zone2_power.last_issue),
+            ),
+            (
+                CoreField::Source,
+                &state.main_zone.source.validity,
+                issue(&state.main_zone.source.last_issue),
+            ),
+            (
+                CoreField::Volume,
+                &state.main_zone.volume.validity,
+                issue(&state.main_zone.volume.last_issue),
+            ),
+            (
+                CoreField::Mute,
+                &state.main_zone.mute.validity,
+                issue(&state.main_zone.mute.last_issue),
+            ),
+            (
+                CoreField::SoundMode,
+                &state.main_zone.sound_mode.validity,
+                issue(&state.main_zone.sound_mode.last_issue),
+            ),
+        ]
+    };
+    let fields = parts
+        .iter()
+        .map(|(field, validity, _)| {
+            let (class, stale) = match validity {
+                Validity::Unknown => ("unknown", None),
+                Validity::Current { .. } => ("current", None),
+                Validity::Stale { reason } => ("stale", Some(reason.clone())),
+                Validity::Unavailable { .. } => ("unavailable", None),
+            };
+            (*field, FieldBaseline::capture(state, *field), class, stale)
+        })
+        .collect();
+    Normalized {
+        fields,
+        epoch: state.epoch,
+        revision: state.revision.0,
+        issues: with_text.then(|| {
+            parts
+                .iter()
+                .map(|(_, _, issue)| issue.map(str::to_owned))
+                .collect()
+        }),
+        diagnostics: with_text.then(|| state.diagnostics.clone()),
+    }
+}
