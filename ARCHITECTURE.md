@@ -261,7 +261,10 @@ without creating an operation or a record. Otherwise the operation starts
 7. Settles the ledger by the reported `dispatch`, ends the operation, and appends
    `Finished`.
 
-Every agent operation ends with a `Finished` record. On a service built by `start`
+Every agent operation ends with a `Finished` record, except that a refusal made
+before any decision (no policy, or no readable history) is written once, then at
+most once a minute with the count of those not written, so a client that keeps
+asking cannot fill the log. On a service built by `start`
 the Operator's writes get `Decided`, `Dispatching`, and `Finished` records and a
 ledger entry for a volume change; a failing log does not stop them, and `health`
 reports it as failing. An Operator's appends are bounded to one second, not five,

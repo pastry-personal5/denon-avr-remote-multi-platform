@@ -52,6 +52,9 @@ const REBUILD_TIMEOUT: Duration = Duration::from_secs(30);
 /// More labels than this are swept for ones that have gone quiet.
 const SWEEP_LABELS_ABOVE: usize = 64;
 
+/// How often a refusal made before any decision is written to the log.
+const REFUSAL_LOG_EVERY: Duration = Duration::from_secs(60);
+
 /// The window the write cap counts over.
 const WRITE_WINDOW: Duration = Duration::from_secs(60);
 
@@ -122,6 +125,9 @@ pub(super) struct AgentState {
     /// One load of the policy at a time, from the read to the record, so the
     /// policy in force and the log agree on which file loaded last.
     reloading: tokio::sync::Mutex<()>,
+    /// When a refusal made before any decision was last written to the log, and
+    /// how many have been refused since without being written.
+    refusals: Mutex<(Option<Instant>, u32)>,
     writes: Mutex<HashMap<AgentLabel, VecDeque<Instant>>>,
 }
 
@@ -144,6 +150,7 @@ impl AgentState {
             audit_ok: AtomicBool::new(true),
             rebuilding: tokio::sync::Mutex::new(()),
             reloading: tokio::sync::Mutex::new(()),
+            refusals: Mutex::new((None, 0)),
             writes: Mutex::new(HashMap::new()),
         };
         state.load_policy().await;
@@ -340,6 +347,40 @@ impl AgentState {
             Principal::Agent(_) => AUDIT_TIMEOUT,
         };
         let _ = self.append_within(record, Durability::Flushed, limit).await;
+    }
+
+    /// Record a refusal made before any decision, because there was no policy to
+    /// decide by or no history to count in. A client that keeps asking would
+    /// otherwise write a line per attempt and push real records out of the log,
+    /// so the first is written, then one a minute that says how many were not.
+    pub(super) async fn record_refused(
+        &self,
+        id: OperationId,
+        owner: &Principal,
+        receiver: &ReceiverId,
+        resolution: &Resolution,
+    ) {
+        let skipped = {
+            let now = Instant::now();
+            let mut refusals = locked(&self.refusals);
+            let due = refusals
+                .0
+                .is_none_or(|last| now.duration_since(last) >= REFUSAL_LOG_EVERY);
+            if !due {
+                refusals.1 += 1;
+                return;
+            }
+            refusals.0 = Some(now);
+            std::mem::take(&mut refusals.1)
+        };
+        let mut resolution = resolution.clone();
+        if skipped > 0 {
+            let reason = resolution.reason.take().unwrap_or_default();
+            resolution.reason = Some(format!(
+                "{reason} ({skipped} more refused since the last record)"
+            ));
+        }
+        self.record_finished(id, owner, receiver, &resolution).await;
     }
 
     // ---- Ledger ----

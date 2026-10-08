@@ -2457,3 +2457,45 @@ async fn after_shutdown_an_agent_is_told_so_and_not_that_the_receiver_is_out_of_
         ControlError::Unavailable("the control service has shut down".into())
     );
 }
+
+#[tokio::test(start_paused = true)]
+async fn refusals_made_before_any_decision_are_logged_once_a_minute_not_each_time() {
+    let h = start(Setup {
+        policy: Err(PolicyLoadError::Invalid("a bad edit".into())),
+        ..Setup::default()
+    })
+    .await;
+    let finished = |h: &AgentHarness| -> Vec<(String, Option<String>)> {
+        h.audit
+            .events()
+            .into_iter()
+            .filter_map(|event| match event {
+                AuditEvent::Finished { status, reason, .. } => Some((status, reason)),
+                _ => None,
+            })
+            .collect()
+    };
+
+    // Ten refused requests in a row. Each is told so, and one is logged.
+    for _ in 0..10 {
+        let snapshot = ask(&h.agent, mute_on()).await;
+        assert_eq!(snapshot.reason.as_deref(), Some("policy unavailable"));
+    }
+    assert_eq!(
+        finished(&h),
+        [(
+            "rejected".to_string(),
+            Some("policy unavailable".to_string())
+        )]
+    );
+
+    // A minute on, the next is logged with the count of those not written.
+    advance(Duration::from_secs(61)).await;
+    ask(&h.agent, mute_on()).await;
+    let records = finished(&h);
+    assert_eq!(records.len(), 2);
+    assert_eq!(
+        records[1].1.as_deref(),
+        Some("policy unavailable (9 more refused since the last record)")
+    );
+}

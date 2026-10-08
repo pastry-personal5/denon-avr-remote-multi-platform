@@ -941,7 +941,10 @@ async fn run_operation(
     if let Some((_, state)) = agent {
         if let Err(reason) = state.precheck().await {
             let resolution = agent::refusal(reason);
-            finish_agent(&inner, state, id, &owner, &receiver, resolution, None).await;
+            inner.finish(id, resolution.clone());
+            state
+                .record_refused(id, &owner, &receiver, &resolution)
+                .await;
             return;
         }
     }

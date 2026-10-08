@@ -269,7 +269,10 @@ agent's dry run showed rule ids (`an_agents_dry_run_shows_the_limits_and_not_the
 decision D23); an append whose caller gave up could be left half done or number
 two records alike (`a_caller_that_gives_up_does_not_abandon_the_write_or_reuse_a_number`);
 and rebuilding the ledger parsed every file in the log however old
-(`reading_the_last_day_skips_files_not_written_in_it`). The decision and the ledger
+(`reading_the_last_day_skips_files_not_written_in_it`); and a client refused again
+and again while the policy was unavailable wrote a log line each time
+(`refusals_made_before_any_decision_are_logged_once_a_minute_not_each_time`, an
+owner decision). The decision and the ledger
 now read the observed volume through one function in the policy crate.
 
 The live test is `#[ignore]` and refuses to run unless armed. It was compiled and
