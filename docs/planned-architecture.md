@@ -293,7 +293,12 @@ Invariants:
   is denied. A reconnect or receiver change invalidates the approval, matching
   the existing rule that such events invalidate authority from the old
   connection. The precondition on the session request closes the remaining
-  window between this evaluation and the write.
+  window between this evaluation and the write. Evaluation needs the receiver's
+  state, so it runs under a lease on the session after the receiver is connected
+  and synchronized: an Agent submit returns `submitted` at once and the gate's task
+  evaluates. While no approval can intervene, nothing waits between evaluation and
+  dispatch, so the one evaluation is the one at dispatch. A precondition mismatch
+  ends the operation as `rejected`, and the gate never retries it.
 - **An approval is spent when the session is called.** If the session then
   returns `rejected`, `superseded`, or `cancelled`, nothing was dispatched but
   the ticket is consumed; a new attempt needs a new approval. A newer operation
@@ -318,27 +323,38 @@ Invariants:
 
 The Policy Engine is a pure library that depends only on `domain`. It performs
 no I/O, reads no clock, and holds no state. The gate keeps the ledger of recent
-agent-originated changes and passes it in. The gate rebuilds the ledger from the
-audit log at start, so a server restart does not reset the budget.
+volume changes on each receiver and passes it in: the agents' operations
+(reserved before dispatch, dispatched, or possibly dispatched) and the
+Operator's volume writes, each with the level the receiver showed and the level
+that was asked for. The gate rebuilds the ledger from the audit log at start, so
+a server restart does not reset the budget.
 
 ```text
 evaluate(PolicyInput, PolicyConfig) -> Decision
 
-PolicyInput = principal, receiver identity and capabilities, requested intent,
+PolicyInput = agent label, receiver id, requested intent,
               current receiver state (with per-field validity),
-              recent agent-originated changes on this receiver,
-              current time (injected)
-Decision    = Allow
-            | RequireApproval { reasons, matched rules, baseline }
-            | Deny            { reasons, matched rules }
+              the receiver's recent volume changes,
+              wall-clock time (injected)
+Decision    = Allow            { baseline }
+            | RequireApproval  { reasons, matched rules, baseline }
+            | Deny             { reasons, matched rules }
 ```
 
 `Deny` is a limit that approval cannot override. `RequireApproval` is a limit
 that the user may waive for one operation. Where several rules match, the most
 restrictive decision wins, in the order `Deny`, `RequireApproval`, `Allow`.
-The baseline is the receiver epoch plus the values and validity of only the
-fields the matched rules consulted, so an unrelated change does not void an
-approval.
+
+**Baseline.** The baseline is the receiver epoch plus the value and validity of
+every field read by a state-dependent condition of any rule that *applies* to the
+request, whether or not that rule matched, and it comes with `Allow` as well as
+`RequireApproval`. A rule applies when its scope, intent, and value all match the
+request, so its outcome depends only on the state it reads. An unmute is allowed
+because the loud-baseline rule did not match; the baseline must still carry the
+volume, or the write could follow a change in volume the decision never saw. A
+field that no applicable rule reads is not in the baseline, so an unrelated
+change does not void an approval or an allowed write. The gate turns the baseline
+into the session request's precondition.
 
 | Dimension | Examples of what a rule can express |
 | --- | --- |
@@ -347,18 +363,50 @@ approval.
 | State validity | A stale, unknown, or unavailable baseline for a state-dependent rule counts as dangerous |
 | Interaction | Power-on or unmute while the volume is above a ceiling, or unknown |
 | Cumulative effect | A budget over a time window, pooled across all agents on a receiver, so neither a series of small steps nor several agents splitting a change can evade a per-step limit |
-| Context | Principal or client, receiver, time-of-day windows |
+| Context | Agent label, receiver |
 
-An intent is **classified** when at least one rule, of any decision, names it.
-A classified intent that matches no restricting rule is `Allow`. An unclassified
-intent is treated as dangerous. The domain model may gain intents; each gets a
-tool and a classification together.
+The first release has no time-of-day dimension. A rule needing one waits for a
+later release, and the policy schema rejects the key rather than ignoring it.
+
+An intent is **classified for an agent** when at least one rule that applies to
+that agent, of any decision, names the intent. A rule that names no intent
+restricts but never classifies. A classified intent that matches no restricting
+rule is `Allow`; an unclassified intent is treated as dangerous
+(`RequireApproval`). Classification is per agent: a rule narrowed to one label
+classifies the intent for that label only, so it cannot turn another agent's
+unclassified intent into `Allow`. The domain model may gain intents; each gets a
+tool and a classification together, and the policy crate maps every
+`ReceiverIntent` variant to an intent kind with an exhaustive match, so a new
+variant does not compile until it is mapped.
+
+An `allow` rule exists to classify an intent and never relaxes a restricting
+rule, so it may carry a scope, an intent, and a value and nothing else; the
+loader rejects an `allow` rule with any other condition. A `when` that names only
+`agents` or `receivers`, and no intent, matches every intent. That is how a rule
+says "deny every write for this label".
 
 Volume values are the relative decibel scale the CLI already uses, from -79.5
-to +18.0 in 0.5 dB steps. The cumulative budget is the rise above the lowest
-level observed in the window, counting agent operations that were dispatched or
-possibly dispatched, approved ones included. It must not be resettable by
-alternating up and down steps.
+to +18.0 in 0.5 dB steps, plus the receiver's `Minimum`, which the rules treat as
+-80.0 dB. A target of `Minimum` is therefore always a decrease, and a rise from
+`Minimum` is measured conservatively. Limits in policy must lie on the 0.5 dB
+grid.
+
+The cumulative budget is the rise of the requested level above the lowest level
+in the window, and it applies only to an increase: a target at or below the
+observed level is never over the budget, however deep the floor, so a decrease
+from a usable level is not held back by the step or the budget. That floor is the
+lowest of the receiver's currently observed level and, for every ledger entry in
+the window, the level the receiver showed before the change and the level that was
+asked for. Entries are agent operations
+that are reserved, dispatched, or possibly dispatched (approved ones included),
+and Operator volume writes. A decrease lowers the floor the next rise is measured
+from, so alternating up and down steps cannot reset the budget. The window is
+wall-clock time, because it must survive a restart. An entry dated later than now
+(the clock stepped back) still counts, so a backward step cannot shrink the
+budget; a forward step can expire entries early, which is accepted. The budget is
+pooled across agents. The gate reads the ledger, evaluates, and reserves the
+operation's entry in one step under a lock, so two agents cannot each pass a
+budget that together they exceed.
 
 The shipped default policy classifies agent operations as follows:
 
@@ -367,7 +415,8 @@ The shipped default policy classifies agent operations as follows:
 | Volume target above the hard limit | `Deny` |
 | Volume target above the ceiling | `RequireApproval` |
 | Volume increase over the step limit from the observed level, or over the budget within the time window | `RequireApproval` |
-| Any other volume change, including every decrease | `Allow` |
+| Any other volume change, including every decrease, when the observed volume is usable | `Allow` |
+| Any volume change when the observed volume is unknown or stale | `RequireApproval` |
 | Main zone power on, or unmute, when the observed volume is above the ceiling or unknown | `RequireApproval` |
 | Main zone power on, or unmute, when the observed volume is known and at or below the ceiling | `Allow` |
 | System power on or off | `RequireApproval` |
@@ -380,14 +429,20 @@ values. If a limit is not configured, every operation its rule matches requires
 approval, so until limits are configured an agent needs approval for every
 volume change and every power-on. System power on needs approval whatever the
 volume. If the receiver reports no usable volume in standby, a main zone
-power-on from standby needs approval under the unknown-baseline rule.
+power-on from standby needs approval under the unknown-baseline rule. The step
+and budget rules cannot be checked without a usable observed volume, so a volume
+change then needs approval too, a decrease included, because it cannot be shown
+to be one.
 Approval lifetime is also configured in policy and defaults to a few minutes.
 
 Policy is a YAML document loaded by an infrastructure adapter into a typed
 `PolicyConfig`. The following is illustrative only; the numbers are examples,
 not defaults. Rules under `agent` apply to every agent, and a rule can be
-narrowed to some agents by an `agents` list of labels in its `when`. The loader
-rejects `unclassified: allow`:
+narrowed to some agents by an `agents` list of labels, or to some receivers by a
+`receivers` list of ids, in its `when`. The loader rejects `unclassified: allow`,
+an `or_unknown` that is not `true` (an unknown or stale volume always matches),
+limits off the 0.5 dB grid, an `allow` rule with a condition beyond scope, intent,
+and value, and unknown keys, including any time-of-day key:
 
 ```yaml
 unclassified: require_approval
@@ -427,14 +482,46 @@ agent:
           - { intent: source }
           - { intent: sound_mode }
       then: allow
+    # Narrowed to one label and naming no intent: deny every write for it.
+    - id: claude-code-read-only
+      when: { agents: [claude-code] }
+      then: deny
 ```
 
-Policy is authored by editing the file; no API route writes it. A change takes
-effect on server start or an explicit Operator reload, which validates the file
-and replaces the active policy as a whole. A policy that fails to load disables
-agent writes while reads continue. The Policy Engine cannot know how loud a
-source is or what a given level means in a given room; its limits complement
-any receiver-side limits and do not replace them.
+Policy is authored by editing the file (`policy.yaml`, beside the receiver
+configuration); no API route writes it. A change takes effect on server start or
+an explicit Operator reload, which validates the file and replaces the active
+policy as a whole. A load that fails, at start or on reload, leaves no active
+policy: agent writes are disabled while reads continue, until a later load
+succeeds. The digest is the SHA-256 of the file bytes that were read. It is shown
+with the effective policy and recorded in the audit log each time a policy is
+loaded. The Policy Engine cannot know how loud a source is or what a given level
+means in a given room; its limits complement any receiver-side limits and do not
+replace them.
+
+## Audit
+
+The audit log is a port in `application` with an append-only JSON Lines adapter.
+Each record is one event and carries a schema version, the server run (its start
+time) it belongs to, the operation id, the principal, the receiver, and the
+wall-clock time. Operation ids restart at 1 with every run, so a record is matched
+to its operation by run and id. Agent-supplied text is bounded and escaped.
+
+| Event | Written | Carries |
+| --- | --- | --- |
+| `decided` | When the policy decision is reached | The intent, the decision, reasons, matched rule ids, the baseline, and the policy digest |
+| `dispatching` | Before the session's `operate` is called | The requested level and the level the receiver showed, for a volume change, and the precondition's fields |
+| `finished` | When the operation ends | Status, `dispatch`, `confirmed`, and the reason |
+| `policy_loaded`, `policy_load_failed` | Each load attempt | The digest, or the error |
+
+Approval events join these with the broker. The write order is part of the
+contract. The `dispatching` record is written and synced to disk before the
+session is called, and a failed append rejects an Agent operation and lets an
+Operator one continue with a warning. After a crash, the ledger is rebuilt from the
+`dispatching` records: each counts as possibly dispatched unless a `finished`
+record for the same operation says `not_dispatched`, so one with no `finished`
+record counts. A `finished` record with no `dispatching` record is ignored. A
+reader skips records and fields it does not know, and a truncated last line.
 
 ## Approval
 
@@ -509,7 +596,7 @@ grow compatibly.
 | `GET /v1/config`, `PUT /v1/config` | Receiver configuration and per-receiver preferences | Operator endpoint |
 | `GET /v1/receivers/{id}/state` | Complete receiver state with per-field validity | Both endpoints |
 | `GET /v1/receivers/{id}/events` | Event stream of coalesced state snapshots and operation events. An Agent sees only its own principal's operation events | Both endpoints |
-| `POST /v1/receivers/{id}/operations` | Submit an operation; `dry_run` returns the policy decision without dispatching | Both endpoints |
+| `POST /v1/receivers/{id}/operations` | Submit an operation; `dry_run` returns the policy decision for the caller's own principal without dispatching, and the Operator may name an agent label to see that agent's decision. A dry run creates no operation and writes no audit record | Both endpoints |
 | `GET /v1/operations/{id}`, `POST /v1/operations/{id}/cancel` | Status and cancellation | Both; the owner only, and the Operator sees all |
 | `GET /v1/approvals` | Pending and decided approvals | Operator endpoint |
 | `GET /v1/audit` | Query the audit log | Operator endpoint |
@@ -841,7 +928,8 @@ Fail-closed behavior:
 
 | Condition | Behavior |
 | --- | --- |
-| Policy missing or invalid | Agent writes rejected; reads continue |
+| Policy missing or invalid, at start or on reload | Agent writes end `rejected` with nothing dispatched; reads continue |
+| Receiver epoch not established, or the audit log unreadable when the ledger is rebuilt | Agent writes end `rejected` with nothing dispatched |
 | Approval service unconfigured or unreachable | Approval-requiring operations end as `approval_unavailable` |
 | Baseline state stale or unknown for a state-dependent rule | Treated as dangerous |
 | Intent without a classification | Treated as dangerous |
@@ -927,8 +1015,8 @@ share.
 | Item | Location and rule |
 | --- | --- |
 | Receiver configuration | YAML, owned by the Control API server and reached by clients through the API. The schema holds several receivers by name. An earlier single-receiver file is read, then rewritten in the new schema with a one-time backup |
-| Policy | Separate YAML in the per-user data directory, edited as a file and loaded on start or Operator reload |
-| Audit log | Append-only JSON Lines in the same directory; one record per operation event with principal, request, policy decision and matched rules, approval ticket and decision, dispatch certainty, and outcome. Rotated by size, with a configurable size limit and file count; the oldest file is deleted beyond the count, and the audit view reads across the retained files |
+| Policy | `policy.yaml`, a separate YAML file beside the receiver configuration in the per-user data directory, edited as a file and loaded on start or Operator reload |
+| Audit log | Append-only JSON Lines in an `audit` directory beside the configuration (directory mode 0700, files 0600); one record per operation event, as described under [Audit](#audit). Rotated by size, with a configurable size limit and file count (defaults 20 MiB and 10 files); the oldest file is deleted beyond the count, and the audit view reads across the retained files |
 | Endpoints | The Operator endpoint in the owner-only data directory; the Agent endpoint in a separate location whose permissions are configured and applied at start |
 | Credentials and keys | Owner-only files in the per-user data directory: hashes of issued tokens, the Operator token file read by the GUI and CLI, and the External Approval Service's public keys with their key ids |
 | Agent tokens | Held by the agent side only: in the agent host's MCP configuration as a request header for `mcp-http`, or in an owner-only file named by the environment for `mcp-stdio` |
@@ -955,9 +1043,10 @@ and opt-in live validation.
 - The gate is tested with a fake session, fake approval channel, and fake clock:
   approve, reject, expire, cancel, replay, mismatched digest, state change
   during approval, a failed precondition, supersession of an approved operation,
-  and retry with the same idempotency key. Each asserts at most one dispatch and
-  no dispatch on any non-approved path. Every session outcome is checked against
-  the mapping to `status`, `dispatch`, and `confirmed`.
+  retry with the same idempotency key, two agents splitting a budget
+  concurrently, and an audit sink that fails before dispatch. Each asserts at
+  most one dispatch and no dispatch on any non-approved path. Every session outcome
+  is checked against the mapping to `status`, `dispatch`, and `confirmed`.
 - The Control API has contract tests against the schema and an in-process
   server. The Agent endpoint is tested to refuse every Operator resource, with
   and without an Operator token, and to audit the attempt. Receiver addresses

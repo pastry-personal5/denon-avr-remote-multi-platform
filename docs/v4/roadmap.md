@@ -4,8 +4,10 @@
 Milestone 1 is complete (2026-10-08), tracked in its
 [phase overview](phase-1-control-port-overview.md). Milestone 2 is implemented
 (started 2026-10-08) and waits on the owner's visual and live checks, tracked in
-its [phase overview](phase-2-gui-on-port-overview.md). No version change is made
-until the release milestone.**
+its [phase overview](phase-2-gui-on-port-overview.md). Milestone 3 is planned
+and reviewed (2026-10-08), tracked in its
+[phase overview](phase-3-policy-audit-gate-overview.md); it has not started. No
+version change is made until the release milestone.**
 
 This roadmap sequences the work needed to implement the target design in
 [Planned architecture](../planned-architecture.md). It does not restate that
@@ -57,6 +59,9 @@ Consequences for 4.0.0:
   effect once approval ships.
 - Agents cannot change system or Zone 2 power. They can power the main zone on
   only when the observed volume is known and at or below -30 dB.
+- The step and budget rules need a usable observed volume, so while the volume is
+  unknown or stale (in standby, after a reconnect before the first read) every
+  agent volume change ends as `approval_unavailable`, a decrease included.
 - The design's cross-platform GUI, named-pipe transport, and Windows access
   control text no longer apply to this release. Milestone 1 amends the design
   to say so.
@@ -120,7 +125,12 @@ findings drive the order below.
 5. **The precondition must cover more than the target field.** The default
    policy makes main-zone power-on and unmute depend on volume, but the
    session's preflight in `operate` re-observes only the target field. The
-   precondition therefore has to carry every field a matched rule consulted.
+   precondition therefore has to carry every state field that any rule
+   applicable to the request read, matched or not, and an `Allow` decision
+   carries it too: the unmute is allowed because the loud-volume rule did not
+   match, and the volume it saw must still hold at the write. Phase 1 built the
+   precondition; the first draft of this finding said "a matched rule consulted",
+   which would have left every `Allow` without a baseline.
 6. **Receiver identity is not stable.** The CLI derives `ReceiverId` from the
    host; the factory uses the friendly name or the host. API paths, the budget
    ledger, approval digests, and the audit log all key on it, and the Agent view
@@ -171,9 +181,11 @@ findings drive the order below.
 | 9 | `oauth` | `apps/auth-server`, token exchange | after | 8, decision 4 |
 | 10 | `release-4-0` | Version bump, documentation promotion, archive, validation records | yes | 1–6, 8 |
 
-Milestone 3 depends only on the domain and application layers, so it can run in
-parallel with milestone 2. Milestone 8 can start once `mcp-tools` exists, so it
-does not wait for the stdio build.
+Milestone 3 depends only on the domain and application layers. It was allowed to
+run in parallel with milestone 2, which is now implemented in `main`, so milestone
+3 starts from it and does not wait for the owner's checks of milestone 2.
+Milestone 8 can start once `mcp-tools` exists, so it does not wait for the stdio
+build.
 
 ## Spikes
 
@@ -245,8 +257,9 @@ numbered step at a time: run `make check`, review the diff, then continue.
    cannot name an Operator method. The Agent principal exists as a type, and the
    in-process service will refuse to hand an Agent a handle until milestone 3.
    This step defines the signatures and nothing behind them, for review. Policy
-   dry runs and an agent justification join `OperationSubmission` in milestones
-   3 and 7.
+   dry runs are not a submission flag: milestone 3 adds them as port methods,
+   with the policy, audit, and health views. An agent justification joins
+   `OperationSubmission` in milestone 7.
 3. **Receiver connector port.** It replaces the legacy `SessionFactory` and
    returns a `SharedReceiverSession`. Infrastructure implements it with
    `X3800hSession`.
@@ -344,48 +357,75 @@ Refactoring; no visual change.
 
 ## Milestone 3 — Policy, audit, and the Agent path (in process)
 
-Everything here is testable without a network, and nothing is exposed yet.
+Everything here is testable without a network, and nothing is exposed yet. The
+steps, types, and decisions are in the paired
+[overview](phase-3-policy-audit-gate-overview.md) and
+[architecture](phase-3-policy-audit-gate-architecture.md); this is the summary.
+The review that produced them corrected the first draft of this section, and
+the architecture lists each correction.
 
-1. **`policy` crate.** A pure function of typed inputs and a declarative
-   configuration, depending only on `domain`, per
-   [Policy Engine](../planned-architecture.md#policy-engine). The baseline is the
-   epoch plus the consulted fields. Every `ReceiverIntent` variant is
-   classified, and a test enumerates the variants so a new intent cannot
-   compile into an unclassified state. Per-agent narrowing must be able to
-   express "deny every write for this label", because Claude Code's read-only
-   tier depends on it. If the design's rule syntax cannot say that without
-   naming each intent, amend the design in this milestone.
-2. **Policy loading** in infrastructure: YAML to a typed `PolicyConfig`,
-   rejecting `unclassified: allow`, with a digest. A load failure disables Agent
-   writes. Reload semantics are defined here and exposed over the API in
-   milestone 4.
-3. **Audit log.** A port in `application` and an append-only JSON Lines adapter
-   in infrastructure, rotated by size and file count and readable across the
-   retained files. Records carry principal, request, decision and matched rules,
-   approval fields, dispatch certainty, outcome, and the dispatched or possibly
-   dispatched volume value, which the ledger needs.
-4. **Gate: Agent path.** Policy evaluation, re-evaluation at dispatch, the
-   pooled cumulative-change ledger rebuilt from audit at start, `dry_run`,
-   pending and rate caps, and the precondition built from the decision's
-   baseline. With no broker yet, `RequireApproval` ends as
-   `approval_unavailable`. Audit failure rejects Agent writes and lets Operator
-   controls continue with a warning.
-5. **Boundary rules:** `policy` stays free of async runtime, serialization,
-   filesystem, network, and clock reads; add the `policy` edges.
+0. **Amend the design before coding** (done 2026-10-08): the baseline carries
+   every field an applicable rule read and comes with `Allow`; classification is
+   per agent and a rule naming no intent restricts without classifying; the
+   budget has an exact definition over a ledger of agent and Operator volume
+   changes; the audit write order; strict policy loading; no time-of-day rules.
+1. **`policy` crate**, a pure function of typed inputs and a declarative
+   configuration that depends only on `domain`, per
+   [Policy Engine](../planned-architecture.md#policy-engine), with a wall-clock
+   time type in `domain`. Every `ReceiverIntent` variant maps to an intent kind
+   by an exhaustive match. A rule that names only an agent label denies every
+   write for it.
+2. **Port additions:** `dry_run` and `dry_run_as`, `health`, and the policy and
+   audit views on `OperatorAdmin`, so milestone 4 has methods to implement.
+3. **Audit and clock.** The `AuditLog` and `Clock` ports in `application`, and
+   the append-only JSON Lines adapter in infrastructure: rotated by size and file
+   count, readable across the retained files, owner-only permissions. A
+   `dispatching` record is synced to disk before the session is called.
+4. **Policy loading** in infrastructure: YAML to a typed `PolicyConfig`, with a
+   SHA-256 digest and a sample file. Any failed load, at start or on reload,
+   disables Agent writes.
+5. **Ledger** in `application`: reserve, settle, and rebuild from audit, as a
+   pure structure with its own tests.
+6. **Gate: Agent path.** Evaluate under a lease, reserve in the ledger in the
+   same step, write the `dispatching` record, then call the session once with
+   the precondition built from the baseline. Rate and unfinished-operation caps,
+   `dry_run`, strict failure statuses, and an async `ControlService::start` that
+   loads the policy and rebuilds the ledger. With no broker yet, `RequireApproval`
+   ends as `approval_unavailable`. Audit failure rejects Agent writes and lets
+   Operator controls continue with a warning.
+7. **Promote and exit.** Move the implemented design into `ARCHITECTURE.md`.
 
 **Exit.**
 
 - Policy tests per the design's [verification](../planned-architecture.md#verification):
-  a table case per rule, and properties for monotonicity in the volume target, an
-  unknown or stale baseline never yielding `Allow` for a state-dependent rule,
-  `Deny` never weakened by `Allow`, and alternating steps never resetting the
-  budget.
-- Gate tests with a fake session, approval channel, and clock cover allow, deny,
-  `approval_unavailable`, a failed precondition, supersession, and idempotent
-  retry. Each asserts no dispatch on every non-allowed path.
+  a table case per rule of the owner's configuration, and seeded properties for
+  monotonicity in the volume target, a decrease from a usable level never held
+  by the step or the budget, an unknown or stale baseline never yielding `Allow`
+  for a state-dependent rule, `Deny` never weakened by `Allow`, and alternating
+  steps never resetting the budget.
+- An `Allow` carries its baseline, including a field read only by a rule that did
+  not match, and a change in that field before the write ends the operation as
+  `rejected`.
+- Gate tests with a fake session, audit log, and clock cover allow, deny,
+  `approval_unavailable`, policy unavailable, a failed audit append, a failed
+  precondition, supersession, and idempotent retry. Each asserts no dispatch on
+  every non-allowed path and at most one on an allowed one.
+- Two agents each within the budget alone cannot together exceed it.
 - A rule narrowed to one agent label restricts that agent and leaves another
   agent's decisions unchanged, including a read-only label.
-- A restart test shows the ledger rebuilt from audit.
+- A restart test shows the ledger rebuilt from audit, counting a `dispatching`
+  record with no `finished` record and the Operator's volume writes.
+- The audit adapter rotates by size and file count, reads across the retained
+  files, and creates owner-only files. An audit failure rejects Agent writes and
+  lets Operator controls continue.
+- The policy loader rejects `unclassified: allow`, off-grid limits, and the other
+  cases in the architecture, and a failed reload disables Agent writes until a
+  good one.
+- `make boundary` checks the `policy` edges, its purity, and that its resolved
+  graph reaches only `domain`.
+- Live, armed: the CLI controls run still passes, and an in-process Agent run
+  against the X3800H completes a volume change within the limits, is refused above
+  the ceiling and the hard limit, and restores the volume.
 
 ## Milestone 4 — Control API server, contract, and client
 
@@ -394,8 +434,10 @@ Additive: new packages that no shipped delivery package uses yet.
 1. **`api-contract`**: the versioned `/v1` schema. Amend the design's API table
    first to add the inspection resources (source catalog, Quick Select names,
    HTTP information), an Operator `refresh` resource (added to the port by
-   [milestone 2](phase-2-gui-on-port-overview.md)), and an Agent-visible sources
-   resource for `list_sources`.
+   [milestone 2](phase-2-gui-on-port-overview.md)), an Agent-visible sources
+   resource for `list_sources`, and the resources for the policy, audit, health,
+   and dry-run port methods that
+   [milestone 3](phase-3-policy-audit-gate-architecture.md#port-additions) adds.
 2. **`api-client`**: implements the control-service port over local transports
    only, with no TLS dependency.
 3. **`apps/api-server`**: hosts the in-process service from milestone 1. It is
@@ -603,7 +645,10 @@ Gaps found by the review and the milestone that closes each:
 | Inspection reads have no home in the contract, port, or API | 1, 4 |
 | Quick Select recall is an unclassified write | 2, by removal (D1) |
 | Receiver id is host-derived | 1 |
-| Audit must record dispatched volume values | 3 |
+| Audit must record dispatched volume values, written before the dispatch | 3 |
+| `Allow` carried no baseline, and "consulted by a matched rule" missed the rules that did not match | 3 |
+| The cumulative budget had no exact definition, wall-clock source, or concurrency rule | 3 |
+| Classification was global, so one agent's rule could classify an intent for all | 3 |
 | Boundary script sees direct edges only | 3, 4 |
 | Phase 5 ledger depends on the legacy GUI test | 2 |
 
@@ -649,9 +694,15 @@ Nothing here blocks milestone 1.
 - **The policy ships no numeric limits.** The owner's limits are configuration.
   Until they are set, agents need approval for every volume change and
   power-on, which in 4.0.0 means they are refused.
-- **Agents are allow-only in 4.0.0.** The -20 dB hard limit is inert until
-  approval ships, and an agent cannot change system or Zone 2 power. The release
-  notes must say so, so a refusal is not mistaken for a fault.
+- **Agents are allow-only in 4.0.0.** The -20 dB hard limit is not inert: a
+  target above it ends `denied`. What waits for approval is the band above -30 dB
+  up to it, which ends `approval_unavailable` where a person could approve it
+  later. An agent cannot change system or Zone 2 power. The release notes must say
+  so, so a refusal is not mistaken for a fault.
+- **The audit log and the ledger share a file.** An agent that floods the Agent
+  path could rotate away the records the budget is rebuilt from. The write cap
+  refuses a flood before it is audited, and the audit size and file count are
+  sized for the 24-hour retention of the ledger.
 - **Dropping Windows and Linux strands those users on 3.0.0.** The README, user
   guides, and visual-baseline records must say so, and the Unix-only code needs
   a clear failure on Windows rather than a confusing build error.

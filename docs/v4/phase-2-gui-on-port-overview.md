@@ -1,7 +1,7 @@
 # Version 4, Phase 2 — GUI on the port
 
 **In progress, started 2026-10-08** on branch `v4/phase-2-gui-on-port`. Steps
-1 to 5 are done, and the code is complete. Step 6 needs a window server and the receiver, which the implementing session did not have, so two exit criteria are open and the branch is not merged. This is milestone 2 of the [roadmap](roadmap.md). It moves the
+1 to 5 are done, and the code is complete. Step 6 needs a window server and the receiver, which the implementing session did not have, so two exit criteria are open. The branch is merged into `main`, and the open criteria wait on the owner. This is milestone 2 of the [roadmap](roadmap.md). It moves the
 GUI from the legacy `ReceiverController` onto the control-service port and then
 deletes the legacy path. It is a refactoring: the intended user-visible
 differences are the ones the parity table lists as **Changed**. The owner asked
