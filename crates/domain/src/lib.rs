@@ -14,6 +14,7 @@ pub mod receiver_state;
 pub mod source_catalog;
 pub mod sync_debt;
 pub mod transport_timing;
+pub mod wall_time;
 
 pub use capabilities::{
     canonical_x3800h_source, supports_x3800h_sound_mode, supports_x3800h_source,
@@ -50,3 +51,4 @@ pub use source_catalog::{
 };
 pub use sync_debt::SyncDebt;
 pub use transport_timing::TransmissionSchedule;
+pub use wall_time::WallTime;

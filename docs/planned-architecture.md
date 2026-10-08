@@ -369,7 +369,9 @@ The first release has no time-of-day dimension. A rule needing one waits for a
 later release, and the policy schema rejects the key rather than ignoring it.
 
 An intent is **classified for an agent** when at least one rule that applies to
-that agent, of any decision, names the intent. A rule that names no intent
+that agent, of any decision, names the intent: its kind, and its value when the
+rule gives one, so a rule naming `system_power` with value `standby` classifies
+standby and leaves power-on unclassified. A rule that names no intent
 restricts but never classifies. A classified intent that matches no restricting
 rule is `Allow`; an unclassified intent is treated as dangerous
 (`RequireApproval`). Classification is per agent: a rule narrowed to one label

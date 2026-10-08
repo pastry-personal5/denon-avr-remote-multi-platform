@@ -72,9 +72,12 @@ jq -r '
 while IFS=: read -r from to; do
     case "$from:$to" in
         denon-avr-protocol:denon-avr-domain | \
+        denon-avr-policy:denon-avr-domain | \
         denon-avr-application:denon-avr-domain | \
+        denon-avr-application:denon-avr-policy | \
         denon-avr-infrastructure:denon-avr-application | \
         denon-avr-infrastructure:denon-avr-domain | \
+        denon-avr-infrastructure:denon-avr-policy | \
         denon-avr-infrastructure:denon-avr-protocol | \
         denon-avr-gui-lib:denon-avr-application | \
         denon-avr-gui-lib:denon-avr-domain | \
@@ -91,6 +94,19 @@ while IFS=: read -r from to; do
         *) fail "forbidden normal workspace dependency: $from -> $to" ;;
     esac
 done <"$boundary_edges"
+
+# The policy engine is a pure function over the domain: no async runtime,
+# serialization, filesystem, network, or clock reads. The caller supplies the
+# time and the ledger, so a decision can be reproduced from its inputs.
+if contains '\b(async|tokio|serde)\b|\.await|\b(SystemTime|Instant)\b|std::(fs|net|io|process|thread)|\b(File|TcpStream|UdpSocket)\b' crates/policy/src; then
+    fail "policy must be pure: no async, serialization, filesystem, network, or clock reads"
+fi
+
+# The edge check above sees direct dependencies only. The resolved graph also
+# catches a package reached through another, so policy must reach the domain and
+# nothing else.
+policy_graph=$(cargo tree -p denon-avr-policy --edges normal --prefix none --format '{p}' | awk '{print $1}' | sort -u | tr '\n' ' ')
+[ "$policy_graph" = "denon-avr-domain denon-avr-policy " ] || fail "policy must resolve to the domain only, found: $policy_graph"
 
 # The canonical receiver-session contract has one definition, in the
 # application crate's session module, and nothing else defines a receiver

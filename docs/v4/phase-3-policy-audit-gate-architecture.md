@@ -72,7 +72,8 @@ IntentKind        SystemPower | MainZonePower | Zone2Power | Source | Volume
                   wildcard arm, and IntentKind::ALL
 Level             a volume in half dB steps; Minimum is -160 (-80.0 dB)
                   Level::of(MasterVolume), Level::from_db(f64) (the 0.5 dB grid,
-                  -80.0 to +18.0), Level::half_steps()
+                  -80.0 to +18.0), Level::from_half_steps, Level::half_steps()
+Span              a distance in half dB steps (a step or a budget), 0 to 98 dB
 PolicyConfig      PolicyConfig::new(rules: Vec<Rule>, approval_lifetime: Duration)
                     -> Result<PolicyConfig, PolicyError>; validates every rule
                   PolicyConfig::longest_window() -> Duration
@@ -103,8 +104,9 @@ evaluate(&PolicyInput, &PolicyConfig) -> Decision
 ### Evaluation
 
 1. `applicable` = the rules whose scope matches the agent and receiver.
-2. `classified` = some applicable rule has an alternative naming this intent kind.
-   A rule with no alternatives names nothing.
+2. `classified` = some applicable rule has an alternative naming this intent: its
+   kind, and its value when the alternative gives one (decision D21). A rule with
+   no alternatives names nothing.
 3. For each applicable rule with an alternative that matches the intent kind and
    value (a rule with no alternatives matches every intent): add the fields its
    state-dependent conditions read to the baseline, matched or not, then test its
@@ -133,12 +135,16 @@ and its `target`. An entry dated after `now` is inside the window. `Level::of`
 maps `Minimum` to -160, so a rise from `Minimum` is overstated, which fails
 closed.
 
-**Validation in `PolicyConfig::new`.** An `allow` rule carries a scope, an intent,
-and a value only. `target_above`, `increase_over_baseline`, and `budget` need
-every alternative to be `Volume`, and a rule with no alternatives cannot carry
-them. A rule id is unique and non-empty. `window_minutes` is 1 to 1,440. Every
-limit is on the grid. These rules keep a config author from writing something
-that reads like an exception and does nothing.
+**Validation in `PolicyConfig::new`.** An `allow` rule carries a scope, at least
+one intent, and values only (decision D22). `target_above`, `increase_over_baseline`,
+and `budget` need every alternative to be `Volume`, and a rule with no
+alternatives cannot carry them. A value must belong to its intent: `on` and
+`standby` for `system_power`; `on` and `off` for the zone powers and `mute`; none
+for `source`, `volume`, and `sound_mode`. A rule id is unique and non-empty, and
+an empty `agents` or `receivers` list is refused because it applies to nobody.
+`window_minutes` is 1 to 1,440. Every limit is on the grid. These rules keep a
+config author from writing something that reads like an exception and does
+nothing.
 
 ## Policy file and loading
 
@@ -193,8 +199,8 @@ example. The expected decisions (each is a table case):
 | --- | --- | --- |
 | Volume to -32 dB | `Allow` | Volume |
 | Volume to -50 dB (a decrease) | `Allow` | Volume |
-| Volume to -25 dB | `RequireApproval` (`volume-ceiling`) | Volume |
-| Volume to -15 dB | `Deny` (`volume-hard-limit`, also `volume-ceiling`) | none: a `Deny` has no baseline |
+| Volume to -25 dB | `RequireApproval` (`volume-ceiling`; the rise of 10 also matches `volume-step`) | Volume |
+| Volume to -15 dB | `Deny` (`volume-hard-limit`; `volume-ceiling`, `volume-step`, and `volume-budget` also match) | none: a `Deny` has no baseline |
 | Volume to -31 dB with the observed volume -40 (a rise of 9) | `RequireApproval` (`volume-step` only) | Volume |
 | From -50 dB, within 10 minutes: -44, -50, -44, then -38 | the last is `RequireApproval` (`volume-budget` only: the step is 6 and -38 is under the ceiling, but the rise is 12 above the floor -50) | Volume |
 | The Operator raised -60 to -45 within the window, then the agent asks -50 | `Allow`: a decrease is never over the budget, though -50 is 10 above the floor -60 | Volume |
@@ -482,6 +488,8 @@ one.
 | D18 | `OperationSnapshot` is unchanged | Rule ids stay in audit and Operator views |
 | D19 | A `Minimum` volume is -80.0 dB in rules | R17 |
 | D20 | A decrease is exempt from the step and budget conditions only. `target_above_db` limits still apply to it | The design's rule order lists the target limits first. Consequence: with the volume at -15 dB, an agent can lower it to -30 or below but not to -18, which is above the hard limit and ends `denied` |
+| D21 | Classification is by kind and, when a rule gives one, value: a rule naming `system_power` with value `standby` classifies standby only | Classifying by kind alone would turn a value-scoped `allow` into an `Allow` for the other value, so dropping the `system-power` rule would allow power-on. No table row changes |
+| D22 | `PolicyConfig::new` also refuses an `allow` rule that names no intent, a value that does not belong to its intent, and an empty `agents` or `receivers` list | Each reads like a rule and does nothing, which the validation exists to prevent |
 
 ## Live checks
 

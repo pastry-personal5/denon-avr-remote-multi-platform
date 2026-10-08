@@ -728,6 +728,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "denon-avr-policy"
+version = "3.0.0"
+dependencies = [
+ "denon-avr-domain",
+]
+
+[[package]]
 name = "denon-avr-protocol"
 version = "3.0.0"
 dependencies = [

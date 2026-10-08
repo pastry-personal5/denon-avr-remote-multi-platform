@@ -1,8 +1,9 @@
 # Version 4, Phase 3 — Policy, audit, and the Agent path
 
-**Planned and reviewed, 2026-10-08; not started.** Step 0 (the design amendment) is
-done. Create the branch `v4/phase-3-policy-audit-gate` from `main` when step 1
-starts. This is milestone 3 of the [roadmap](roadmap.md). It adds the `policy`
+**Planned and reviewed, 2026-10-08; in progress on the branch
+`v4/phase-3-policy-audit-gate`.** Step 0 (the design amendment) and step 1 are
+done; the [steps](#steps) table has the state of each. This is milestone 3 of the
+[roadmap](roadmap.md). It adds the `policy`
 crate, the audit log, and the Agent path through the Operation Gate, all in
 process: nothing is exposed until milestone 4, and no Operator-visible behavior
 changes. It is the first code that lets anything but the Operator write to the
@@ -29,7 +30,7 @@ the script fails if either half lands alone.
 | # | Step | State |
 | --- | --- | --- |
 | 0 | Amend the design | Done |
-| 1 | `policy` crate, `WallTime`, boundary rules | Planned |
+| 1 | `policy` crate, `WallTime`, boundary rules | Done |
 | 2 | Port additions: dry run, health, policy and audit views | Planned |
 | 3 | `Clock` and audit ports; JSON Lines adapter | Planned |
 | 4 | Policy loading, digest, sample file | Planned |
@@ -68,8 +69,15 @@ Tests in `cases.rs`:
 - `a_rule_narrowed_to_one_agent_does_not_classify_for_another`: agent B's volume
   change is `RequireApproval` with `Unclassified` when only agent A's rule names
   volume.
+- `a_rule_naming_only_an_agent_restricts_without_classifying`: a rule that names
+  no intent and does not match leaves the intent unclassified.
+- `a_value_scoped_allow_does_not_classify_the_other_value` (decision D21).
+- `every_limit_is_strict_so_a_value_exactly_at_it_is_not_over_it`: the ceiling,
+  the hard limit, the step, the budget, and a change exactly as old as the window.
 - `an_allow_rule_with_a_condition_is_rejected`, and the same for a volume-only
-  condition on a non-volume alternative.
+  condition on a non-volume alternative; `an_allow_rule_naming_no_intent_is_rejected`,
+  `a_value_that_does_not_belong_to_the_intent_is_rejected`, and
+  `rule_ids_are_unique_and_non_empty_and_lists_are_not_empty` (decision D22).
 - `minimum_is_a_decrease_as_a_target_and_overstates_a_rise_as_a_baseline`.
 - `every_intent_kind_is_mapped`: an exhaustive `match` over `ReceiverIntent` in the
   test, so a new variant fails to compile here as well.
@@ -245,7 +253,7 @@ the inputs most likely to bite, most likely first. Each has a named test above.
 
 ## Exit status
 
-Not started.
+In progress: steps 0 and 1 are done.
 
 ## Known limits
 

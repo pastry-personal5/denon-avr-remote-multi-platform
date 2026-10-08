@@ -31,7 +31,7 @@ test-core-smoke: ## Run delivery-independent receiver-core smoke tests
 	$(CARGO) test -p denon-avr-infrastructure --test core_smoke
 
 test-core-scenarios: ## Run deterministic receiver-core scenarios
-	$(CARGO) test -p denon-avr-domain -p denon-avr-protocol -p denon-avr-application -p denon-avr-infrastructure
+	$(CARGO) test -p denon-avr-domain -p denon-avr-protocol -p denon-avr-policy -p denon-avr-application -p denon-avr-infrastructure
 
 test-core-properties: ## Run generated receiver-state properties
 	$(CARGO) test -p denon-avr-domain receiver_state
