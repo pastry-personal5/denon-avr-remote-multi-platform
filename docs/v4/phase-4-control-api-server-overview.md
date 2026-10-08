@@ -39,7 +39,7 @@ is the owner's; it gates step 9 only.
 | 1b | Port additions, token and refusal types, the audit adapter | Done |
 | 2 | `api-contract`: conventions, reads, state views, errors, routes | Done |
 | 3 | `api-contract`: requests, configuration, events, Operator resources | Done |
-| 4 | Token store | Not started |
+| 4 | Token store | Done |
 | 5 | `api-server`: start, lock, both endpoints, request pipeline | Not started |
 | 6 | `api-server`: the routes and the refusal matrix | Not started |
 | 7 | Event streams, waits, and revocation | Not started |
@@ -246,7 +246,8 @@ Tests:
 - `a_crash_between_the_temporary_file_and_the_rename_keeps_the_old_file`.
 - `changes_bump_on_revoke_and_on_nothing_else`.
 - `concurrent_issues_never_lose_a_record`.
-- `a_thousand_tokens_are_distinct_and_have_the_documented_shape`.
+- `issued_tokens_are_distinct_and_have_the_documented_shape` (40 issues, each an fsync),
+  and, on the generators with no I/O, `a_thousand_secrets_and_ids_are_distinct`.
 
 ### Step 5 — `api-server`: start, lock, both endpoints, request pipeline
 

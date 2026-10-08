@@ -15,6 +15,7 @@ pub mod quick_select_names;
 mod receiver_connector;
 pub mod source_catalog;
 pub mod system_clock;
+pub mod token_store;
 pub mod x3800h_reducer;
 pub mod x3800h_session;
 
@@ -30,4 +31,5 @@ pub use quick_select_names::QuickSelectNamesHttpClient;
 pub use receiver_connector::X3800hConnector;
 pub use source_catalog::SourceCatalogHttpClient;
 pub use system_clock::SystemClock;
+pub use token_store::{FileTokenStore, TokenStoreError};
 pub use x3800h_session::X3800hSession;
