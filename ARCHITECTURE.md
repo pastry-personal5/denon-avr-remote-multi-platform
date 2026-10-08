@@ -16,7 +16,8 @@ workspace edges are enforced by `make boundary`.
 | `crates/policy` | The policy engine: a pure function from a request, the receiver's state, and the recent volume changes to a decision. Depends on `domain` alone. |
 | `crates/application` | Use-case policy, ports, status/control policy, the control-service port, and the in-process control service with its Operation Gate, Agent path, audit records, and budget ledger. |
 | `crates/api-contract` | The Control API's wire types, version 1: the views of state and sources (separate types for an agent and for the Operator), the error mapping, intents and operations, the route table, and the paths a client builds. Depends on `application` and `domain` and on `serde`; it names no HTTP stack, runtime, or filesystem. |
-| `apps/api-server` | The Control API server: it hosts the in-process control service behind two Unix-socket endpoints, the Operator's and, when configured, the Agent's, with the request pipeline that admits, authenticates, and routes. Nothing in the CLI or the GUI uses it yet. |
+| `crates/api-client` | The control-service port over the server's Unix socket: it implements `ReceiverReads`, `OperationControl`, and `OperatorAdmin` by asking the Control API server. HTTP/1.1 over a Unix socket only: no TLS crate, no server framework, no `server` feature of `hyper`. Depends on `api-contract`, `application`, and `domain`. |
+| `apps/api-server` | The Control API server: it hosts the in-process control service behind two Unix-socket endpoints, the Operator's and, when given a directory and the uids to admit, the Agent's, with the request pipeline that admits, authenticates, and routes. Nothing in the CLI or the GUI uses it yet. |
 | `crates/infrastructure` | SSDP discovery, YAML persistence, TCP/HTTP adapters, concrete receiver sessions, the JSON Lines audit log, the policy file loader, the file-backed token store, and the system clock. |
 | `crates/gui-lib` | Iced presentation state, reducers, views, the projection of receiver state into them, and the bridge to the control-service port. |
 | `apps/cli` | Short-lived CLI composition over the in-process control service. |
@@ -28,6 +29,7 @@ protocol       → domain
 policy         → domain
 application    → domain, policy
 api-contract   → application, domain
+api-client     → api-contract, application, domain
 api-server     → api-contract, application, domain, infrastructure
 infrastructure → application, domain, policy, protocol
 gui-lib        → application, domain
@@ -93,8 +95,8 @@ parameter. `ControlService` (`crates/application/src/service.rs`) implements the
 port in process. `ControlService::new` serves the Operator alone, makes no audit
 call, and refuses an Agent handle; the CLI and the GUI use it. `ControlService::start`
 also builds the Agent path described under [Policy and audit](#policy-and-audit),
-and serves an Agent handle. Nothing exposes an Agent handle outside tests and the
-armed live test until the Control API exists.
+and serves an Agent handle. The [Control API](#control-api) server is what exposes an
+Agent handle to anything outside the process.
 
 **Receiver identity.** A receiver's id is the name of its saved configuration
 entry and does not change when its address does. A receiver chosen only by
@@ -312,6 +314,141 @@ the receiver's address appear in the audit log and the Operator's views, and the
 Operator's `dry_run_as` shows the rule ids; an agent's own `dry_run` shows the
 limits and no ids.
 
+## Control API
+
+`apps/api-server` hosts the in-process control service and serves the
+control-service port over HTTP/1.1 on Unix sockets; `crates/api-contract` defines
+the wire (`/v1`, contract version 1) and `crates/api-client` implements the port
+over it. The server has no network listener. Nothing in the CLI or the GUI uses it
+yet: they still compose their own service, so **while the server holds a receiver, a
+CLI or GUI cannot connect to it**, because the receiver accepts one control
+connection. The server releases a receiver after the service's idle time.
+
+**Files and endpoints.** Under the data directory, `run/` and `credentials/` are
+created 0700 (the data directory's own mode is left alone; a wider existing mode is an
+error). `run/operator.sock` is 0600, `run/server.lock` holds the lock, and
+`credentials/operator.token` and `credentials/agent-tokens.json` are 0600. The
+**Operator endpoint** admits the server's own uid and accepts only the Operator
+token. The **Agent endpoint** (`agent.sock`) admits the uids it is configured with
+and accepts only Agent tokens. Its directory must be a real directory owned by the
+server's uid and not group- or world-writable, and is created 0700 if missing;
+with no configuration, no admitted uid, or a token store that cannot be used, the
+endpoint does not exist and the Operator's health response says why.
+`Server::start` takes the Agent endpoint as a value (`AgentEndpointConfig`);
+reading it from a settings file is not built (see [Not yet built](#not-yet-built)).
+
+**One server per data directory.** `Server::start` takes `File::try_lock` on
+`run/server.lock` before it touches a socket. A second server finds the lock held and
+the executable exits with status 75. A socket left by a killed server is removed only
+when `lstat` says it is a socket owned by the server's uid; a file, a link, or someone
+else's socket at the path is an error and is left alone. A socket path over the
+platform's `sun_path` limit (104 bytes on macOS) is refused with its length and the limit.
+
+**The request pipeline.** Every connection and request passes through these in
+order, so a caller learns nothing before it has proved who it is:
+
+1. *Admission.* The peer's uid, read from the connection (`peer_cred`), must be
+   admitted by the endpoint; any other connection is closed before a byte is read and
+   audited as `PeerNotAdmitted`.
+2. *Caps.* 16 connections on the Operator endpoint and 32 on the Agent endpoint, so
+   an agent that holds every connection of its endpoint cannot starve the Operator;
+   the head is read in 5 seconds and is at most 16 KiB, and an idle connection is
+   closed after the same five seconds.
+3. *Authentication.* One layer added to the router after its routes and its fallback,
+   so it wraps every path, a path that matches nothing included: an unknown path is a
+   `401` before it can be a `404`. Only `Authorization: Bearer` is accepted; a
+   credential in a query string is refused. A missing, repeated, unknown, revoked, or
+   wrong-kind credential gets the same `401`, and each is audited with its own reason.
+4. *Routing.* Each endpoint's router is built from the rows of
+   `api_contract::routes::TABLE` that are served to it, so a resource that is not in an
+   endpoint's table does not exist on it. An Operator resource asked of the Agent
+   endpoint is a `404`, audited as `ResourceNotServed`.
+5. *Body.* `Content-Length` is required for `POST` and `PUT` (chunked bodies are
+   refused), at most 16 KiB (1 MiB for the configuration), read in 10 seconds, and
+   parsed strictly: a field the contract does not know is a `400` that names the field
+   and never repeats the body.
+6. *Handler.* It asks the service for a handle bound to the authenticated
+   `Principal` and calls the port; it never decides who may do what. A request's
+   total time is capped at `max_operation_wait` plus five seconds; an event stream's
+   cap covers the time until it begins.
+
+**What the wire carries.** Requests are strict and responses are lenient: a client
+ignores fields it does not know, so the contract can grow. An Agent is given its own
+view types for state, sources, and dry runs, made of codes and with no text field, so a
+receiver's address, a raw frame, a path, or error text cannot reach an agent however
+the Operator's views grow. The wire carries a field's validity class and reason, not
+its age. A dry run is its own resource, so a request that mistypes it can never become
+a write. `PUT /v1/config` requires `If-Match` with the `ETag` of the configuration
+read (`428` if missing, `412` if the file has changed). Errors are
+`{"error": {"code", "message", ...}}` with the codes the port's `ControlError` maps to;
+`api-client` maps them back.
+
+**Event streams and waits.** `GET /v1/receivers/{id}/events` is the state subscription
+(`event: state`: the whole state first, then the newest after each change) and
+`GET /v1/operations/events` is the operation stream (`event: operation`, and
+`event: missed` when the reader fell behind, after which the operation is read with
+`GET /v1/operations/{id}`). There is no replay: a client that reconnects reads the
+state again. A held state stream keeps its receiver connected, so each stream is fed
+through a channel of one item and dropped if its client does not take an event within
+10 seconds; a comment line every 15 seconds finds a client that has closed its end;
+a principal may hold four streams (a fifth is `429 too_many_streams`); and an Agent's
+state stream also ends after ten minutes, because neither of the others can see a
+client that is connected and not reading when the receiver is quiet. The Operator's
+streams have no maximum age. A stream ends with `event: end` and a reason:
+`session_closed`, `revoked`, `shutdown`, or `max_age`. An operation stream holds no
+lease on a receiver. A wait (`GET /v1/operations/{id}?wait_ms=`) is the port's own and
+ends at the service's cap.
+
+**Tokens.** Agent tokens are `dara_` and the Operator's is `daro_`, each followed by 43
+base64url characters; only SHA-256 digests are kept, compared in constant time. A label
+is lowercase `[a-z0-9._-]` (the rule is `policy::label_is_well_formed`, which a
+policy file's `agents` entries must also satisfy), and a label holds at most one active
+token. Revoking a token ends its streams and waits within a second and refuses its next
+request, while the operations it started continue to their end. A damaged Agent token
+file does not lock the Operator out: the store opens without Agent tokens, refuses to
+issue or revoke, and the server creates no Agent endpoint; a damaged Operator token or
+a `credentials/` directory with wider permissions is a startup error.
+
+**Refused callers are audited.** A caller refused at an endpoint is an `AccessRefused`
+record with its reason, peer uid, and resource, and no principal when none was
+established. They are throttled (at most one record for an endpoint, reason, and caller in 60
+seconds, 256 such keys, and 30 records a minute), they do not change the audit
+health, and the ledger's rebuild ignores them, so a flood of refused requests can
+neither fill the log nor push an Operator's record out of the window.
+
+**Process model.** `denon-avr-api-server [--data-dir DIR] [--exit-with-parent]` opens
+the token store and the audit log, starts the control service, and serves. SIGTERM and
+SIGINT start one shutdown: stop accepting, send `event: end` (`shutdown`) to every
+stream, wait for operations in flight, close the sessions, remove the sockets, and
+release the lock. With `--exit-with-parent` the end of standard input starts it too, so
+a GUI that started the server and died takes it down; a standalone server ignores
+standard input. A second signal while the shutdown runs exits at once with 128 plus
+its number. Killing the process leaves a stale socket and a released lock, which the
+next start reclaims.
+
+**The client.** `ApiClient::connect(Endpoint { socket, token, audience })` opens no
+connection; each request opens its own (a Unix socket is cheap and a reused
+connection can be reset by a restarted server), and so does each event stream. A
+server that cannot be reached is `Unavailable("receiver service unavailable")`, with
+the socket's path added for the Operator; an answer that is not the contract's error
+body is `Unavailable` and never a guess; a client made for an agent refuses the
+Operator's methods without sending a request. The credential prints as `<redacted>`
+and is in no error. `state` returns once the first `state` event arrives, and a
+subscription ends with the service's "session closed" error on an `end` event or a
+closed stream, so a caller that resubscribes behaves as it does against the in-process
+service. `tests/client.rs` in `api-server` runs one function over the port twice, against
+the service directly and through the socket, and compares what it saw.
+
+### Not yet built
+
+- **The Agent endpoint from a settings file.** The executable serves the Operator
+  endpoint alone. `server.yaml` and the endpoint's directory checks wait for the
+  owner's hand check on the Mac with the dedicated account, which decides the keys
+  and the default directory.
+- **Approvals and OAuth** (`/v1/approvals`, client registration) wait for later
+  milestones.
+- **A user of the server.** The CLI and the GUI become clients in milestone 5.
+
 ## Desktop GUI
 
 The GUI is a client of the operator port. `PortBridge` is the one task that owns
@@ -376,7 +513,12 @@ validates the resolved Cargo workspace edges, keeps `crates/policy` pure and its
 resolved graph to `domain`, ensures the receiver-session
 contract has exactly one definition and that the retired controller names do not
 return, requires that only the Operation Gate and the session implementation
-call a session's `operate`, and keeps the CLI from naming a session type. Run it whenever a package dependency or boundary
+call a session's `operate`, and keeps the CLI from naming a session type. It keeps
+`api-contract` free of an HTTP stack, an async runtime, and the filesystem; keeps
+the resolved graph of `api-contract` and `api-client` away from `infrastructure` and
+`protocol`; keeps `api-client` free of any TLS crate, any server framework, and the
+`server` features of `hyper` and `hyper-util`; and requires that `api-server` and
+`api-client` refuse to build off Unix. Run it whenever a package dependency or boundary
 changes. Current engineering policy and verification gates are in
 [docs/contributing.md](docs/contributing.md) and
 [docs/development.md](docs/development.md).

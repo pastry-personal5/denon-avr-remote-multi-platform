@@ -46,7 +46,7 @@ is the owner's; it gates step 9 only.
 | 8 | `api-client` and the port conformance run | Done |
 | 9 | Enable the Agent endpoint from settings (needs 0b) | Waiting for S2, the owner's hand check |
 | 10 | Process model, live test | Done; the live test is compiled, not run |
-| 11 | Promote and exit | Not started |
+| 11 | Promote and exit | Done |
 
 The roadmap lists six steps; this phase splits them where a reviewer could reject one
 and approve its neighbor, and adds the port work and the token store that the
@@ -553,9 +553,16 @@ while its stream is open.
 
 ## Exit status
 
-**Planned.** Step 0 is done: the design, the roadmap, and the documentation map are
-amended, and these two documents are written. Step 0b is the owner's. Nothing else is
-built.
+**Implemented except step 9, and awaiting the owner's checks.** Steps 0 to 8, 10, and 11
+are done on branch `v4/phase-4-control-api-server`: the contract, the token store, the
+server with both endpoints, the routes and the refusal matrix, the event streams, the
+client and the port conformance run, the process model, and the armed live test, which
+is compiled and has not been run. Step 0b, S2, is the owner's, and step 9, reading the
+Agent endpoint from `server.yaml`, waits for it, so the executable serves the Operator
+endpoint alone. The exit criteria that need the Mac and the receiver are open: the
+account boundary, the permissions after a run, and the armed live run, all in the
+[validation record](../archive/v4/phase-4-live-validation-record.md). The design is
+promoted into [ARCHITECTURE.md](../../ARCHITECTURE.md#control-api).
 
 ## Known limits
 

@@ -30,7 +30,14 @@ in the [Makefile](../Makefile). Do not run live validation in ordinary unit-test
 work. `make test-live-x3800h` is opt-in; state-restoring live controls also
 require `ALLOW_RECEIVER_WRITES=1`, `DENON_X3800H_HOST`, and a safe-volume value,
 as does `make test-live-x3800h-agent`, which changes the volume through the
-Agent path and restores it.
+Agent path and restores it, and `make test-live-x3800h-api`, which does the same
+through the Control API server and `ApiClient`.
+
+To run the Control API server by hand, use
+`cargo run -p denon-avr-api-server -- --data-dir DIR` (`--exit-with-parent` ends it
+when its standard input closes). It serves the Operator endpoint on
+`DIR/run/operator.sock`; the CLI and GUI do not use it yet, and they cannot connect to
+a receiver the server holds, so close them first.
 
 On an Apple Silicon Mac, `make package-macos` writes the unsigned app and DMG
 under `target/release/macos/`. Gatekeeper may require right-clicking the app

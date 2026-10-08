@@ -602,6 +602,11 @@ mismatched, or replayed decision is ignored and audited.
 
 ## Control API
 
+Implemented in milestone 4, except the Agent endpoint's configuration from a settings
+file, `/v1/approvals`, and OAuth client registration: see
+[Control API](../ARCHITECTURE.md#control-api). The design below remains the
+statement of intent for the parts that are not built.
+
 The Control API is HTTP with JSON bodies and server-sent events, described by a
 schema in `api-contract`. Paths carry a major version (`/v1`). The schema is the
 source of truth, and clients ignore fields they do not know so the contract can
