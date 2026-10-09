@@ -12,6 +12,7 @@
 //! (which does not follow a link), so a directory owned by another uid, which a test
 //! cannot make without privilege, is tested all the same.
 
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt};
 use std::path::Path;
 
@@ -77,6 +78,22 @@ pub fn prepare(directory: &Path, server_uid: u32) -> Result<Facts, String> {
     if !directory.is_absolute() {
         return Err(reason("is not an absolute path".into()));
     }
+    // `lstat` follows a link that is not the last component, and a trailing `/`, `.`
+    // or `..` makes the last one not last, which would hide a link from the check.
+    let dotted = directory.components().any(|part| {
+        matches!(
+            part,
+            std::path::Component::CurDir | std::path::Component::ParentDir
+        )
+    });
+    let bytes = directory.as_os_str().as_bytes();
+    // `components` drops a trailing `.`, so the bytes are looked at as well.
+    let trailing = bytes.len() > 1 && (bytes.ends_with(b"/") || bytes.ends_with(b"/."));
+    if trailing || dotted {
+        return Err(reason(
+            "must be written without a trailing `/`, `.` or `..`".into(),
+        ));
+    }
     let facts = match Facts::of(directory) {
         Ok(facts) => facts,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -141,6 +158,27 @@ mod tests {
             inode: 11,
             ..directory()
         }
+    }
+
+    #[test]
+    fn a_path_that_hides_a_link_from_lstat_is_refused() {
+        let base = std::env::temp_dir().join(format!("agent-dir-{}", std::process::id()));
+        let real = base.join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        let link = base.join("link");
+        let _ = std::fs::remove_file(&link);
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let uid = Facts::of(&real).unwrap().uid;
+        for path in [
+            format!("{}/", link.display()),
+            format!("{}/.", link.display()),
+            format!("{}/../real", link.display()),
+        ] {
+            let refused = prepare(Path::new(&path), uid).unwrap_err();
+            assert!(refused.contains("without a trailing"), "{path}: {refused}");
+        }
+        assert!(prepare(&link, uid).unwrap_err().contains("is a link"));
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

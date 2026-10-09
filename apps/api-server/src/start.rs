@@ -373,9 +373,11 @@ fn prepare_agent(
     if configured.uids.is_empty() {
         return Err("the Agent endpoint admits no uid".into());
     }
-    let directory = agent_directory::prepare(&configured.directory, server_uid)?;
+    // Checked before the directory is made, so a path that cannot hold the socket
+    // leaves nothing behind.
     let socket = configured.socket();
     check_path_length(&socket).map_err(|error| error.to_string())?;
+    let directory = agent_directory::prepare(&configured.directory, server_uid)?;
     remove_stale(&socket, server_uid).map_err(|error| error.to_string())?;
     let listener = bind(&socket, configured.mode).map_err(|error| error.to_string())?;
 
@@ -388,8 +390,14 @@ fn prepare_agent(
     };
     if let Some(problem) = problem {
         drop(listener);
-        // Remove what is at the path only if it is a socket, which is what was just made.
-        if Facts::of(&socket).is_ok_and(|facts| facts.is_socket) {
+        // Remove what is at the path only if it is the socket just made: the directory
+        // is the one that was checked, and what is in it is a socket of this server's
+        // uid. A directory that was swapped is not followed into.
+        let same_directory = Facts::of(&configured.directory)
+            .is_ok_and(|now| (now.device, now.inode) == (directory.device, directory.inode));
+        let our_socket =
+            Facts::of(&socket).is_ok_and(|facts| facts.is_socket && facts.uid == server_uid);
+        if same_directory && our_socket {
             let _ = std::fs::remove_file(&socket);
         }
         return Err(problem);
