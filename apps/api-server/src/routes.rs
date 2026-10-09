@@ -436,6 +436,10 @@ async fn config_put(
         .into());
     };
     let handle = handle(&context, who)?;
+    // The body is read before the lock is taken, so a client that sends it slowly
+    // holds up no other writer for the length of its body timeout.
+    let limit = context.limits.config_body_limit;
+    let requested = body::<ConfigRequest>(&context, request, limit).await?;
     // One write at a time, from the comparison to the save.
     let _one_at_a_time = context.config_lock.lock().await;
     let current = handle.configuration().await?;
@@ -447,11 +451,7 @@ async fn config_put(
         )
         .into());
     }
-    let limit = context.limits.config_body_limit;
-    let replacement: ConfiguredReceivers = body::<ConfigRequest>(&context, request, limit)
-        .await?
-        .try_into()
-        .map_err(bad)?;
+    let replacement: ConfiguredReceivers = requested.try_into().map_err(bad)?;
     handle.save_configuration(&replacement).await?;
     let saved = handle.configuration().await?;
     Ok(with_etag(
