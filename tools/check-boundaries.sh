@@ -176,7 +176,7 @@ legacy_names=$(rg -n '\b(ReceiverController|ControllerHandle|SessionFactory|Cano
 # The Operation Gate in the control service is the only caller of a session's
 # `operate` outside tests and the session implementation.
 operate_callers=$(rg -l '\.operate\(' --glob '*.rs' --glob '!**/tests/**' crates apps |
-    rg -v '^(crates/application/src/service\.rs|crates/infrastructure/src/x3800h_session\.rs)$' || true)
+    rg -v '^(crates/application/src/service\.rs|crates/infrastructure/src/x3800h_session\.rs|crates/infrastructure/src/x3800h_session/tests\.rs)$' || true)
 [ -z "$operate_callers" ] || fail "only the Operation Gate may call a session's operate: $operate_callers"
 
 echo "architecture boundaries OK"
