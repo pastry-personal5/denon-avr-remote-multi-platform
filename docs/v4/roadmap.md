@@ -308,7 +308,7 @@ checks that `make check` does not cover.
 **Exit.**
 
 - `make check` and `make clippy` pass.
-- The loopback tests in `x3800h_session.rs` cover the precondition: matching,
+- The loopback tests in `x3800h_session/tests.rs` cover the precondition: matching,
   mismatched target, mismatched non-target field, and epoch change.
 - Every `OperationOutcome` variant is tested against the status mapping.
 - Gate tests with a fake session assert at most one dispatch, including a retry

@@ -98,6 +98,17 @@ also builds the Agent path described under [Policy and audit](#policy-and-audit)
 and serves an Agent handle. The [Control API](#control-api) server is what exposes an
 Agent handle to anything outside the process.
 
+**Module layout.** `service.rs` holds `ControlService`, the handle, and the Operation
+Gate's executor, the one call into a session's `operate`. `service/connections.rs`
+holds the per-receiver connection pool (slots, leases, connecting, idle and
+changed-entry release), `service/operations.rs` the gate's table of operations
+(admission, transitions, cancellation, how an outcome resolves), and
+`service/ports.rs` the port implementations for a handle. The Agent path is
+`service/agent.rs` and its `service/agent/` children: the policy lifecycle in the
+root, `audit.rs` (records and bounded appends), `access.rs` (throttling of refused
+callers), `budget.rs` (the ledger, the caps, and the atomic evaluation step), and
+`decision.rs` (the decision and its fixed texts).
+
 **Receiver identity.** A receiver's id is the name of its saved configuration
 entry and does not change when its address does. A receiver chosen only by
 address gets an id with the reserved `adhoc:` prefix, which saved names cannot

@@ -102,7 +102,7 @@ Boundary script: the three edges, the purity check, and the resolved-graph check
 [port additions](phase-3-policy-audit-gate-architecture.md#port-additions).
 `ServiceHandle` answers `ControlError::Unavailable` for each until steps 3 to 6
 fill them in, which fails closed. Add a one-line stub to `Stub` in `control.rs`, to
-`Fake` in `apps/cli/src/main.rs`, and to `FastPort` in `crates/gui-lib/src/bridge.rs`.
+`Fake` in `apps/cli/src/tests.rs`, and to `FastPort` in `crates/gui-lib/src/bridge.rs`.
 Extend `the_stub_fails_every_call_with_a_typed_error` to the new methods; the
 object-safety test (`one_handle_narrows_to_each_surface_without_new_objects`)
 must still compile. The types the views name come with them: the audit data

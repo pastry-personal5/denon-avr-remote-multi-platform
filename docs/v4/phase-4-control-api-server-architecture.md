@@ -27,7 +27,7 @@ amended the design where the review found it wrong.
 - Present and reused: `sha2` (infrastructure), `data_directory()`, `JsonlAuditLog`
   and its owner-only rules, `Principal`, `AgentLabel`, `IdempotencyKey`, the typed
   `ControlError`, the throttle pattern of commit `774c8f1` (`REFUSAL_LOG_EVERY` in
-  `service/agent.rs`), and the CLI's `Fake` and the GUI's `FastPort`, which implement
+  `service/agent/audit.rs`), and the CLI's `Fake` and the GUI's `FastPort`, which implement
   the port and must gain every method this phase adds.
 - The Mac this was written on shows the facts S2 and step 5 turn on: `~` is
   `drwxr-x---+`, `~/Library` and `~/Library/Application Support` are `drwx------`,
@@ -581,7 +581,7 @@ server), and one for each event stream. `audience` picks the state view to decod
 | `docs/examples/server.yaml` | The settings sample, step 9 |
 | `crates/infrastructure/src/token_store.rs`, `audit_jsonl.rs` | Token store; the new events and an optional principal |
 | `apps/api-server/tests/live_x3800h_api.rs`, `Makefile` | Armed live test through the server |
-| `apps/cli/src/main.rs`, `crates/gui-lib/src/bridge.rs` | One-line stubs for the new methods in their test fakes |
+| `apps/cli/src/tests.rs`, `crates/gui-lib/src/bridge.rs` | One-line stubs for the new methods in their test fakes |
 | `tools/check-boundaries.sh` | Edges, purity, the resolved-graph checks |
 | `docs/research/agent-endpoint-access-macos.md` | S2's output |
 | `ARCHITECTURE.md`, `AGENTS.md`, `docs/README.md`, `docs/development.md` | Promotion at step 11; `development.md` names `make test-live-x3800h-api` |

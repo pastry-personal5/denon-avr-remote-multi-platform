@@ -24,7 +24,7 @@ amended the design where the review found it wrong.
   `proptest`, and this phase follows them.
 - Four types implement the port traits and must gain the new methods:
   `ServiceHandle`, the `Stub` in `control.rs`, the CLI's test `Fake`
-  (`apps/cli/src/main.rs`), and `FastPort` in `crates/gui-lib/src/bridge.rs`.
+  (`apps/cli/src/tests.rs`), and `FastPort` in `crates/gui-lib/src/bridge.rs`.
 - `main` already contains phase 2, and its two owner checks are open. They do not
   block this phase, which changes no GUI code.
 
@@ -422,7 +422,8 @@ For an Agent, `submit` checks the caps, then admits:
 ### The operation task
 
 `run_operation` in `service.rs` stays the one caller of `operate`. The Agent
-logic is in `service/agent.rs`, which returns either `Stop(resolution)` or
+logic is in `service/agent.rs` and its `service/agent/` modules (the decision
+itself in `agent/decision.rs`), which return either `Stop(resolution)` or
 `Dispatch(precondition, settlement)`. In order:
 
 1. Policy `Unavailable`, or the ledger not rebuilt: `Stop` as `rejected`.
@@ -503,7 +504,7 @@ one.
 | `crates/application/src/service.rs`, `service/agent.rs` | The Agent path; `service/agent_tests.rs` reuses the harness in `tests.rs` |
 | `crates/infrastructure/src/{data_directory,audit_jsonl,policy_yaml,system_clock}.rs` | New |
 | `crates/infrastructure/tests/live_x3800h_agent_gate.rs` | Armed live test |
-| `apps/cli/src/main.rs`, `crates/gui-lib/src/bridge.rs` | One-line stubs for the new port methods in their test fakes |
+| `apps/cli/src/tests.rs`, `crates/gui-lib/src/bridge.rs` | One-line stubs for the new port methods in their test fakes |
 | `tools/check-boundaries.sh`, `Makefile` | Edges, purity, resolved graph; `test-live-x3800h-agent` |
 | `docs/examples/policy.yaml` | The owner's configuration as a sample |
 | `ARCHITECTURE.md`, `AGENTS.md`, `docs/README.md` | Promotion at step 7 |

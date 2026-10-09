@@ -118,7 +118,7 @@ Tests in `crates/infrastructure/tests/policy_yaml.rs`:
 ### Step 1b — Port additions, token and refusal types, the audit adapter
 
 Files: `crates/application/src/{control,audit,tokens,service,lib}.rs`;
-`crates/infrastructure/src/audit_jsonl.rs`; the test fakes in `apps/cli/src/main.rs`
+`crates/infrastructure/src/audit_jsonl.rs`; the test fakes in `apps/cli/src/tests.rs`
 and `crates/gui-lib/src/bridge.rs`; and the "Control service" and "Audit log"
 paragraphs of `ARCHITECTURE.md` (the token methods, the owned capability lists, the
 record kinds, and the optional principal), updated here for the reason step 1a gives.
