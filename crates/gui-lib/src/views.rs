@@ -7,7 +7,7 @@ impl Gui {
     pub(super) fn dashboard(&self) -> Element<'_, Message> {
         let capabilities = self.selected_capabilities();
         let writable = capabilities.writable;
-        let sound_mode_pending = self.sound_mode_request_id.is_some();
+        let sound_mode_pending = self.sound_mode.request_id.is_some();
         let pending = dashboard_pending(self.status_waiting(), sound_mode_pending);
         let input = self
             .snapshot
@@ -103,7 +103,7 @@ impl Gui {
                     column![
                         container(volume_slider(
                             self.volume_slider,
-                            self.volume_value,
+                            self.volume.value,
                             self.volume_is_interactive(),
                         ))
                         .width(Length::Fill),
@@ -233,9 +233,9 @@ impl Gui {
                         .surround_mode
                         .value()
                         .map(|mode| mode.as_str()),
-                    self.sound_mode_category_filter,
+                    self.sound_mode.category_filter,
                     &self.configured,
-                    self.sound_mode_request_id.is_none(),
+                    self.sound_mode.request_id.is_none(),
                 ),
             ]
             .spacing(DASHBOARD_INFORMATION_ROW_GAP),
@@ -248,7 +248,7 @@ impl Gui {
         ]
         .spacing(10);
         if pending {
-            stack![dashboard, sound_mode_wait_overlay(self.launch_frame),].into()
+            stack![dashboard, sound_mode_wait_overlay(self.launch.frame),].into()
         } else {
             dashboard.into()
         }

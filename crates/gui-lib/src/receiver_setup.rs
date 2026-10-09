@@ -1,4 +1,5 @@
-//! Saved, discovered, and manual receiver setup views.
+//! Saved, discovered, and manual receiver setup views. The update handlers are
+//! in setup.rs.
 
 use super::*;
 use iced::widget::column;

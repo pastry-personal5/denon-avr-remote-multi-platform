@@ -422,39 +422,6 @@ pub(crate) fn information_card<'a>(
     ]
 }
 
-#[allow(dead_code)]
-pub(crate) fn channel_slot_grid<'a>(
-    slots: &'a FieldStatus<Vec<ChannelSlot>>,
-) -> iced::widget::Column<'a, Message> {
-    match slots {
-        FieldStatus::Unavailable(_) => column![text("Unavailable").size(13).color(design::MUTED)],
-        FieldStatus::Value(slots) => slots.iter().fold(column![].spacing(5), |column, slot| {
-            column.push(channel_slot_box(slot))
-        }),
-    }
-}
-
-#[allow(dead_code)]
-pub(crate) fn channel_slot_box<'a>(slot: &'a ChannelSlot) -> Element<'a, Message> {
-    let (foreground, state) = match slot.state {
-        ChannelSlotState::Active => (design::SUCCESS, "Active"),
-        ChannelSlotState::Available => (iced::Color::from_rgb(0.58, 0.76, 0.95), "Available"),
-        ChannelSlotState::Absent => (design::MUTED, "Absent"),
-        ChannelSlotState::Unknown => (design::MUTED, "Unknown"),
-    };
-    container(
-        row![
-            text(&slot.label).size(11).color(foreground),
-            space().width(Length::Fill),
-            text(state).size(10).color(foreground)
-        ]
-        .width(Length::Fill)
-        .padding([3, 7]),
-    )
-    .style(design::panel)
-    .into()
-}
-
 pub(crate) fn typed_input_channel_grid<'a>(
     slots: &'a FieldStatus<Vec<ChannelSlot>>,
 ) -> iced::widget::Column<'a, Message> {
@@ -557,94 +524,7 @@ pub(crate) fn typed_channel_box<'a>(
         .into()
 }
 
-#[allow(dead_code)]
-pub(crate) fn input_channel_grid<'a>(layout: Option<&str>) -> iced::widget::Column<'a, Message> {
-    column![
-        channel_grid_row(
-            &[Some("FHL"), Some("LEF"), None, Some("EXT"), Some("FHR")],
-            layout
-        ),
-        channel_grid_row(
-            &[Some("FWL"), Some("FL"), Some("C"), Some("FR"), Some("FWR")],
-            layout
-        ),
-        channel_grid_row(&[None, Some("SL"), None, Some("SR"), None], layout),
-        channel_grid_row(&[None, Some("SBL"), Some("SB"), Some("SBR"), None], layout),
-    ]
-    .spacing(6)
-}
-
-#[allow(dead_code)]
-pub(crate) fn output_channel_grid<'a>(layout: Option<&str>) -> iced::widget::Column<'a, Message> {
-    column![
-        channel_grid_row(&[Some("FL"), Some("C"), Some("FR")], layout),
-        channel_grid_row(&[Some("SL"), None, Some("SR")], layout),
-    ]
-    .spacing(6)
-}
-
-#[allow(dead_code)]
-pub(crate) fn channel_grid_row<'a>(
-    channels: &[Option<&'static str>],
-    layout: Option<&str>,
-) -> iced::widget::Row<'a, Message> {
-    channels.iter().fold(row![].spacing(6), |row, channel| {
-        row.push(match *channel {
-            Some(label) => channel_box(label, channel_state(layout, label)),
-            None => space()
-                .width(Length::Fixed(44.0))
-                .height(Length::Fixed(32.0))
-                .into(),
-        })
-    })
-}
-
-#[allow(dead_code)]
-pub(crate) fn channel_box<'a>(label: &'static str, state: &'static str) -> Element<'a, Message> {
-    let active = state == "ON";
-    let foreground = if active {
-        design::SUCCESS
-    } else {
-        design::MUTED
-    };
-    let background = if active {
-        iced::Color {
-            a: 0.28,
-            ..design::SUCCESS
-        }
-    } else {
-        design::ACTIVE
-    };
-    let shadow = if active {
-        iced::Shadow {
-            color: iced::Color {
-                a: 0.45,
-                ..design::SUCCESS
-            },
-            offset: iced::Vector::new(0.0, 0.0),
-            blur_radius: 10.0,
-        }
-    } else {
-        iced::Shadow::default()
-    };
-    container(text(label).size(10).color(foreground))
-        .center_x(Length::Fixed(44.0))
-        .center_y(Length::Fixed(32.0))
-        .style(move |_| iced::widget::container::Style {
-            background: Some(iced::Background::Color(background)),
-            text_color: Some(foreground),
-            border: iced::Border {
-                radius: 5.0.into(),
-                width: 1.0,
-                color: foreground,
-            },
-            shadow,
-            ..Default::default()
-        })
-        .into()
-}
-
-#[allow(dead_code)]
+#[cfg(test)]
 pub(crate) fn channel_state(layout: Option<&str>, channel: &str) -> &'static str {
     let Some(layout) = layout else {
         return "UNKNOWN";
