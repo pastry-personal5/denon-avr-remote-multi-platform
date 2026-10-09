@@ -52,8 +52,10 @@ use std::time::Duration;
 use tokio::sync::watch;
 use transport::{Abort, Call, Transport, REQUEST_TIMEOUT};
 
-/// The longest a state stream may take to send its first state: the server
-/// connects the receiver first.
+/// The longest a state stream may take to send its first state once the server has
+/// answered. The server connects the receiver before it answers, which `open_stream`
+/// waits for within `REQUEST_TIMEOUT`, and then sends the state it holds at once, so
+/// this only bounds a server that answered and says nothing.
 const FIRST_STATE: Duration = Duration::from_secs(30);
 
 /// Which endpoint a client talks to, which decides the views it can read.
