@@ -348,9 +348,11 @@ serves regardless. The account is admitted by a directory ACL that the owner set
 an entry for `search`, and an inheritable `write` entry that every socket the server makes
 there carries, so the socket stays `0600`.
 
-**One server per data directory.** `Server::start` takes `File::try_lock` on
-`run/server.lock` before it touches a socket. A second server finds the lock held and
-the executable exits with status 75. A socket left by a killed server is removed only
+**One server per data directory.** The executable takes `File::try_lock` on
+`run/server.lock` (`InstanceLock::acquire`) before it opens the token files or the audit
+log, and so before it touches a socket; the audit log's sequence numbers are counted in
+memory, so a second writer would reuse them. A second server finds the lock held,
+writes nothing, and the executable exits with status 75. A socket left by a killed server is removed only
 when `lstat` says it is a socket owned by the server's uid; a file, a link, or someone
 else's socket at the path is an error and is left alone. A socket path over the
 platform's `sun_path` limit (104 bytes on macOS) is refused with its length and the limit.

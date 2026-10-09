@@ -2,9 +2,10 @@
 //! endpoint and, when configured, the Agent endpoint, and shutting them down.
 //!
 //! The order is the point. The `run/` directory is made private first. The lock is
-//! taken before any socket is touched, so a second server stops there and a stale
-//! socket is removed only by the server that holds the lock. A path that is not a
-//! socket of this server's own is never removed.
+//! taken before anything else this server writes is opened (the token files, the
+//! audit log) and before any socket is touched, so a second server stops there
+//! having written nothing, and a stale socket is removed only by the server that
+//! holds the lock. A path that is not a socket of this server's own is never removed.
 
 use crate::agent_directory::{self, Facts};
 use crate::endpoint::{self, EndpointContext};
@@ -145,30 +146,64 @@ impl fmt::Display for StartError {
 
 impl std::error::Error for StartError {}
 
-pub struct Server;
+/// The claim to be the only server on a data directory.
+///
+/// The audit log, the budget ledger, and the token files each have one writer
+/// because this is held. It is taken before the first of them is opened: a server
+/// that finds it held must stop without having written a byte, since a second
+/// process appending to the audit log hands out the sequence number the first is
+/// about to use.
+#[derive(Debug)]
+pub struct InstanceLock {
+    _file: std::fs::File,
+    uid: u32,
+}
 
-impl Server {
-    /// Start serving. `tokens` holds the Operator's token, so it is required;
-    /// the Agent endpoint is created only when it is configured and the store can
-    /// issue tokens.
-    pub async fn start(
-        service: Arc<ControlService>,
-        tokens: SharedTokenStore,
-        config: ServerConfig,
-    ) -> Result<RunningServer, StartError> {
-        let paths = &config.paths;
+impl InstanceLock {
+    /// Make `run/` private and take the lock in it, or say that another server has it.
+    pub fn acquire(paths: &EndpointPaths) -> Result<Self, StartError> {
         ensure_private_directory(&paths.run_directory).map_err(|why| StartError::Directory {
             path: paths.run_directory.clone(),
             why,
         })?;
-        let lock = take_lock(&paths.lock_file)?;
+        let file = take_lock(&paths.lock_file)?;
         // The lock file was created by this process, so its owner is this uid.
-        let server_uid = std::fs::metadata(&paths.lock_file)
+        let uid = std::fs::metadata(&paths.lock_file)
             .map_err(|error| StartError::Directory {
                 path: paths.lock_file.clone(),
                 why: error.to_string(),
             })?
             .uid();
+        Ok(Self { _file: file, uid })
+    }
+}
+
+pub struct Server;
+
+impl Server {
+    /// Take the lock and start serving. A caller that opens files of its own before
+    /// it serves takes the lock first, with [`InstanceLock::acquire`], and calls
+    /// [`Server::start_locked`].
+    pub async fn start(
+        service: Arc<ControlService>,
+        tokens: SharedTokenStore,
+        config: ServerConfig,
+    ) -> Result<RunningServer, StartError> {
+        let lock = InstanceLock::acquire(&config.paths)?;
+        Self::start_locked(lock, service, tokens, config).await
+    }
+
+    /// Start serving under a lock already held. `tokens` holds the Operator's
+    /// token, so it is required; the Agent endpoint is created only when it is
+    /// configured and the store can issue tokens.
+    pub async fn start_locked(
+        lock: InstanceLock,
+        service: Arc<ControlService>,
+        tokens: SharedTokenStore,
+        config: ServerConfig,
+    ) -> Result<RunningServer, StartError> {
+        let paths = &config.paths;
+        let server_uid = lock.uid;
 
         check_path_length(&paths.operator_socket)?;
 
@@ -270,7 +305,7 @@ pub struct RunningServer {
     shutdown: watch::Sender<bool>,
     tasks: Vec<JoinHandle<()>>,
     connections: Vec<(Arc<Semaphore>, usize)>,
-    lock: Option<std::fs::File>,
+    lock: Option<InstanceLock>,
     grace: Duration,
     server_health: ServerHealthDto,
 }

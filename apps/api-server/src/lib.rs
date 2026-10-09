@@ -19,4 +19,6 @@ pub mod settings;
 pub mod shutdown;
 pub mod start;
 
-pub use start::{AgentEndpointConfig, Limits, RunningServer, Server, ServerConfig, StartError};
+pub use start::{
+    AgentEndpointConfig, InstanceLock, Limits, RunningServer, Server, ServerConfig, StartError,
+};

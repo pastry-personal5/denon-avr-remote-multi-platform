@@ -378,9 +378,15 @@ and the key, before anything is opened.
 ServerConfig     paths: EndpointPaths, agent: Option<AgentEndpointConfig>, limits: Limits
 EndpointPaths    under(dir) -> run/operator.sock, run/server.lock,
                  credentials/operator.token, credentials/agent-tokens.json
-Server::start(service: Arc<ControlService>, tokens: SharedTokenStore,
-              config: ServerConfig) -> Result<RunningServer, StartError>
+InstanceLock::acquire(paths: &EndpointPaths) -> Result<InstanceLock, StartError>
+              (makes `run/` private and takes the one-server lock)
+Server::start_locked(lock: InstanceLock, service: Arc<ControlService>,
+                     tokens: SharedTokenStore, config: ServerConfig)
+              -> Result<RunningServer, StartError>
               (the store is required: the Operator's token comes from it)
+Server::start(service, tokens, config)
+              (acquires the lock, then calls `start_locked`; for callers that open
+              nothing of their own before they serve, such as the tests)
 RunningServer    operator_socket() -> &Path; agent_socket() -> Option<&Path>;
                  shutdown(self) -> impl Future
 StartError       AlreadyRunning | SocketPathTooLong { len, max } | Directory { path, why }
@@ -392,18 +398,25 @@ ServerHealth     agent_endpoint: On | Off { reason }, token_store: Ok | Unavaila
 ```
 
 The binary parses its arguments (`--data-dir DIR`, default `data_directory()`, and
-`--exit-with-parent`), reads the settings, builds the infrastructure, calls
-`ControlService::start`, and hands the result to `Server::start`.
+`--exit-with-parent`), reads the settings, takes the lock with `InstanceLock::acquire`,
+builds the infrastructure, calls `ControlService::start`, and hands the result and the
+lock to `Server::start_locked`.
 Tests call `Server::start` over a fake session, so the binary has almost no logic.
 
 ### Start
 
-1. Create `run/` and `credentials/` at 0700 if missing; a wider existing mode is an
-   error. The data directory's own mode is not touched.
+1. Create `run/` at 0700 if missing; a wider existing mode is an error. The data
+   directory's own mode is not touched. (`credentials/` is made the same way when the
+   token store opens, which is after the lock, below.)
 2. Take `File::try_lock` on `run/server.lock` (the lock file is created 0600). A
    failure is `AlreadyRunning`, and the binary exits with status 75. The server's own
    uid is the owner of the lock file it just created, which avoids a call to
-   `geteuid`.
+   `geteuid`. This is the first thing the binary does that touches the data directory,
+   and it is before the token store, the audit log, and the control service, because
+   the audit log has one writer by this lock alone: its sequence numbers are counted
+   in memory, so a second process appending to the file would hand out numbers the
+   first is about to use. A second server therefore stops here having written
+   nothing (`a_second_binary_stops_at_the_lock_before_it_touches_anything_the_first_owns`).
 3. Check each socket path against the platform's `sun_path` limit (104 bytes on
    macOS), and fail with the path's length and the limit.
 4. If `agent_endpoint` is configured and a token store opened, check its directory
@@ -417,8 +430,9 @@ Tests call `Server::start` over a fake session, so the binary has almost no logi
    other uid reaches it between the two. Check the Agent socket's directory and owner
    again, as the Agent endpoint's paragraph says.
 
-The binary opens the token store and the audit log and runs `ControlService::start`
-before it calls `Server::start`, so the steps above start from a running service.
+After the lock and before the steps from 3 on, the binary opens the token store (which
+makes `credentials/` at 0700) and the audit log and runs `ControlService::start`, so
+the steps from 3 on start from a running service.
 
 A client that wants to know whether a server is running connects to
 `operator.sock`; the lock is the server's, not the client's.

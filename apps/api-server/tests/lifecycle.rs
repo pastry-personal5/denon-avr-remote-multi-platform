@@ -457,6 +457,55 @@ async fn sigterm_and_sigint_shut_down_the_same_way() {
     }
 }
 
+/// Every file under `directory`, by name, with its text.
+fn files_under(directory: &Path) -> Vec<(String, String)> {
+    let mut files: Vec<_> = std::fs::read_dir(directory)
+        .map(|entries| {
+            entries
+                .map(|entry| {
+                    let path = entry.unwrap().path();
+                    (
+                        path.file_name().unwrap().to_string_lossy().into_owned(),
+                        String::from_utf8_lossy(&std::fs::read(&path).unwrap()).into_owned(),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    files.sort();
+    files
+}
+
+#[tokio::test]
+async fn a_second_binary_stops_at_the_lock_before_it_touches_anything_the_first_owns() {
+    let first = Running::start(false).await;
+    let data = first.root.0.clone();
+    let audit = data.join("audit");
+    let credentials = data.join("credentials");
+    assert!(
+        !files_under(&audit).is_empty(),
+        "the first server wrote a record when it started, which is what makes this test mean something"
+    );
+    let audit_before = files_under(&audit);
+    let credentials_before = files_under(&credentials);
+
+    let second = std::process::Command::new(env!("CARGO_BIN_EXE_denon-avr-api-server"))
+        .arg("--data-dir")
+        .arg(&data)
+        .stdin(Stdio::null())
+        .output()
+        .expect("the server binary starts");
+    assert_eq!(second.status.code(), Some(75), "{second:?}");
+
+    // Two processes appending to one audit log would hand out the same sequence
+    // number twice, so the second must not have written a byte of it.
+    assert_eq!(files_under(&audit), audit_before);
+    assert_eq!(files_under(&credentials), credentials_before);
+
+    let token = first.token();
+    assert_eq!(get(&first.socket, "/v1/health", &token).await.status, 200);
+}
+
 #[tokio::test]
 async fn a_second_signal_exits_at_once() {
     use tokio::io::AsyncWriteExt;

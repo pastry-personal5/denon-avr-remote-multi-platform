@@ -4,7 +4,7 @@
 use denon_avr_api_contract::EndpointPaths;
 use denon_avr_api_server::settings::{self, SETTINGS_FILE};
 use denon_avr_api_server::shutdown::{parent_gone, Reason, Signals};
-use denon_avr_api_server::{Limits, Server, ServerConfig, StartError};
+use denon_avr_api_server::{InstanceLock, Limits, Server, ServerConfig, StartError};
 use denon_avr_application::{AgentLimits, AgentPath, ControlService, ServiceConfig};
 use denon_avr_infrastructure::{
     data_directory, FileTokenStore, JsonlAuditLog, SsdpDiscoveryAdapter, SystemClock,
@@ -43,6 +43,15 @@ fn arguments() -> Result<Arguments, String> {
         data_directory: data.unwrap_or_else(data_directory),
         exit_with_parent,
     })
+}
+
+/// Say why the server did not start, and the status that goes with it.
+fn start_failed(error: &StartError) -> ExitCode {
+    eprintln!("denon-avr-api-server: {error}");
+    match error {
+        StartError::AlreadyRunning => ExitCode::from(ALREADY_RUNNING),
+        _ => ExitCode::from(1),
+    }
 }
 
 fn main() -> ExitCode {
@@ -97,6 +106,14 @@ async fn run() -> ExitCode {
         }
     };
 
+    // The lock comes before anything this server writes: the token files, the audit
+    // log the control service opens, the ledger it rebuilds. A second server stops
+    // here, having touched none of them.
+    let lock = match InstanceLock::acquire(&paths) {
+        Ok(lock) => lock,
+        Err(error) => return start_failed(&error),
+    };
+
     let tokens = match FileTokenStore::open(&paths.credentials_directory) {
         Ok(store) => Arc::new(store),
         Err(error) => {
@@ -125,7 +142,8 @@ async fn run() -> ExitCode {
         )
         .await,
     );
-    let running = match Server::start(
+    let running = match Server::start_locked(
+        lock,
         service,
         tokens,
         ServerConfig {
@@ -137,14 +155,7 @@ async fn run() -> ExitCode {
     .await
     {
         Ok(running) => running,
-        Err(StartError::AlreadyRunning) => {
-            eprintln!("denon-avr-api-server: another Control API server is already running");
-            return ExitCode::from(ALREADY_RUNNING);
-        }
-        Err(error) => {
-            eprintln!("denon-avr-api-server: {error}");
-            return ExitCode::from(1);
-        }
+        Err(error) => return start_failed(&error),
     };
     let reason = tokio::select! {
         signal = signals.next() => Reason::Signal(signal),
