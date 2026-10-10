@@ -1,0 +1,14 @@
+# Spike S5 only. A stand-in for the GUI, built on its own so that it is not a
+# member of the repository's workspace and changes neither `Cargo.lock` nor the
+# boundary checks. Standard library only.
+[package]
+name = "s5-host"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[[bin]]
+name = "s5-host"
+path = "src/main.rs"

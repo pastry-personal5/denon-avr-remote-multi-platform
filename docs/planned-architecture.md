@@ -202,6 +202,10 @@ API, and the token, approval, audit, and policy views on `OperatorAdmin`.
 - There is one Control API server per user. It binds both local endpoints
   exclusively, and a second server refuses to start. A GUI that finds a running
   server attaches to it and never stops a server it did not start.
+- A GUI whose server disappears says so and keeps trying to attach. It starts a server
+  only when the owner asks, because an owner who stopped the server to cut off agents
+  would otherwise find it restarted. Two GUIs that start at once end with one server:
+  the one that loses the lock exits with status 75 and its parent attaches.
 - Agent access exists only while a server runs. When a GUI-owned server ends,
   pending operations expire under the lifecycle rules below, and both MCP
   servers report the receiver service as unavailable instead of guessing.
@@ -621,6 +625,7 @@ grow compatibly.
 | `GET /v1/receivers/{id}/sources` | The source catalog. The Agent view omits the receiver's raw reply and the error text | Both endpoints, as different views |
 | `GET /v1/receivers/{id}/quick-select-names`, `GET /v1/receivers/{id}/http-information` | Inspection reads that no agent tool uses | Operator endpoint |
 | `POST /v1/receivers/{id}/refresh` | Read every core field again; dispatches nothing | Operator endpoint |
+| `POST /v1/receivers/{id}/release` | Close the server's connection to the receiver now, if nothing holds it. Answers `released`, `not_connected`, or `in_use` with the counts; it never closes under a held subscription or an operation in flight, and sends nothing to the receiver | Operator endpoint |
 | `GET /v1/receivers/{id}/events` | Event stream of coalesced state snapshots. No replay: a client that reconnects reads the state again | Both endpoints, as different views |
 | `GET /v1/operations/events` | Event stream of operation events, which the control-service port offers without a receiver. An Agent sees only its own principal's | Both endpoints |
 | `POST /v1/receivers/{id}/operations` | Submit an operation | Both endpoints |
@@ -634,7 +639,9 @@ grow compatibly.
 
 State snapshots are coalesced so that a slow client sees the newest complete
 state, the same semantics as the session's state subscription. Operation events
-are not coalesced; a client that missed one reads `GET /v1/operations/{id}`. A held
+are not coalesced; a client that missed one reads `GET /v1/operations/{id}`. Every
+operation names the principal that submitted it (the Operator, or an agent's label),
+and an Agent sees only its own. A held
 event stream keeps the receiver connected, so the server writes a keep-alive, drops
 a stream whose client stops reading, and caps the streams per principal.
 
@@ -915,20 +922,24 @@ so it uses `mcp-http`. Background and unverified details are in
 
 **GUI.** The existing Iced presentation (`gui-lib`, `apps/desktop`) is
 retargeted to be an Operator client. The first release supports macOS only: the
-macOS visual baselines are updated, the Windows and Linux baselines are left as
-they were and are not validated, and the macOS app bundle is a packaged
+macOS visual baselines are updated (the Windows and Linux baselines the first
+draft of this section kept never existed), and the macOS app bundle is a packaged
 distribution of it. It projects presentation state from receiver state and
-operation events and adds views for the operation feed, pending approvals
-(observe and cancel), the audit log, and the effective policy (read-only, with
-its digest and a reload action). It authenticates with the Operator token file
-on the Operator endpoint. It neither issues nor revokes agent credentials; the
+operation events and adds views, under Advanced so that the navigation rail and
+the other screens do not change, for the operation feed, pending approvals
+(observe and cancel; a placeholder until the approval broker exists), the audit
+log, and the effective policy (read-only, with its digest and a reload action).
+It authenticates with the Operator token file on the Operator endpoint. It neither issues nor revokes agent credentials; the
 CLI manages those. The GUI sees only the control-service port, so its toolkit
 is not an architectural commitment.
 
 **CLI.** The CLI becomes an Operator client with the same `get` and `set`
-surface and authenticates with the Operator token file. `--dry-run` becomes a
-server-side policy evaluation that reports the decision a real request would
-receive. A new command group issues, lists, and revokes Agent tokens. Direct
+surface and authenticates with the Operator token file. `--dry-run --as-agent
+LABEL` becomes a server-side policy evaluation that reports the decision a real
+request from that agent would receive; `--dry-run` alone reports that the
+Operator is not subject to policy. A new command group issues, lists, and
+revokes Agent tokens. A CLI that loses the server while it waits for an
+operation reports the outcome as unknown and does not submit again. Direct
 session construction is removed from the CLI: a CLI that opened its own receiver
 session would be a second session owner whose writes are neither serialized with
 the others nor audited.

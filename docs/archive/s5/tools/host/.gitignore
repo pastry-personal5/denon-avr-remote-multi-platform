@@ -1,0 +1,3 @@
+# Spike S5 only: the lockfile of a crate with no dependencies is not worth keeping.
+/Cargo.lock
+/target/

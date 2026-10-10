@@ -9,7 +9,9 @@ its [phase overview](phase-2-gui-on-port-overview.md). Milestone 3 is implemente
 [phase overview](phase-3-policy-audit-gate-overview.md). Milestone 4 is implemented
 (2026-10-08 and 2026-10-09) and waits on the owner's live checks, tracked in its
 [phase overview](phase-4-control-api-server-overview.md); S2 was run by the owner on
-2026-10-09. No version change is made until the release milestone.**
+2026-10-09. Milestone 5 is planned (2026-10-09) and nothing in it is implemented, tracked in its
+[phase overview](phase-5-operator-clients-overview.md). No version change is made until the
+release milestone.**
 
 This roadmap sequences the work needed to implement the target design in
 [Planned architecture](../planned-architecture.md). It does not restate that
@@ -171,12 +173,12 @@ findings drive the order below.
 
 | # | Phase theme | Delivers | In 4.0.0 | Blocked by |
 | --- | --- | --- | --- | --- |
-| S | Spikes (parallel, time-boxed) | MCP SDK graph check, Agent endpoint access on macOS, approval wire contract, receiver reachability and backstop | S1, S2, S4 | none |
+| S | Spikes (parallel, time-boxed) | MCP SDK graph check, Agent endpoint access on macOS, approval wire contract, receiver reachability and backstop, Local Network permission for the nested server | S1, S2, S4, S5 | none |
 | 1 | `control-port` | Stable receiver id, control-service port, in-process service with the Operator gate, inspection reads, session precondition, CLI on the port | yes | none |
 | 2 | `gui-on-port` | GUI on the port; legacy controller, traits, and adapter deleted | yes | 1 |
 | 3 | `policy-audit-gate` | `policy` crate, audit log, Agent path through the gate, fail-closed | yes | 1 |
 | 4 | `control-api-server` | `api-contract`, `api-client`, `apps/api-server`, both endpoints | yes | 1, 3, S2 |
-| 5 | `operator-cutover` | CLI and GUI become API clients; server lifecycle; macOS bundle | yes | 2, 4 |
+| 5 | `operator-clients` | CLI and GUI become API clients; server lifecycle; macOS bundle | yes | 2, 4 |
 | 6 | `mcp-stdio` | `mcp-tools`, `apps/mcp-stdio`, conformance suite | yes | 5, S1 |
 | 7 | `approval` | 7a broker and fake channel; 7b External Approval Service adapter | after | 5; 7b needs S3 |
 | 8 | `mcp-http` | `apps/mcp-http`, TLS, static tokens, UTM guest deployment | yes | 5, `mcp-tools` from 6 |
@@ -229,7 +231,19 @@ recorded in the owning phase document. None changes shipped code.
   starts before milestone 7. With the External Approval Service's owner: stream
   protocol, resume cursor, signature algorithm, key distribution and rotation,
   signed encoding. Output is a frozen contract and a fake service used as a test
-  fixture.
+  fixture. The External Approval Service is the owner's separate app, ApproveHub
+  (`pastry-personal5/approve-hub-mac`), whose first phase was under development
+  on 2026-10-09 and rejects the sensitive requests this repository would need
+  approved; S3 starts by reading its `/v1` contract against the design's channel.
+- **S5 — Local Network permission for the nested server** (milestone 5). By hand on
+  the Mac. Whether macOS Local Network permission follows the receiver connection
+  into an `api-server` nested in the signed app bundle, launched by the GUI from
+  Finder, and what a standalone server started from a terminal needs. The checks
+  and the three outcomes are in the
+  [phase 5 architecture](phase-5-operator-clients-architecture.md#s5-what-the-hand-check-decides).
+  It runs before the packaging step is designed and gates only that step. **Done 2026-10-10: the
+  owner confirmed outcome B**, the nested server signed `com.denonavr.remote.server` (the
+  architecture's D80).
 
 ## Milestone 1 — Control port and in-process service
 
@@ -490,31 +504,50 @@ architecture lists each correction.
 
 ## Milestone 5 — Operator clients cut over
 
-The first milestone that changes what users run.
+**Planned (2026-10-09).** The first milestone that changes what users run. The
+steps, types, and decisions are in the paired
+[overview](phase-5-operator-clients-overview.md) and
+[architecture](phase-5-operator-clients-architecture.md); this is the summary. The
+review that produced them corrected the first draft of this section, and the
+architecture lists each correction.
 
-1. **CLI** becomes an `api-client` consumer, drops its infrastructure edge, adds
-   the Agent-token command group, turns `--dry-run` into a server-side policy
-   evaluation, and fails with a clear message when no server is running.
-2. **GUI** becomes an `api-client` consumer. It attaches to a running server or
-   launches the server executable as a child that exits when the pipe from its
-   parent closes. It never stops a server it did not start, and it links no
-   receiver code.
-3. **New views:** operation feed, pending and decided approvals (observe and
-   cancel only; empty until milestone 7), audit log, and the effective policy
-   with its digest and a reload action. Add macOS visual baselines; the
-   Windows and Linux baselines stay as they were in 3.0.0 and are marked
-   unvalidated.
-4. **macOS bundle.** `tools/package-macos.sh` currently builds only the desktop
-   binary. It must also build and include `api-server` inside the app bundle;
-   the existing `codesign --force --deep` step then covers the nested
-   executable. The receiver connection moves into that executable, and the
-   recent signing fix exists because macOS Local Network permission is tied to
-   a consistent signed identity. Verify that the bundled server can reach the
-   receiver when the GUI launches it, and settle what a standalone server
-   started from a terminal needs, before relying on either.
-5. **Boundary:** `cli` and `desktop` lose the infrastructure edge. The headline
-   property now holds in the Cargo graph.
-6. Update the CLI and desktop user guides and promote the process model into
+0. **Amend the roadmap and design** (done 2026-10-09).
+0b. **S5**, by hand on the Mac: whether macOS Local Network permission follows the
+   receiver connection into a nested, signed server, from a Finder launch and from a
+   terminal. It gates packaging only. **Done 2026-10-10: outcome B.**
+0c. **Phase 4's live runs** (the armed run and the account-boundary run), on `main`.
+   They gate the CLI cutover and everything after it, and the merge.
+1. **Configuration revision through the port:** `configuration()` returns a revision,
+   `save_configuration` takes the one it read, a stale write fails with a conflict, and
+   one helper reads, edits, and saves. The owner chose this over skipping no-op
+   writes.
+1b. **Principal on the operation snapshot,** so the operation feed can say whether the
+   Operator or a labelled agent acted. The owner chose this over pointing to the audit log.
+1c. **Receiver release:** `OperatorAdmin::release`, `POST /v1/receivers/{id}/release`, and a CLI
+   `release` command that frees the receiver's one control connection at once when nothing
+   else holds it. The owner accepted the 60-second idle time and asked for this on top.
+2. **Client bootstrap:** one definition of the data directory, a token-file reader that
+   refuses a file others can read, and a "no server is running" message that says how
+   to start one. Nothing outside `infrastructure` could do any of this.
+3. **CLI** becomes an `api-client` consumer, drops its infrastructure edge, adds the
+   Agent-token command group and `--data-dir`, maps `--dry-run --as-agent LABEL` to the
+   server's dry run for that label, fails with a clear message when no server runs, and
+   never resubmits an operation whose answer was lost.
+4. **Launcher** in `apps/desktop`: probe the socket, attach, or spawn the server with a
+   held standard-input pipe, wait for it, and treat exit status 75 as "another server
+   won, attach". Tested against the real binary.
+5. **GUI** becomes an `api-client` consumer through the launcher. It never stops a server it
+   did not start and links no receiver code. A server that disappears is shown, not
+   restarted, until the owner presses **Start server**.
+6. **New views, inside Advanced** (the rail does not change, so the other baselines stay
+   as they are): the operation feed, the audit log, the effective policy with its digest
+   and a reload action, and an approvals placeholder (the approval broker is milestone 7,
+   after 4.0.0). Add macOS visual baselines. Windows and Linux never had any.
+7. **macOS bundle.** `tools/package-macos.sh` builds and includes `api-server` in the app
+   bundle, signed inside out with the identity S5 chose, and smoke-tests the packaged server.
+8. **Boundary:** `cli` and `desktop` lose the infrastructure edge, the general rule is turned
+   on from the resolved graph, and only the launcher spawns a process.
+9. Update the CLI and desktop user guides and promote the process model into
    `ARCHITECTURE.md`.
 
 **Exit.**
@@ -523,6 +556,7 @@ The first milestone that changes what users run.
   simultaneously over one receiver connection, recorded as a live validation.
 - A killed GUI ends its child server. A GUI attached to a standalone server
   leaves it running on exit.
+- A stale configuration save is refused, and two saves from one revision let one win.
 - The GUI runs on macOS. Windows and Linux are not supported in this release.
 
 ## Milestone 6 — MCP tool surface and stdio build
@@ -708,8 +742,8 @@ Nothing here blocks milestone 1.
   in detail.
 - **macOS Local Network permission may not follow the receiver connection into
   the server process.** The 3.0.0 signing fix shows how a mismatched identity
-  silently blocks every receiver connection. Check this in milestone 5, before
-  the packaging work is considered done.
+  silently blocks every receiver connection. S5 checks this by hand before the
+  packaging work in milestone 5 is designed.
 - **Both agent hosts are untrusted and can run commands, and the receiver has no
   authentication.** In 4.0.0 the guest's isolation is fail-open unless S4 finds a
   router that can do better, and Claude Code's rests on an unvalidated `pf` user
