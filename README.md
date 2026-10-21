@@ -4,6 +4,11 @@
 
 A desktop app and a scriptable CLI for Denon and Marantz AV receivers on your local network. Validated on the AVC-X3800H. Other models stay read-only until they are proven.
 
+[![Release](https://img.shields.io/github/v/tag/pastry-personal5/denon-avr-remote-multi-platform?label=release)](https://github.com/pastry-personal5/denon-avr-remote-multi-platform/releases)
+[![Rust](https://img.shields.io/badge/rust-2021%20edition-orange)](Cargo.toml)
+[![License](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE)
+[![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen)](docs/contributing.md)
+
 ![Denon AVR Remote desktop dashboard](docs/archive/screenshots/denon-avr-remote-v3.0.0.jpg)
 
 ## Why you will like it
