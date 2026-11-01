@@ -2,7 +2,7 @@
 
 CARGO ?= cargo
 
-.PHONY: help format format-check check test build run run-gui run-release run-diagnostics run-diagnostics-http package-macos capture-visual-baselines visual-baselines clippy boundary phase5-ledger clean test-core-smoke test-core-scenarios test-core-properties test-trace-replay test-desktop-model test-live-x3800h test-live-x3800h-controls test-live-x3800h-agent test-live-x3800h-api
+.PHONY: help format format-check check test build open-package-dir run run-gui run-release run-diagnostics run-diagnostics-http package-macos capture-visual-baselines visual-baselines clippy boundary phase5-ledger clean test-core-smoke test-core-scenarios test-core-properties test-trace-replay test-desktop-model test-live-x3800h test-live-x3800h-controls test-live-x3800h-agent test-live-x3800h-api
 
 help: ## Show available developer commands
 	@echo "Available targets:"
@@ -20,6 +20,9 @@ check: format-check boundary phase5-ledger test-core-smoke test-core-scenarios t
 
 boundary: ## Check canonical layer dependency boundaries
 	tools/check-boundaries.sh
+
+open-package-dir:
+	open ./target/release/macos
 
 phase5-ledger: ## Verify Phase 5 requirement IDs and executable fixtures
 	tools/check-phase5-ledger.sh
