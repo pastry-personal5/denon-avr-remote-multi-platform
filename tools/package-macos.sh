@@ -46,7 +46,7 @@ chmod 755 "$app/Contents/MacOS/denon-avr-remote-gui"
 
 iconset="$work_dir/DenonAVRRemote.iconset"
 mkdir -p "$iconset"
-icon_source="$root_dir/tests/visual-baselines/macos/receivers-100pct.png"
+icon_source="$root_dir/assets/DenonAVRRemote.png"
 if [[ ! -f "$icon_source" ]]; then
   echo "package-macos: icon source is missing: $icon_source" >&2
   exit 1
